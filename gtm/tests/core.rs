@@ -2599,3 +2599,87 @@ fn covers_are_placed_identically_in_both_panes() {
         "the old top-anchored now-playing cover rect is back"
     );
 }
+
+/// Three crossfade defects, all playback-visible.
+///
+/// PulseAudio muted the incoming stream, the `Finished` path advanced twice,
+/// and two racing tasks could each advance a track. None of them is visible
+/// without listening, so they are pinned in source.
+#[test]
+fn crossfade_advances_exactly_once_at_full_volume() {
+    let pulse = include_str!("../src/audio/pulse.rs");
+    let mixer = include_str!("../src/audio/mixer.rs");
+    let daemon = include_str!("../../gtmd/src/daemon/mod.rs");
+
+    // 1. The swap must not carry the ramped volume across. By the time a
+    //    crossfade ends, `step_crossfade` has eased the outgoing stream to 0.
+    assert!(
+        !pulse.contains("let vol = self.get_mixer_volume();"),
+        "swap_active_standby still reads the outgoing (ramped-to-zero) volume"
+    );
+    assert!(
+        pulse.contains(
+            "let vol = volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)));"
+        ),
+        "the swap does not use the user's volume"
+    );
+    // The ALSA mixer was always right; PulseAudio now matches it.
+    assert!(
+        mixer.contains("volume_ratio(self.volume.load(Ordering::SeqCst))"),
+        "the ALSA mixer lost its user-volume read"
+    );
+
+    // 2. `finish_crossfade` advances by itself, so the Finished path must not
+    //    also call `Cmd::next`.
+    let finished = daemon
+        .find("let was_crossfading")
+        .expect("no Finished branch");
+    let block = &daemon[finished..finished + 1600];
+    assert!(
+        block.contains("Self::finish_crossfade(&inner).await;"),
+        "the Finished path no longer finishes the crossfade"
+    );
+    assert!(
+        !block.contains("Cmd::next(&inner).await"),
+        "the Finished path still advances a second time after finish_crossfade"
+    );
+
+    // 3. The claim must be a `take`, so a second racing task sees it gone.
+    assert!(
+        daemon.contains("if inner.crossfade_loaded_for.lock().await.take().is_none() {"),
+        "finish_crossfade does not claim the crossfade latch atomically"
+    );
+}
+
+/// The up-next card's countdown must follow the real crossfade setting.
+///
+/// It was built from a field initialised to 6 and never written again, so the
+/// card's length ignored the user's crossfade duration entirely.
+#[test]
+fn upnext_countdown_follows_the_crossfade_setting() {
+    let cover = include_str!("../src/app/cover.rs");
+    let app = include_str!("../src/app/mod.rs");
+
+    assert!(
+        !app.contains("pub crossfade_duration: u8,"),
+        "the hardcoded crossfade duration field is back"
+    );
+    assert!(
+        !cover.contains("self.crossfade_duration as f64"),
+        "start_upnext reads the hardcoded duration again"
+    );
+    let start = cover.find("pub fn start_upnext").expect("no start_upnext");
+    let block = &cover[start..start + 900];
+    assert!(
+        block.contains(".filter(|c| c.enabled)"),
+        "the countdown ignores whether crossfade is enabled"
+    );
+    assert!(
+        block.contains("map_or(0.0, |c| c.duration_secs as f64)"),
+        "the countdown does not read the configured duration"
+    );
+    assert!(
+        block.contains("let total_secs = cf_secs + 3.0;"),
+        "the countdown window no longer matches the daemon's"
+    );
+}

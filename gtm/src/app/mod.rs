@@ -218,7 +218,6 @@ pub struct App {
     pub auto_fetch_lyrics: bool,
     /// Icon style for command palette: "mdi" (Material Design Icons) or "emoji"
     pub icon_style: String,
-    pub crossfade_duration: u8,
     pub yt_search_loading: bool,
     pub yt_search_debounce: Option<std::time::Instant>,
     pub search_deadline: Option<std::time::Instant>,
@@ -941,7 +940,6 @@ impl App {
             about_viz: AboutViz::default(),
             auto_fetch_lyrics: prefs.auto_fetch_lyrics,
             icon_style: prefs.icon_style.clone(),
-            crossfade_duration: 6,
             pending_delete: None,
             pending_prompt: None,
             yt_search_loading: false,

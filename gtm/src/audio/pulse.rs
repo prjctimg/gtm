@@ -514,7 +514,10 @@ impl PulseAudioMixer {
     }
 
     fn swap_active_standby(&mut self) {
-        let vol = self.get_mixer_volume();
+        // The user's volume, not `get_mixer_volume()`: the crossfade ramp has
+        // just eased the outgoing stream to 0, so reading it here handed that
+        // 0 to the incoming stream and silenced the whole next track.
+        let vol = volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)));
 
         self.active_mut().stop_decode();
 
@@ -532,10 +535,6 @@ impl PulseAudioMixer {
         *self.start_time.lock().unwrap() = Some(Instant::now());
         *self.start_pos.lock().unwrap() = 0.0;
         self.playing.store(true, Ordering::SeqCst);
-    }
-
-    fn get_mixer_volume(&self) -> u8 {
-        self.active().stream_volume.load(Ordering::Relaxed)
     }
 }
 
@@ -923,7 +922,12 @@ impl Mixer for PulseAudioMixer {
             return;
         }
         self.crossfade_start = None;
-        let vol = self.active().stream_volume.load(Ordering::Relaxed);
+        // The *user's* volume, not the outgoing stream's current one. By the
+        // time a crossfade completes, `step_crossfade` has eased the outgoing
+        // stream down to 0, so carrying its volume across muted the incoming
+        // stream and the next track played in silence. The ALSA mixer has
+        // always read the user's volume here for exactly this reason.
+        let vol = volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)));
 
         self.active_mut().stop_decode();
         Self::set_stream_volume(&self.active(), 0);
@@ -951,7 +955,12 @@ impl Mixer for PulseAudioMixer {
             return;
         }
         self.crossfade_start = None;
-        let vol = self.active().stream_volume.load(Ordering::Relaxed);
+        // The *user's* volume, not the outgoing stream's current one. By the
+        // time a crossfade completes, `step_crossfade` has eased the outgoing
+        // stream down to 0, so carrying its volume across muted the incoming
+        // stream and the next track played in silence. The ALSA mixer has
+        // always read the user's volume here for exactly this reason.
+        let vol = volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)));
 
         self.active_mut().stop_decode();
         Self::set_stream_volume(&self.active(), 0);

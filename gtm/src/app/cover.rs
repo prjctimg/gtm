@@ -2,7 +2,20 @@ use crate::app::*;
 
 impl App {
     pub fn start_upnext(&mut self, track: TrackInfo) {
-        let total_secs = self.crossfade_duration as f64 + 3.0;
+        // Mirror the daemon's own countdown window rather than a hardcoded
+        // duration. It opens the card at `cf_secs + 3` seconds from the end,
+        // where `cf_secs` is 0 when crossfade is disabled, so with crossfade off
+        // the window is the 3 seconds alone. The card used to be built from a
+        // field initialised to 6 and never written again, so the countdown
+        // ignored the user's setting entirely: a 2s crossfade showed a 9s
+        // card and a 10s one hid the card 4s before the transition.
+        let cf_secs = self
+            .state
+            .crossfade
+            .as_ref()
+            .filter(|c| c.enabled)
+            .map_or(0.0, |c| c.duration_secs as f64);
+        let total_secs = cf_secs + 3.0;
         let fetch_gen = if no_image_protocol() {
             None
         } else {

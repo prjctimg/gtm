@@ -3731,7 +3731,15 @@ impl Daemon {
 
     async fn finish_crossfade(inner: &DaemonInner) {
         let actual = inner.mixer.lock().await.current_position();
-        *inner.crossfade_loaded_for.lock().await = None;
+        // Claim the crossfade before doing anything else. Both the position
+        // tick and the `Finished` handler can both observe a loaded crossfade
+        // and both spawn this on a detached task; the `crossfade_loaded_for`
+        // check that gates those spawns happens *before* the task runs, so two
+        // tasks could pass it and each advance a track. Clearing the latch here
+        // makes the second one a no-op instead of a skipped track.
+        if inner.crossfade_loaded_for.lock().await.take().is_none() {
+            return;
+        }
         *inner.countdown_notified_for.lock().await = None;
         *inner.cover_preloaded_for.lock().await = None;
 
@@ -4096,8 +4104,13 @@ impl Daemon {
                         if inner.play_session.load(Ordering::Acquire) != session {
                             return;
                         }
+                        // `finish_crossfade` already advances: it promotes the
+                        // standby and calls `step_next`, which starts the next
+                        // track and pushes `PlaybackStarted`. The extra
+                        // `Cmd::next` here advanced a *second* time, so a
+                        // crossfade that ended at EOF rather than at its full
+                        // duration skipped a track on every advance.
                         Self::finish_crossfade(&inner).await;
-                        let _ = Cmd::next(&inner).await;
                     });
                 } else {
                     let _ = inner.internal_req_tx.send(DaemonReq::Next);
