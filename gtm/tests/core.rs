@@ -3291,3 +3291,117 @@ fn charts_and_radio_rows_all_describe_themselves() {
         "only {lists} chart replies rebuild the card; the source and chart lists load async"
     );
 }
+
+/// One script generates completions, and every packaging caller uses it.
+///
+/// Completions used to be a side effect of `cargo build` keyed on
+/// `GTM_GEN_COMPLETIONS`, set in six places. Replacing that with binaries that
+/// emit their own scripts meant editing all six, and `release.yml` was missed:
+/// the nightly build then died at `cp: cannot stat 'artifacts/completions/*'`
+/// because nothing populated the directory any more. The invariant is the point
+/// — a caller that installs from `artifacts/completions` without invoking the
+/// generator is the whole bug.
+#[test]
+fn completion_consumers_all_invoke_the_one_generator() {
+    let script = include_str!("../../scripts/build/completions.sh");
+
+    // The generator asks the binaries, so it cannot drift from the parsers.
+    assert!(script.contains("--completions"));
+    assert!(
+        script.contains("for bin in gtm gtmd; do"),
+        "the generator no longer covers both binaries"
+    );
+    // clap's zsh script is a completion function and is installed as `_gtm`.
+    // Emitting it as `gtm.zsh` matches nothing that consumes it.
+    assert!(
+        script.contains("names=(bash _ fish elv ps1)"),
+        "the zsh output is no longer named `_`, which is what consumers install"
+    );
+
+    // Every consumer that reads the directory must also produce it.
+    for (what, path) in [
+        ("Makefile", include_str!("../../Makefile")),
+        (
+            "release.yml",
+            include_str!("../../.github/workflows/release.yml"),
+        ),
+        ("PKGBUILD", include_str!("../../dist/arch/PKGBUILD")),
+        ("gtmd.spec", include_str!("../../dist/rpm/gtmd.spec")),
+        (
+            "musl-in-container.sh",
+            include_str!("../../scripts/build/musl-in-container.sh"),
+        ),
+        (
+            "arch-in-container.sh",
+            include_str!("../../scripts/build/arch-in-container.sh"),
+        ),
+        ("flake.nix", include_str!("../../flake.nix")),
+    ] {
+        if path.contains("artifacts/completions") {
+            assert!(
+                path.contains("completions.sh"),
+                "{what} installs from artifacts/completions but never generates it"
+            );
+        }
+    }
+
+    // Every family whose packaging copies from the directory must be one the
+    // generate step actually runs for. Android was excluded from it while its
+    // archive still copied the directory, so the copy had nothing to copy.
+    let rel = include_str!("../../.github/workflows/release.yml");
+    let step = |name: &str| {
+        rel.split(&format!("- name: {name}"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("{name} is gone"))
+            .split("run:")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let consumes: Vec<&str> = ["debian", "macos", "arch", "android"].into();
+    let gated = step("Generate shell completions");
+    for family in consumes {
+        assert!(
+            !gated.contains(&format!("matrix.family == '{family}'")),
+            "the generate step excludes {family}, whose packaging copies artifacts/completions"
+        );
+    }
+    // And the two it does exclude generate inside their build containers.
+    for family in ["musl", "arch-arm"] {
+        assert!(
+            gated.contains(&format!("matrix.family != '{family}'")),
+            "the generate step no longer excludes {family}"
+        );
+    }
+    assert!(
+        step("Build musl binaries + packages (Alpine container)").is_empty()
+            || include_str!("../../scripts/build/musl-in-container.sh").contains("completions.sh"),
+        "musl generates neither in the workflow nor in its container"
+    );
+
+    // And the retired mechanism is gone everywhere, not just from build.rs.
+    for (what, path) in [
+        ("build.rs", include_str!("../build.rs")),
+        ("Makefile", include_str!("../../Makefile")),
+        (
+            "release.yml",
+            include_str!("../../.github/workflows/release.yml"),
+        ),
+        ("PKGBUILD", include_str!("../../dist/arch/PKGBUILD")),
+        ("gtmd.spec", include_str!("../../dist/rpm/gtmd.spec")),
+        (
+            "musl-in-container.sh",
+            include_str!("../../scripts/build/musl-in-container.sh"),
+        ),
+        (
+            "arch-in-container.sh",
+            include_str!("../../scripts/build/arch-in-container.sh"),
+        ),
+        ("flake.nix", include_str!("../../flake.nix")),
+    ] {
+        assert!(
+            !path.contains("GTM_GEN_COMPLETIONS"),
+            "{what} still sets GTM_GEN_COMPLETIONS, which no longer does anything"
+        );
+    }
+}

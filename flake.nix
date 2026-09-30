@@ -55,8 +55,8 @@
             install -Dm 0644 artifacts/man/gtmd-ipc.1 $out/share/man/man1/gtmd-ipc.1
             install -Dm 0644 artifacts/man/gtm.1      $out/share/man/man1/gtm.1
 
-            # Shell completions
-            cargo build --release --manifest-path gtm/Cargo.toml --quiet
+            # Shell completions, emitted by the binaries built above
+            ./scripts/build/completions.sh "$(pwd)/artifacts"
             install -Dm 0644 artifacts/completions/gtm.bash   $out/share/bash-completion/completions/gtm
             install -Dm 0644 artifacts/completions/_gtm       $out/share/zsh/site-functions/_gtm
             install -Dm 0644 artifacts/completions/gtm.fish   $out/share/fish/vendor_completions.d/gtm.fish

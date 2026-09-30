@@ -25,13 +25,7 @@ build() {
   mkdir -p artifacts
   ./scripts/build/manpages.sh artifacts
   cargo build --release --quiet
-  mkdir -p artifacts/completions
-  ./target/release/gtm --completions bash > artifacts/completions/gtm.bash
-  ./target/release/gtm --completions zsh > artifacts/completions/_gtm
-  ./target/release/gtm --completions fish > artifacts/completions/gtm.fish
-  ./target/release/gtmd --completions bash > artifacts/completions/gtmd.bash
-  ./target/release/gtmd --completions zsh > artifacts/completions/_gtmd
-  ./target/release/gtmd --completions fish > artifacts/completions/gtmd.fish
+  ./scripts/build/completions.sh "$(pwd)/artifacts"
 }
 
 package() {

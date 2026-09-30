@@ -335,7 +335,7 @@ jobs:
       - name: Build Android release binaries
         if: matrix.family == 'android'
         run: |
-          GTM_GEN_COMPLETIONS="$(pwd)/artifacts" CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -P 27 \
+          CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -P 27 \
             build --release --no-default-features --features pulseaudio
 
       - name: Clean Android ELF sections
@@ -349,8 +349,15 @@ jobs:
         run: ./scripts/build/manpages.sh artifacts
 
       - name: Generate shell completions
-        if: matrix.family != 'musl' && matrix.family != 'arch-arm' && matrix.family != 'android'
-        run: GTM_GEN_COMPLETIONS="$(pwd)/artifacts" cargo build --release --quiet
+        # musl and arch-arm generate inside their build containers, which run
+        # the same script. Android is here rather than in its ndk build because
+        # the completions are architecture-independent: they come from a host
+        # build, and the ndk build only produces the libraries. Its archive
+        # copies this directory, so skipping it left the copy with nothing.
+        if: matrix.family != 'musl' && matrix.family != 'arch-arm'
+        run: |
+          cargo build --release --quiet
+          ./scripts/build/completions.sh "$(pwd)/artifacts"
 
       - name: Package complete archive (desktop)
         if: matrix.family == 'debian' || matrix.family == 'macos'
