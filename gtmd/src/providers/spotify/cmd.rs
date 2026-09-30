@@ -22,9 +22,7 @@ use gtm::shared::track::TrackInfo;
 use crate::daemon::{Cmd, Daemon, DaemonInner, is_rate_limit};
 use crate::queue;
 
-use super::api::{
-    access_token, album_tracks, artist_top, like, playlist_add, resolve_uri, search, web_playlist,
-};
+use super::api::{access_token, like, playlist_add, resolve_uri, search};
 use super::cover::{image_at, prefetch};
 use super::oauth::OauthFlow;
 
@@ -632,48 +630,6 @@ impl Spotify {
             .await
             .map_err(CoreError::Daemon)?;
         Ok(DaemonRes::SpotifyTracksRes { tracks })
-    }
-
-    /// Resolve a web-search album result (an album `spotify:` URI) to its full
-    /// track list so the TUI can queue and play it.
-    pub async fn album_tracks(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
-        let client = match linked(inner).await {
-            Ok(client) => client,
-            Err(res) => return Ok(*res),
-        };
-        match album_tracks(&client, uri).await {
-            Ok(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
-            Err(e) => Ok(DaemonRes::Error { message: e }),
-        }
-    }
-
-    /// Resolve a web-search artist result (an artist `spotify:` URI) to their
-    /// top tracks.
-    pub async fn artist_top_tracks(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
-        let client = match linked(inner).await {
-            Ok(client) => client,
-            Err(res) => return Ok(*res),
-        };
-        match artist_top(&client, uri).await {
-            Ok(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
-            Err(e) => Ok(DaemonRes::Error { message: e }),
-        }
-    }
-
-    /// Resolve a web-search playlist result (a `spotify:playlist:` URI) to its
-    /// track list.
-    pub async fn web_playlist_tracks(
-        inner: &DaemonInner,
-        uri: &str,
-    ) -> Result<DaemonRes, CoreError> {
-        let client = match linked(inner).await {
-            Ok(client) => client,
-            Err(res) => return Ok(*res),
-        };
-        match web_playlist(&client, uri).await {
-            Ok(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
-            Err(e) => Ok(DaemonRes::Error { message: e }),
-        }
     }
 
     /// Resolve a Spotify track into a playable stream and append it to the

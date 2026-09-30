@@ -3094,126 +3094,51 @@ impl App {
                                 let track_index = track.index;
                                 let c = self.client.clone();
                                 let ipc_tx = self.ipc_tx.clone();
-                                // Only a track closes the picker: it is about to
-                                // play. A drill-down is a request whose outcome
-                                // is not known yet, and closing first meant a
-                                // failure left the user with a notification and
-                                // no list -- nothing to retry from, and no way to
-                                // see what the album or artist actually held.
-                                let is_drill_down = matches!(
-                                    track.kind,
-                                    Some(SpotifySearchKind::Album)
-                                        | Some(SpotifySearchKind::Artist)
-                                        | Some(SpotifySearchKind::Playlist)
-                                );
-                                if !is_drill_down {
-                                    self.pickers.close_top();
-                                }
+                                self.pickers.close_top();
                                 if playlist_id == "web" {
-                                    match track.kind {
-                                        Some(SpotifySearchKind::Album)
-                                        | Some(SpotifySearchKind::Artist)
-                                        | Some(SpotifySearchKind::Playlist) => {
-                                            let c2 = c.clone();
-                                            let ipc_tx2 = ipc_tx.clone();
-                                            let uri = track.uri.clone().unwrap_or_default();
-                                            let label = track.name.clone();
-                                            let kind = track.kind;
-                                            let _ =
-                                                tx.try_send(TuiCommand::fire(move || async move {
-                                                    let result = match kind {
-                                                        Some(SpotifySearchKind::Album) => {
-                                                            c2.spotify().album_tracks(&uri).await
-                                                        }
-                                                        Some(SpotifySearchKind::Artist) => {
-                                                            c2.spotify()
-                                                                .artist_top_tracks(&uri)
-                                                                .await
-                                                        }
-                                                        Some(SpotifySearchKind::Playlist) => {
-                                                            c2.spotify()
-                                                                .web_playlist_tracks(&uri)
-                                                                .await
-                                                        }
-                                                        _ => Err(CoreError::Daemon(
-                                                            "unsupported spotify result kind"
-                                                                .into(),
-                                                        )),
-                                                    };
-                                                    match result {
-                                                        Ok(tracks) if tracks.is_empty() => {
-                                                            let _ = ipc_tx2.send(IpcResult::Error(
-                                                                format!(
-                                                                    "Spotify: no tracks for \
-                                                                 '{label}'"
-                                                                ),
-                                                            ));
-                                                        }
-                                                        Ok(tracks) => {
-                                                            for (n, t) in tracks.iter().enumerate()
-                                                            {
-                                                                // Enter = play: the
-                                                                // first track starts
-                                                                // playback immediately
-                                                                // (switching source);
-                                                                // the rest queue behind.
-                                                                let _ = c2
-                                                                    .spotify()
-                                                                    .resolve_track(
-                                                                        &t.name,
-                                                                        &t.artists,
-                                                                        t.album
-                                                                            .as_deref()
-                                                                            .unwrap_or(""),
-                                                                        t.uri.clone(),
-                                                                        t.image_url.clone(),
-                                                                        n == 0,
-                                                                    )
-                                                                    .await;
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                            let _ = ipc_tx2.send(IpcResult::Error(
-                                                                format!(
-                                                                    "Spotify resolve failed: {e}"
-                                                                ),
-                                                            ));
-                                                        }
-                                                    }
-                                                }));
-                                        }
-                                        _ => {
-                                            let c2 = c.clone();
-                                            let ipc_tx2 = ipc_tx.clone();
-                                            let track_clone = track.clone();
-                                            let _ =
-                                                tx.try_send(TuiCommand::fire(move || async move {
-                                                    match c2
-                                                        .spotify()
-                                                        .resolve_track(
-                                                            &track_clone.name,
-                                                            &track_clone.artists,
-                                                            track_clone
-                                                                .album
-                                                                .as_deref()
-                                                                .unwrap_or(""),
-                                                            track_clone.uri.clone(),
-                                                            track_clone.image_url.clone(),
-                                                            true,
-                                                        )
-                                                        .await
-                                                    {
-                                                        Ok(()) => {}
-                                                        Err(e) => {
-                                                            let _ = ipc_tx2.send(IpcResult::Error(
-                                                                format!(
-                                                                    "Spotify resolve failed: {e}"
-                                                                ),
-                                                            ));
-                                                        }
-                                                    }
-                                                }));
-                                        }
+                                    // An album, artist or playlist row is no
+                                    // longer drillable: Spotify's February 2026
+                                    // Web API changes removed `/albums`,
+                                    // `/artists` and `/playlists/{id}/tracks` for
+                                    // developer-mode integrations, so there is no
+                                    // endpoint left to expand one into its
+                                    // contents. Say so rather than close the
+                                    // picker and do nothing.
+                                    if let Some(kind) = track.kind
+                                        && kind != SpotifySearchKind::Track
+                                    {
+                                        let _ = ipc_tx.send(IpcResult::Error(format!(
+                                            "Spotify no longer exposes {} contents \
+                                             through the public API",
+                                            kind.label()
+                                        )));
+                                        return;
+                                    }
+                                    {
+                                        let c2 = c.clone();
+                                        let ipc_tx2 = ipc_tx.clone();
+                                        let track_clone = track.clone();
+                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
+                                            match c2
+                                                .spotify()
+                                                .resolve_track(
+                                                    &track_clone.name,
+                                                    &track_clone.artists,
+                                                    track_clone.album.as_deref().unwrap_or(""),
+                                                    track_clone.uri.clone(),
+                                                    track_clone.image_url.clone(),
+                                                    true,
+                                                )
+                                                .await
+                                            {
+                                                Ok(()) => {}
+                                                Err(e) => {
+                                                    let _ = ipc_tx2.send(IpcResult::Error(
+                                                        format!("Spotify resolve failed: {e}"),
+                                                    ));
+                                                }
+                                            }
+                                        }));
                                     }
                                 } else {
                                     let _ = tx.try_send(TuiCommand::fire(move || async move {

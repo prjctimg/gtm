@@ -83,12 +83,26 @@ pub enum SpotifySearchKind {
     /// A searchable single track.
     #[default]
     Track,
-    /// A searchable album; resolves to the album's track list.
+    /// A searchable album. Shown as a row, but not drillable: Spotify removed
+    /// the endpoint that would expand one into its track list.
     Album,
-    /// A searchable artist; resolves to the artist's top tracks.
+    /// A searchable artist. Shown as a row, but not drillable, for the same
+    /// reason as `Album`.
     Artist,
-    /// A searchable playlist; resolves to the playlist's track list.
+    /// A searchable playlist. Not drillable, for the same reason as `Album`.
     Playlist,
+}
+
+impl SpotifySearchKind {
+    /// Human-readable name, for the message shown when a row cannot be opened.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Track => "track",
+            Self::Album => "album",
+            Self::Artist => "artist",
+            Self::Playlist => "playlist",
+        }
+    }
 }
 
 /// A single track inside a Spotify playlist.

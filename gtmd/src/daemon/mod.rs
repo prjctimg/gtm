@@ -1754,8 +1754,6 @@ fn is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::SpotifyPlaylists
             | DaemonReq::SpotifyPlaylistTracks { .. }
             | DaemonReq::SpotifySearchWeb { .. }
-            | DaemonReq::SpotifyAlbumTracks { .. }
-            | DaemonReq::SpotifyArtistTopTracks { .. }
             | DaemonReq::SpotifyTrackImage { .. }
             | DaemonReq::GetImageCover { .. }
             | DaemonReq::SpotifyMatch { .. }
@@ -1835,9 +1833,6 @@ fn is_spotify_slow(req: &DaemonReq) -> bool {
         DaemonReq::SpotifySync
             | DaemonReq::SpotifyResolve { .. }
             | DaemonReq::SpotifyResolveTrack { .. }
-            | DaemonReq::SpotifyAlbumTracks { .. }
-            | DaemonReq::SpotifyArtistTopTracks { .. }
-            | DaemonReq::SpotifyWebPlaylistTracks { .. }
             | DaemonReq::SpotifyMatch { .. }
             | DaemonReq::SpotifyLike { .. }
             | DaemonReq::SpotifyPlaylistAdd { .. }
@@ -3048,13 +3043,6 @@ impl Daemon {
                 play,
             } => Spotify::resolve(inner, playlist_id, *track_index, *play).await,
             DaemonReq::SpotifySearchWeb { query } => Spotify::search_web(inner, query).await,
-            DaemonReq::SpotifyAlbumTracks { uri } => Spotify::album_tracks(inner, uri).await,
-            DaemonReq::SpotifyArtistTopTracks { uri } => {
-                Spotify::artist_top_tracks(inner, uri).await
-            }
-            DaemonReq::SpotifyWebPlaylistTracks { uri } => {
-                Spotify::web_playlist_tracks(inner, uri).await
-            }
             DaemonReq::SpotifyResolveTrack {
                 name,
                 artists,

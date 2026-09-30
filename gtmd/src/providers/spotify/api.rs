@@ -5,12 +5,10 @@
 // This is free software released under the GPL-3.0 license.
 
 use rspotify::AuthCodePkceSpotify;
-use rspotify::ClientError;
 use rspotify::clients::{BaseClient, OAuthClient};
 use rspotify::model::idtypes::Id;
 use rspotify::model::{
-    AlbumId, AlbumType, ArtistId, LibraryId, PlayableId, PlayableItem, PlaylistId, SearchType,
-    SimplifiedArtist, Token, TrackId,
+    LibraryId, PlayableId, PlayableItem, PlaylistId, SearchType, SimplifiedArtist, Token, TrackId,
 };
 use tracing::warn;
 
@@ -158,154 +156,6 @@ pub async fn search(
     }
     if !errs.is_empty() {
         warn!("spotify search partial failure: {}", errs.join("; "));
-    }
-    Ok(tracks)
-}
-
-/// Name a catalog endpoint Spotify has switched off, and say so.
-///
-/// Spotify's February 2026 Web API changes removed a batch of catalog
-/// endpoints for Developer Mode integrations -- `artists`, `albums`,
-/// `tracks`, `user`, `new_releases`, `categories` and `artist_top_tracks`
-/// among them -- for new integrations from 11 Feb 2026 and for all existing
-/// ones from 9 Mar 2026. See rspotify issue #550.
-///
-/// The three drill-down routes all sit on that list, so they now fail
-/// permanently: `/albums/{id}/tracks` and `/playlists/{id}/tracks` answer 404
-/// and `/artists/{id}/albums` answers 400. A bare "status code 400 Bad
-/// Request" reads as a transient fault and invites a retry that can never
-/// work, so name the cause instead. `/v1/search` and the playlist endpoints
-/// are not on the list and still answer.
-fn catalog_gone(what: &str, err: &ClientError) -> String {
-    let text = err.to_string();
-    // Only the two statuses Spotify returns for a switched-off endpoint; a 401
-    // is a token problem and a 429 is a rate limit, and calling either of those
-    // "removed" would send the reader down the wrong path.
-    let removed = text.contains("404") || text.contains("400");
-    if removed {
-        format!(
-            "{what}: {text} (Spotify removed this catalog endpoint for developer-mode \
-             integrations in 2026; see rspotify issue #550)"
-        )
-    } else {
-        format!("{what}: {text}")
-    }
-}
-
-/// Resolve a web-search album result to its track list.
-pub async fn album_tracks(
-    client: &AuthCodePkceSpotify,
-    uri: &str,
-) -> Result<Vec<SpotifyTrack>, String> {
-    let album_id = AlbumId::from_uri(uri).map_err(|e| format!("bad album uri: {e}"))?;
-    let page = client
-        .album_track_manual(album_id, None, Some(50), Some(0))
-        .await
-        .map_err(|e| catalog_gone("album tracks", &e))?;
-    let mut tracks = Vec::new();
-    for (i, t) in page.items.into_iter().enumerate() {
-        tracks.push(SpotifyTrack {
-            index: i,
-            name: t.name.clone(),
-            artists: artists_of(&t.artists),
-            album: t.album.as_ref().map(|a| a.name.clone()),
-            duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
-            uri: t.id.as_ref().map(|id| id.uri()),
-            image_url: t.album.as_ref().and_then(|a| pick_largest_image(&a.images)),
-            kind: Some(SpotifySearchKind::Track),
-        });
-    }
-    Ok(tracks)
-}
-
-/// Resolve an artist URI to their top tracks via their most recent albums.
-/// Spotify removed the dedicated top-tracks endpoint, so we collect tracks
-/// from the artist's newest albums/singles instead.
-pub async fn artist_top(
-    client: &AuthCodePkceSpotify,
-    uri: &str,
-) -> Result<Vec<SpotifyTrack>, String> {
-    let artist_id = ArtistId::from_uri(uri).map_err(|e| format!("bad artist uri: {e}"))?;
-    let page = client
-        .artist_albums_manual(
-            artist_id,
-            [AlbumType::Album, AlbumType::Single],
-            None,
-            Some(20),
-            Some(0),
-        )
-        .await
-        .map_err(|e| catalog_gone("artist albums", &e))?;
-
-    let mut tracks: Vec<SpotifyTrack> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let target = 50u32;
-    let mut albums_fetched = 0u32;
-
-    for album in page.items {
-        if tracks.len() as u32 >= target || albums_fetched >= 4 {
-            break;
-        }
-        let Some(album_id) = album.id else {
-            continue;
-        };
-        let page = match client
-            .album_track_manual(album_id, None, Some(50), Some(0))
-            .await
-        {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        albums_fetched += 1;
-        for t in page.items {
-            let Some(track_id) = t.id.as_ref() else {
-                continue;
-            };
-            let track_uri = track_id.uri();
-            if !seen.insert(track_uri.clone()) {
-                continue;
-            }
-            tracks.push(SpotifyTrack {
-                index: tracks.len(),
-                name: t.name.clone(),
-                artists: artists_of(&t.artists),
-                album: t
-                    .album
-                    .as_ref()
-                    .map(|a| a.name.clone())
-                    .or(Some(album.name.clone())),
-                duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
-                uri: Some(track_uri),
-                image_url: t.album.as_ref().and_then(|a| pick_largest_image(&a.images)),
-                kind: Some(SpotifySearchKind::Track),
-            });
-            if tracks.len() as u32 >= target {
-                break;
-            }
-        }
-    }
-    Ok(tracks)
-}
-
-/// Resolve a web-search playlist result (a `spotify:playlist:` URI) to its
-/// track list so the TUI can queue and play it.
-pub async fn web_playlist(
-    client: &AuthCodePkceSpotify,
-    uri: &str,
-) -> Result<Vec<SpotifyTrack>, String> {
-    let playlist_id = PlaylistId::from_uri(uri).map_err(|e| format!("bad playlist uri: {e}"))?;
-    let page = client
-        .playlist_items_manual(playlist_id, None, None, Some(50), Some(0))
-        .await
-        .map_err(|e| catalog_gone("playlist tracks", &e))?;
-    let mut tracks = Vec::new();
-    for item in page.items {
-        if let Some(playable) = item.item.as_ref()
-            && let Some(mut track) = track_from_playable(playable)
-        {
-            track.index = tracks.len();
-            tracks.push(track);
-        }
     }
     Ok(tracks)
 }

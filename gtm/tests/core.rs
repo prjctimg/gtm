@@ -2274,6 +2274,70 @@ fn palette_hints_all_have_a_dispatch_arm() {
     }
 }
 
+/// Spotify removed the endpoints the album/artist/playlist drill-downs used.
+///
+/// Spotify's February 2026 Web API changes removed `/albums`, `/artists` and
+/// `/playlists/{id}/tracks` for developer-mode integrations. The three
+/// drill-downs, their IPC variants and their client methods are gone; this
+/// holds them gone and stops a future edit from wiring one back up, because the
+/// failure mode is silent -- a dead drill-down closes the picker and does
+/// nothing, which looks like a keybinding problem rather than a missing API.
+#[test]
+fn no_spotify_drill_down_over_removed_endpoints() {
+    let files = [
+        (
+            "gtm/src/shared/ipc.rs",
+            include_str!("../src/shared/ipc.rs"),
+        ),
+        (
+            "gtm/src/shared/client.rs",
+            include_str!("../src/shared/client.rs"),
+        ),
+        ("gtm/src/app/keys.rs", include_str!("../src/app/keys.rs")),
+        (
+            "gtmd/src/daemon/mod.rs",
+            include_str!("../../gtmd/src/daemon/mod.rs"),
+        ),
+        (
+            "gtmd/src/providers/spotify/cmd.rs",
+            include_str!("../../gtmd/src/providers/spotify/cmd.rs"),
+        ),
+        (
+            "gtmd/src/providers/spotify/api.rs",
+            include_str!("../../gtmd/src/providers/spotify/api.rs"),
+        ),
+    ];
+
+    for (name, src) in files {
+        for gone in [
+            "SpotifyAlbumTracks",
+            "SpotifyArtistTopTracks",
+            "SpotifyWebPlaylistTracks",
+        ] {
+            assert!(
+                !src.contains(gone),
+                "{name} still references {gone}, whose endpoint Spotify removed in 2026"
+            );
+        }
+        // The api-level helpers, which are what actually issued the requests.
+        for gone in [
+            "pub async fn album_tracks",
+            "pub async fn artist_top",
+            "pub async fn web_playlist(",
+        ] {
+            assert!(!src.contains(gone), "{name} still defines {gone}");
+        }
+    }
+
+    // The removal is announced in the UI, so a search hit that cannot be
+    // opened says why rather than closing the picker on nothing.
+    let keys = include_str!("../src/app/keys.rs");
+    assert!(
+        keys.contains("Spotify no longer exposes"),
+        "no message for a search row that can no longer be opened"
+    );
+}
+
 /// The library picker must resolve its rows through one filter everywhere.
 ///
 /// The cursor bound, the renderer and the Enter handler each used to derive
