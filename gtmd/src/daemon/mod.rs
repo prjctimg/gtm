@@ -1867,6 +1867,7 @@ fn is_yt_slow(req: &DaemonReq) -> bool {
 
 impl Daemon {
     pub async fn new(config: DaemonConfig) -> Result<Self, CoreError> {
+        let web_addr = config.web_addr;
         let mut initial_state = DaemonState::new();
 
         if !config.test_mode
@@ -2026,6 +2027,10 @@ impl Daemon {
         {
             let mut charts = inner.charts.lock().await;
             charts.add_free_defaults();
+        }
+
+        if let Some(addr) = web_addr {
+            crate::web::serve(Arc::clone(&inner), addr).await;
         }
 
         Ok(Self {

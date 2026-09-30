@@ -4,6 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -11,6 +12,50 @@ use clap::Parser;
 use crate::cover::CoverProvider;
 use gtm::shared::{is_termux, resolve_command_socket, resolve_pulse_socket, termux_music_dirs};
 use serde::{Deserialize, Serialize};
+
+/// Default loopback port for the status endpoint.
+pub const WEB_PORT: u16 = 8991;
+
+/// Resolve `web_addr` from config.toml.
+///
+/// Absent means on, on loopback. An empty string means off. The endpoint
+/// reports what is playing, which is the user's listening history, so the
+/// default is the narrowest thing that is still useful; widening it is one
+/// line of config and has to be asked for deliberately.
+fn web_addr(toml: Option<&toml::Value>) -> Option<SocketAddr> {
+    let raw = toml.and_then(|v| v.get("web_addr")).map(|v| {
+        if let Some(s) = v.as_str() {
+            s.to_string()
+        } else if let Some(i) = v.as_integer() {
+            i.to_string()
+        } else {
+            String::new()
+        }
+    });
+    let addr = match raw {
+        Some(s) if s.trim().is_empty() => return None,
+        Some(s) => s,
+        None => format!("127.0.0.1:{WEB_PORT}"),
+    };
+    // A bare port is a convenience: `web_addr = 8992` means loopback on 8992,
+    // never 0.0.0.0, so the shorthand cannot accidentally expose the daemon.
+    let addr = if addr.chars().all(|c| c.is_ascii_digit()) {
+        format!("127.0.0.1:{addr}")
+    } else {
+        addr
+    };
+    match addr.parse() {
+        Ok(a) => Some(a),
+        Err(e) => {
+            eprintln!("gtmd: ignoring web_addr {addr:?}: {e}");
+            Some(
+                format!("127.0.0.1:{WEB_PORT}")
+                    .parse()
+                    .expect("loopback addr"),
+            )
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AudioBackendKind {
@@ -41,6 +86,12 @@ pub struct DaemonConfig {
     pub cover_provider: CoverProvider,
     /// Combined on-disk cover cache budget in bytes, from `cover_cache_mb`.
     pub cover_cache_bytes: u64,
+    /// Address for the read-only JSON status endpoint, from `web_addr`.
+    ///
+    /// Defaults to loopback so the endpoint is reachable by the user's own
+    /// scripts and nothing else. Set it to `0.0.0.0:PORT` to expose the
+    /// current track to the LAN, or to an empty string to disable it.
+    pub web_addr: Option<SocketAddr>,
 }
 
 #[derive(Parser, Debug)]
@@ -182,6 +233,7 @@ impl DaemonConfig {
             .filter(|mb| *mb > 0)
             .map(|mb| (mb as u64) * 1024 * 1024)
             .unwrap_or(crate::cover::DISK_CACHE_DEFAULT);
+        let web_addr = web_addr(toml.as_ref());
 
         DaemonConfig {
             socket_path,
@@ -197,6 +249,7 @@ impl DaemonConfig {
             allow_delete_files: true,
             cover_provider,
             cover_cache_bytes,
+            web_addr,
         }
     }
 
@@ -216,5 +269,59 @@ impl DaemonConfig {
             std::fs::create_dir_all(parent)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn val(s: &str) -> toml::Value {
+        toml::from_str(s).unwrap()
+    }
+
+    /// Loopback by default, because the endpoint reports listening history.
+    #[test]
+    fn web_defaults_to_loopback() {
+        assert_eq!(web_addr(None), Some("127.0.0.1:8991".parse().unwrap()));
+        assert_eq!(
+            web_addr(Some(&val("[web]\n"))),
+            Some("127.0.0.1:8991".parse().unwrap())
+        );
+    }
+
+    /// An empty value is how you turn it off.
+    #[test]
+    fn web_off_when_empty() {
+        assert_eq!(web_addr(Some(&val("web_addr = \"\""))), None);
+    }
+
+    /// A bare port is a convenience and must never widen the bind: a user who
+    /// types a number wants a different port, not a LAN-exposed daemon.
+    #[test]
+    fn bare_port_stays_on_loopback() {
+        assert_eq!(
+            web_addr(Some(&val("web_addr = 9000"))),
+            Some("127.0.0.1:9000".parse().unwrap())
+        );
+    }
+
+    /// Widening is allowed, but only when asked for explicitly.
+    #[test]
+    fn web_addr_honours_an_explicit_bind() {
+        assert_eq!(
+            web_addr(Some(&val("web_addr = \"0.0.0.0:8991\""))),
+            Some("0.0.0.0:8991".parse().unwrap())
+        );
+    }
+
+    /// A typo must not take the endpoint down silently, and must not turn
+    /// into a wildcard bind either.
+    #[test]
+    fn bad_web_addr_falls_back_to_loopback() {
+        assert_eq!(
+            web_addr(Some(&val("web_addr = \"not-an-addr\""))),
+            Some("127.0.0.1:8991".parse().unwrap())
+        );
     }
 }

@@ -18,6 +18,7 @@ pub mod providers;
 pub mod queue;
 pub mod remote;
 pub mod tags;
+pub mod web;
 
 // Re-exported at the crate root so `crate::spotify::…` and friends keep
 // resolving; the implementation now lives under one directory per provider.
