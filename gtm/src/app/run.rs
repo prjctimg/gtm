@@ -970,6 +970,9 @@ impl App {
                             self.charts.selected_chart = None;
                         }
                         self.charts.charts = charts;
+                        // The card describes the highlighted chart, so it can
+                        // only be built once the list is here.
+                        self.update_track_popup();
                     }
                     IpcResult::ChartTracksLoaded(tracks) => {
                         self.charts.chart_tracks = tracks;
@@ -989,6 +992,8 @@ impl App {
                             self.charts.chart_tracks.clear();
                         }
                         self.charts.sources = sources;
+                        // Likewise for the source row itself.
+                        self.update_track_popup();
                     }
                     IpcResult::LastfmStatus(st) => {
                         let was_ready = self.setup.lastfm_status.as_ref().is_some_and(|s| s.ready);

@@ -301,6 +301,11 @@ impl App {
             self.maybe_auto_sync_spotify();
         }
         self.set_list_pos(0);
+        // Build the card for the category just entered. Charts and Radio had no
+        // card at all, and the others waited for the first cursor move to show
+        // one, so arriving at a list showed an empty pane until you touched the
+        // keys. Radio is read from disk synchronously, so it is ready here.
+        self.update_track_popup();
     }
 
     pub fn filtered_tracks(&self) -> Vec<&TrackInfo> {

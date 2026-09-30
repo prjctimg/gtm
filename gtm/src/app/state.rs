@@ -18,6 +18,15 @@ pub enum TrackInfoKind {
     /// unrelated local track's title and cover beside the chart, and at chart
     /// level 0/1 indexing the *sources* list into it.
     ChartTrack,
+    /// Row in the Charts category's source list (level 0). A provider, not a
+    /// track, and it carries no artwork, so the card describes the source.
+    ChartSource,
+    /// Row in a chart list (level 1): the chart itself, which has its own
+    /// playlist artwork distinct from the artwork of the tracks inside it.
+    Chart,
+    /// Row in the left-pane Radio category. Stations are virtual `radio://`
+    /// rows, never library tracks, so `Track` had nothing to describe.
+    RadioStation,
 }
 
 pub enum InputMode {

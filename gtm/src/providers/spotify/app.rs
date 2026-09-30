@@ -166,45 +166,6 @@ impl App {
         });
     }
 
-    /// Fetch the highlighted chart row's artwork, through the same popup-cover
-    /// slot Spotify drill-down rows use.
-    ///
-    /// The slot is keyed on the URL, which is what makes the latch work: two
-    /// rows on the same album share an image URL, so scrolling between them
-    /// costs nothing, and a different row misses and refetches.
-    pub(crate) fn fetch_chart_cover(&mut self) {
-        let Some(url) = self
-            .charts
-            .chart_tracks
-            .get(self.list_pos())
-            .and_then(|t| t.cover_url.clone())
-        else {
-            self.clear_popup_cover();
-            return;
-        };
-        if self.spotify_popup_slot.id.as_deref() == Some(&url)
-            && self.spotify_popup_slot.version.is_some()
-        {
-            return;
-        }
-        if no_image_protocol() {
-            return;
-        }
-        let fetch_gen = self.next_cover_gen();
-        self.spotify_popup_slot.claim(url.clone(), fetch_gen);
-        self.track_popup_cover = None;
-        self.popup_cover_stateful = None;
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            // A miss answers with `None` rather than staying silent: an
-            // unanswered fetch leaves the slot claimed and every later cover
-            // for this track dropped.
-            let bytes = client.image_cover(&url).await.ok().flatten();
-            let _ = ipc_tx.send(IpcResult::SpotifyPopupCover(bytes, url, fetch_gen));
-        });
-    }
-
     /// Run one Connect control and feed the refreshed status back into the
     /// view, so a shuffle or repeat change shows in the footer immediately.
     pub(crate) fn spot_remote(&mut self, control: Remote) {

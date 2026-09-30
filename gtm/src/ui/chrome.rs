@@ -2171,6 +2171,12 @@ impl Render {
         // swap the two views instead of just moving the highlight.
         let lyrics_results_pane = app.lyrics.show && lyrics_area.is_none() && app.lyrics.pane_focus;
 
+        // With one pane there is nowhere to dock the track card without taking
+        // rows from the list it describes, so on narrow screens it floats over
+        // the list instead. Drawn after the rows, below.
+        let float_card =
+            is_narrow && !lyrics_results_pane && app.show_preview && app.track_popup_visible;
+
         if (want_playlist_card || want_spot_track_card)
             && left_info_area.height > 0
             && (info_sep_area.height > 0 || left_info_area.height > 0)
@@ -2189,7 +2195,7 @@ impl Render {
             // library again and the list preview is the sensible thing to keep.
             if is_narrow && lyrics_results_pane {
                 Render::list_in_info(f, left_info_area, app);
-            } else {
+            } else if !is_narrow {
                 Render::info_in_pane(f, info_sep_area, left_info_area, app);
             }
         }
@@ -2263,6 +2269,49 @@ impl Render {
             };
             Render::lyrics_pane(f, lyrics, app);
         }
+
+        // Last, so it lands on top of the rows rather than under them.
+        if float_card {
+            Render::floating_card(f, chunks[1], app);
+        }
+    }
+
+    /// The track-info card floating over the list on narrow screens.
+    ///
+    /// It was docked in the left pane's info block until there was only one
+    /// pane left to dock it in, where it cost a sixth of the rows it was
+    /// describing. Floating it keeps the list full height. Bordered and
+    /// cleared, so it reads as sitting on top of the rows rather than as part
+    /// of them, and sized off the block it replaces so the cover is the same
+    /// one the docked card used.
+    pub(crate) fn floating_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        // Wide enough for `info_in_pane` to accept the cover, which it only
+        // draws above `COVER_W + 1` columns of inner width.
+        let w = (COVER_W + 4).min(area.width.saturating_sub(4));
+        let h = info_block_h().min(area.height.saturating_sub(2));
+        if w < 20 || h < 6 {
+            return;
+        }
+        let rect = Rect {
+            x: area.x + area.width.saturating_sub(w + 1),
+            y: area.y + area.height.saturating_sub(h + 1),
+            width: w,
+            height: h,
+        };
+        f.render_widget(Clear, rect);
+        let block = Block::default()
+            .title(Line::from(Span::styled(
+                " Track Info ",
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )))
+            .borders(Borders::ALL)
+            .style(Style::default().fg(app.theme.fg).bg(app.float_bg()));
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+        // No separator band: the block's own top border is the heading here.
+        Render::info_in_pane(f, Rect::new(0, 0, 0, 0), inner, app);
     }
 
     pub(crate) fn footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {

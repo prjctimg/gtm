@@ -3141,3 +3141,136 @@ fn now_playing_cover_fills_a_narrow_pane() {
         "the narrow now-playing cover is padded again"
     );
 }
+
+/// Narrow screens float the track-info card over the list instead of docking
+/// it, and it has to be painted after the rows.
+///
+/// The card was a left-pane info block, which on a one-pane layout cost a
+/// sixth of the rows it was describing. Floating it is what it used to do
+/// before it was folded into the pane, and the point of the assertion on
+/// ordering is that a float drawn before the list is a float under the list.
+#[test]
+fn narrow_floats_the_track_card_over_the_list() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let squish = |s: &str| s.split_whitespace().collect::<String>();
+
+    assert!(
+        squish(chrome).contains(&squish(
+            "let float_card = is_narrow && !lyrics_results_pane && app.show_preview && app.track_popup_visible;"
+        )),
+        "the floating card is not gated to narrow screens with the list on screen"
+    );
+    // Docked on wide screens only.
+    assert!(
+        squish(chrome).contains(&squish(
+            "} else if !is_narrow { Render::info_in_pane(f, info_sep_area, left_info_area, app);"
+        )),
+        "the card is docked again on narrow screens"
+    );
+
+    let lib = chrome
+        .split("pub(crate) fn library(")
+        .nth(1)
+        .expect("library() is gone");
+    let lib = &lib[..lib
+        .find("pub(crate) fn footer(")
+        .expect("library() is unterminated")];
+    let float = lib
+        .find("Render::floating_card(f, chunks[1], app);")
+        .expect("the card never floats");
+    let rows = lib
+        .find("Render::evolving(f, right_inner, right_para, \"lib\"")
+        .expect("the list is gone");
+    assert!(
+        rows < float,
+        "the card is painted before the list rows, so the list draws over it"
+    );
+
+    // And it is a real float: cleared, bordered, and reusing the docked
+    // renderer so the two cannot drift apart.
+    assert!(chrome.contains(
+        "pub(crate) fn floating_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {"
+    ));
+    assert!(chrome.contains("f.render_widget(Clear, rect);"));
+    assert!(chrome.contains(".borders(Borders::ALL)"));
+    assert!(chrome.contains("Render::info_in_pane(f, Rect::new(0, 0, 0, 0), inner, app);"));
+}
+
+/// Every chart level and the Radio list must produce an info card, and a chart's
+/// rows must have their artwork fetched and warmed rather than only the one the
+/// cursor is on.
+///
+/// Charts returned `ChartTrack` at all three levels while the fields for that
+/// kind read `chart_tracks`, which is empty until a chart is opened: the source
+/// list and the chart list had no card. Radio fell through to `Track`, whose
+/// rows are virtual `radio://` stations that `filtered_tracks` clears, so it had
+/// no card either.
+#[test]
+fn charts_and_radio_rows_all_describe_themselves() {
+    let cover = include_str!("../src/app/cover.rs");
+    let text = include_str!("../src/ui/text.rs");
+    let state = include_str!("../src/app/state.rs");
+    let run = include_str!("../src/app/run.rs");
+    let search = include_str!("../src/app/search.rs");
+    let squish = |s: &str| s.split_whitespace().collect::<String>();
+
+    for kind in ["ChartSource", "Chart", "RadioStation"] {
+        assert!(
+            state.contains(&format!("    {kind},")),
+            "TrackInfoKind::{kind} is gone"
+        );
+    }
+
+    // The level decides the kind, and every level is covered.
+    assert!(squish(cover).contains(&squish(
+        "12 => match (self.charts.selected_source, self.charts.selected_chart) { (None, _) => TrackInfoKind::ChartSource, (Some(_), None) => TrackInfoKind::Chart, (Some(_), Some(_)) => TrackInfoKind::ChartTrack, },"
+    )));
+    assert!(squish(cover).contains(&squish("6 => TrackInfoKind::RadioStation,")));
+
+    // Each kind has fields, or the card is `None` and nothing renders.
+    for kind in ["ChartSource", "Chart", "RadioStation"] {
+        assert!(
+            text.contains(&format!("TrackInfoKind::{kind} => {{")),
+            "no fields for {kind}: the card would be None and render nothing"
+        );
+    }
+
+    // Validity is per kind, so an empty list at any level hides the card
+    // instead of indexing a list that is not there.
+    for probe in [
+        "TrackInfoKind::ChartSource => self.list_pos() < self.charts.sources.len(),",
+        "TrackInfoKind::Chart => self.list_pos() < self.charts.charts.len(),",
+        "TrackInfoKind::ChartTrack => self.list_pos() < self.charts.chart_tracks.len(),",
+        "TrackInfoKind::RadioStation => self.list_pos() < self.radio.custom.len(),",
+    ] {
+        assert!(squish(cover).contains(&squish(probe)), "missing: {probe}");
+    }
+
+    // A chart's own artwork, and a chart row's, go through the URL fetch; a
+    // station resolves to none and its card is text.
+    assert!(
+        cover.contains("TrackInfoKind::Chart => self.charts.charts.get(pos)?.cover_url.clone(),")
+    );
+    assert!(cover.contains(
+        "TrackInfoKind::ChartTrack => self.charts.chart_tracks.get(pos)?.cover_url.clone(),"
+    ));
+    assert!(cover.contains("pub(crate) fn fetch_url_cover(&mut self, url: Option<String>) {"));
+
+    // The rows of a loaded chart are warmed around the cursor, not just the one
+    // under it: the card shows a single row's art, so without this every step
+    // of a scroll is a blank card.
+    assert!(cover.contains("pub fn preload_chart_covers(&self) {"));
+    assert!(
+        cover
+            .contains("if self.library_category == 12 {\n            self.preload_chart_covers();")
+    );
+
+    // Arriving at a list builds the card. Charts load asynchronously, so the
+    // two list replies have to ask for it too.
+    assert!(search.contains("self.update_track_popup();"));
+    let lists = run.matches("self.update_track_popup();").count();
+    assert!(
+        lists >= 3,
+        "only {lists} chart replies rebuild the card; the source and chart lists load async"
+    );
+}

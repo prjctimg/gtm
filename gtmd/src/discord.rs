@@ -351,10 +351,24 @@ mod tests {
     #[test]
     fn the_sweep_includes_both_roots() {
         let s = sockets();
-        assert!(
-            s.iter().any(|p| p.starts_with("/tmp/discord-ipc-")),
-            "{s:?}"
-        );
+        // `Path::starts_with` compares whole path components, so
+        // `/tmp/discord-ipc-0` does not start with `/tmp/discord-ipc-` -- it is
+        // a different component. Compare the rendered path instead.
+        let any = |root: &str| {
+            s.iter().any(|p| {
+                p.to_string_lossy()
+                    .starts_with(&format!("{root}/discord-ipc-"))
+            })
+        };
+        assert!(any("/tmp"), "{s:?}");
+        // And the XDG root is only swept when the variable is set.
+        if std::env::var_os("XDG_RUNTIME_DIR").is_some() {
+            let dir = std::env::var_os("XDG_RUNTIME_DIR").unwrap();
+            assert!(
+                s.iter().any(|p| p.starts_with(&dir)),
+                "XDG_RUNTIME_DIR={dir:?} not swept: {s:?}"
+            );
+        }
         assert!(s.len() as u8 >= MAX_SOCKETS);
     }
 

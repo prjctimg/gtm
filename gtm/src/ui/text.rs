@@ -257,6 +257,77 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                 has_cover: false,
             })
         }
+        TrackInfoKind::ChartSource => {
+            let src = app.charts.sources.get(app.list_pos())?;
+            Some(TrackInfoFields {
+                title: src.display.clone(),
+                artist: "Charts".to_string(),
+                album: None,
+                // A source is a provider, not a chart: what the card can say is
+                // whether it is usable, and which one it is.
+                meta: format!(
+                    "{} | {}",
+                    if src.configured {
+                        "configured"
+                    } else {
+                        "not linked"
+                    },
+                    src.id
+                ),
+                // Sources publish no artwork.
+                has_cover: false,
+            })
+        }
+        TrackInfoKind::Chart => {
+            let ch = app.charts.charts.get(app.list_pos())?;
+            let count = ch
+                .track_count
+                .map(|n| format!("{n} tracks"))
+                .unwrap_or_default();
+            Some(TrackInfoFields {
+                title: ch.title.clone(),
+                artist: ch
+                    .owner
+                    .clone()
+                    .filter(|o| !o.is_empty())
+                    .unwrap_or_else(|| "Chart".to_string()),
+                album: ch.description.clone().filter(|d| !d.is_empty()),
+                meta: format!(
+                    "{} | {}",
+                    count,
+                    source_label(use_nerd, chart_source_label(app)).trim_start()
+                ),
+                has_cover: app.track_popup_cover.is_some(),
+            })
+        }
+        TrackInfoKind::RadioStation => {
+            let st = app.radio.custom.get(app.list_pos())?;
+            // The host, not the whole stream URL: the path and query on a
+            // station URL are long and identify nothing the reader can use.
+            let host = st
+                .url
+                .split("://")
+                .nth(1)
+                .and_then(|r| r.split('/').next())
+                .unwrap_or(st.url.as_str())
+                .to_string();
+            let mut meta = host;
+            if st.uuid.is_some() {
+                meta.push_str(" | directory");
+            }
+            if st.tracklist.is_some() {
+                meta.push_str(" | tracklist");
+            }
+            Some(TrackInfoFields {
+                title: st.name.clone(),
+                artist: "Radio".to_string(),
+                album: None,
+                meta,
+                // See `App::popup_cover_url`: a custom station has no icon
+                // without a directory lookup.
+                has_cover: false,
+            })
+        }
         TrackInfoKind::ChartTrack => {
             let ct = app.charts.chart_tracks.get(app.list_pos())?;
             let dur = ct

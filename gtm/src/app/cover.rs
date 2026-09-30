@@ -72,11 +72,21 @@ impl App {
             3 => TrackInfoKind::Artist,
             4 => TrackInfoKind::Playlist,
             5 => TrackInfoKind::SpotifyPlaylist,
+            6 => TrackInfoKind::RadioStation,
             // Charts have their own row type. Falling through to `Track` is
             // what made the left card describe a random local library track:
             // `filtered_tracks` has no chart case, so it returned the whole
             // library and the card rendered `tracks_cache[list_pos()]`.
-            12 => TrackInfoKind::ChartTrack,
+            //
+            // Which chart row depends on how deep the drill-down is. It used to
+            // be `ChartTrack` at every level, and the fields for that kind read
+            // `chart_tracks`, which is empty until a chart is opened: so the
+            // source list and the chart list had no card at all.
+            12 => match (self.charts.selected_source, self.charts.selected_chart) {
+                (None, _) => TrackInfoKind::ChartSource,
+                (Some(_), None) => TrackInfoKind::Chart,
+                (Some(_), Some(_)) => TrackInfoKind::ChartTrack,
+            },
             _ => TrackInfoKind::Track,
         }
     }
@@ -133,19 +143,20 @@ impl App {
             TrackInfoKind::Playlist
             | TrackInfoKind::SpotifyPlaylist
             | TrackInfoKind::SpotifyTrack
-            | TrackInfoKind::ChartTrack => None,
+            | TrackInfoKind::ChartTrack
+            | TrackInfoKind::ChartSource
+            | TrackInfoKind::Chart
+            | TrackInfoKind::RadioStation => None,
         };
 
         let valid = match kind {
             TrackInfoKind::Playlist => self.list_pos() < self.playlist_cache.len(),
             TrackInfoKind::SpotifyPlaylist => self.list_pos() < self.spotify.playlists.len(),
             TrackInfoKind::SpotifyTrack => self.selected_spotify_track().is_some(),
-            // No chart open yet: levels 0 and 1 list sources and charts, which
-            // are not tracks and have nothing to describe.
-            TrackInfoKind::ChartTrack => {
-                self.charts.selected_chart.is_some()
-                    && self.list_pos() < self.charts.chart_tracks.len()
-            }
+            TrackInfoKind::ChartSource => self.list_pos() < self.charts.sources.len(),
+            TrackInfoKind::Chart => self.list_pos() < self.charts.charts.len(),
+            TrackInfoKind::ChartTrack => self.list_pos() < self.charts.chart_tracks.len(),
+            TrackInfoKind::RadioStation => self.list_pos() < self.radio.custom.len(),
             _ => maybe_track.is_some(),
         };
 
@@ -164,13 +175,17 @@ impl App {
             return;
         }
 
-        if kind == TrackInfoKind::ChartTrack {
-            // A chart row's artwork is a plain CDN URL from whichever provider
-            // published the chart, so it goes through the provider-neutral
-            // image request rather than Spotify's — an Apple chart row has to
-            // work with no provider linked at all.
+        // A chart's own artwork and a chart row's are the same kind of thing: a
+        // plain CDN URL from whichever provider published the chart, so it goes
+        // through the provider-neutral image request rather than Spotify's — an
+        // Apple chart row has to work with no provider linked at all. A station
+        // resolves to no URL and clears the cover; see `popup_cover_url`.
+        if matches!(
+            kind,
+            TrackInfoKind::Chart | TrackInfoKind::ChartTrack | TrackInfoKind::RadioStation
+        ) {
             self.popup_track_id = None;
-            self.fetch_chart_cover();
+            self.fetch_url_cover(self.popup_cover_url());
             return;
         }
 
@@ -228,6 +243,88 @@ impl App {
     pub fn dismiss_track_popup(&mut self) {
         self.track_popup_visible = false;
         self.clear_popup_cover();
+    }
+
+    /// Artwork for the highlighted row, for the kinds that name their image by
+    /// URL rather than by library id.
+    ///
+    /// A station resolves to nothing: the left-pane Radio rows are
+    /// `CustomRadioStation`, which carries a `uuid` but no icon, and turning
+    /// that into a favicon means a directory lookup per row. The card describes
+    /// the station in text instead.
+    fn popup_cover_url(&self) -> Option<String> {
+        let pos = self.list_pos();
+        match self.track_info_kind() {
+            TrackInfoKind::Chart => self.charts.charts.get(pos)?.cover_url.clone(),
+            TrackInfoKind::ChartTrack => self.charts.chart_tracks.get(pos)?.cover_url.clone(),
+            _ => None,
+        }
+    }
+
+    /// Fetch a popup cover named by URL, through the same slot Spotify
+    /// drill-down rows use.
+    ///
+    /// The slot is keyed on the URL, which is what makes the latch work: two
+    /// rows on the same album share an image URL, so scrolling between them
+    /// costs nothing, and a different row misses and refetches.
+    pub(crate) fn fetch_url_cover(&mut self, url: Option<String>) {
+        let Some(url) = url else {
+            self.clear_popup_cover();
+            return;
+        };
+        if self.spotify_popup_slot.id.as_deref() == Some(&url)
+            && self.spotify_popup_slot.version.is_some()
+        {
+            return;
+        }
+        if no_image_protocol() {
+            return;
+        }
+        let fetch_gen = self.next_cover_gen();
+        self.spotify_popup_slot.claim(url.clone(), fetch_gen);
+        self.track_popup_cover = None;
+        self.popup_cover_stateful = None;
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            // A miss answers with `None` rather than staying silent: an
+            // unanswered fetch leaves the slot claimed and every later cover
+            // for this row dropped.
+            let bytes = client.image_cover(&url).await.ok().flatten();
+            let _ = ipc_tx.send(IpcResult::SpotifyPopupCover(bytes, url, fetch_gen));
+        });
+    }
+
+    /// Warm the artwork for the rows of a loaded chart that are on screen or
+    /// just off it.
+    ///
+    /// The card shows one row's cover at a time, so without this every step of
+    /// the scroll is a blank card until its request comes back — the list moves
+    /// faster than the network. The daemon's image cache absorbs the repeats, so
+    /// the fetch the card then makes is a hit. Mirrors the local-library warm in
+    /// for the local library, which has ids rather than URLs.
+    pub fn preload_chart_covers(&self) {
+        if no_image_protocol() || self.charts.chart_tracks.is_empty() {
+            return;
+        }
+        let sel = self.list_pos();
+        let from = sel.saturating_sub(1);
+        let to = (sel + 3).min(self.charts.chart_tracks.len());
+        let urls: Vec<String> = self.charts.chart_tracks[from..to]
+            .iter()
+            .filter_map(|t| t.cover_url.clone())
+            .collect();
+        if urls.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            for url in urls {
+                // A miss is a cache miss like any other; warming is best-effort
+                // and never reports.
+                let _ = client.image_cover(&url).await;
+            }
+        });
     }
 
     /// Fetch cover art for the highlighted SearchLibrary picker row so the
@@ -349,8 +446,13 @@ impl App {
     /// disk/LRU cache and the on-selection fetch becomes a cache hit. Fires in
     /// the background and never blocks the UI or surfaces errors. Also warms
     /// Spotify drill-down album covers via their image URLs.
-    pub fn preload_upcoming_covers(&mut self) {
+    pub fn preload_row_covers(&mut self) {
         self.preload_upcoming_spotify_covers();
+        // A chart's rows are provider URLs with no library id, so `track_id_at`
+        // finds nothing for them and the loop below would warm nothing.
+        if self.library_category == 12 {
+            self.preload_chart_covers();
+        }
         let pos = self.list_pos();
         let mut ids = Vec::new();
         for off in 1..=3 {

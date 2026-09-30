@@ -901,7 +901,7 @@ impl App {
                             // downward pass already warmed, so without this the
                             // covers above the cursor are the only ones left
                             // cold.
-                            self.preload_upcoming_covers();
+                            self.preload_row_covers();
                         }
                     }
                     Some(KeyboardAction::MoveDown) => {
@@ -928,7 +928,7 @@ impl App {
                             let max_list = self.library_list_len().saturating_sub(1);
                             self.set_list_pos((self.list_pos() + 1).min(max_list));
                             self.update_track_popup();
-                            self.preload_upcoming_covers();
+                            self.preload_row_covers();
                             self.prefetch_playlist_lyrics();
                             self.fetch_row_cover();
                             self.fetch_list_cover();
@@ -961,7 +961,7 @@ impl App {
                             let max_list = self.library_list_len().saturating_sub(1);
                             self.set_list_pos((self.list_pos() + page).min(max_list));
                             self.update_track_popup();
-                            self.preload_upcoming_covers();
+                            self.preload_row_covers();
                         }
                     }
                     Some(KeyboardAction::MultiselectUp) => {
@@ -978,7 +978,7 @@ impl App {
                             let pos = (self.list_pos() + 1).min(max_list);
                             self.set_list_pos(pos);
                             self.update_track_popup();
-                            self.preload_upcoming_covers();
+                            self.preload_row_covers();
                             self.add_row_selection(pos);
                         }
                     }
@@ -1207,6 +1207,11 @@ impl App {
                                         self.charts.charts.clear();
                                         self.charts.chart_tracks.clear();
                                         self.set_list_pos(0);
+                                        // The list is empty until the request
+                                        // lands, so the card must go now rather
+                                        // than describe a source that is no
+                                        // longer the highlighted thing.
+                                        self.update_track_popup();
                                         let source_id = self.charts.sources[pos].id.clone();
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
@@ -1236,6 +1241,7 @@ impl App {
                                         self.charts.selected_chart = Some(pos);
                                         self.charts.chart_tracks.clear();
                                         self.set_list_pos(0);
+                                        self.update_track_popup();
                                         let source_id = self
                                             .charts
                                             .sources
@@ -1860,6 +1866,10 @@ impl App {
                                         self.charts.selected_chart = None;
                                         self.charts.chart_tracks.clear();
                                         self.set_list_pos(0);
+                                        // The card now describes a chart, not a
+                                        // track, and the two read different
+                                        // lists.
+                                        self.update_track_popup();
                                     } else if self.charts.selected_source.is_some() {
                                         // Level 1 -> Level 0: refetch so a
                                         // freshly linked Spotify shows up.
@@ -1868,6 +1878,7 @@ impl App {
                                         self.charts.chart_tracks.clear();
                                         self.set_list_pos(0);
                                         self.fetch_chart_sources();
+                                        self.update_track_popup();
                                     }
                                 }
                             }
@@ -3486,7 +3497,7 @@ impl App {
                                         let pos = (self.list_pos() + 1).min(max);
                                         self.set_list_pos(pos);
                                         self.update_track_popup();
-                                        self.preload_upcoming_covers();
+                                        self.preload_row_covers();
                                         self.add_row_selection(pos);
                                     }
                                 } else if action == "eq" {

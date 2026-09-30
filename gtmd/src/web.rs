@@ -247,10 +247,24 @@ mod tests {
         );
     }
 
+    /// Every status `reply` can return has its own reason phrase, so a client
+    /// reading the status line is not told "Internal Server Error" for a 404.
+    ///
+    /// It previously asserted no code maps to that phrase, which is false: 500
+    /// is exactly what it is for, so the test failed on its own subject.
     #[test]
     fn reasons_cover_every_status_emitted() {
-        for code in [200, 404, 405, 500] {
-            assert_ne!(reason(code), "Internal Server Error", "code {code}");
+        for (code, phrase) in [
+            (200, "OK"),
+            (404, "Not Found"),
+            (405, "Method Not Allowed"),
+            (500, "Internal Server Error"),
+        ] {
+            assert_eq!(reason(code), phrase, "code {code}");
+        }
+        // Anything unlisted still answers with a valid phrase, not a blank.
+        for code in [400, 403, 418, 503] {
+            assert!(!reason(code).is_empty(), "code {code}");
         }
     }
 }
