@@ -354,12 +354,12 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 
 ## Daemon
 
-**status** [**\--stream**] [**\--cover**] [**\--lyrics**]
+**status** [**\--stream**] [**\--lyrics**]
 :   Show daemon status. With **\--stream**, stream elapsed time continuously.
-    **\--cover** renders the current track's cover art as a half-block grid, and
     **\--lyrics** prints the time-synced lyric line for the current position;
-    both work with and without **\--stream**, and with **\--stream** each is
-    fetched once per track rather than once per tick.
+    it works with and without **\--stream**, and with **\--stream** it is
+    fetched once per track rather than once per tick. The current track's
+    cover path is always listed under **Cover:**.
 
 **ping**
 :   Ping the daemon.

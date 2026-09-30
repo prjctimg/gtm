@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::shared::client::{DaemonClient, LastfmStatus};
 use crate::shared::daemon::ensure_daemon_running;
-use crate::shared::global::{DaemonState, PlaybackStatus, RepeatMode};
+use crate::shared::global::{PlaybackStatus, RepeatMode};
 use crate::shared::ipc::DaemonRes;
 use crate::shared::ipc::HealthStatus;
 use crate::shared::ipc::MetadataPatch;
@@ -20,7 +20,6 @@ use crate::shared::secret::{
 };
 use crate::shared::spotify::SpotifyStatus;
 use crate::shared::track::LrcData;
-use base64::Engine as _;
 use clap::{Parser, Subcommand};
 
 use crate::app::{Prefs, ensure_prefs_file};
@@ -214,11 +213,6 @@ pub enum CliCommand {
         /// Redraw the status line continuously
         #[arg(long)]
         stream: bool,
-        /// Render the current track's cover art
-        ///
-        /// With `--stream`, fetched once per track rather than per tick.
-        #[arg(long)]
-        cover: bool,
         /// Show the current time-synced lyric line
         ///
         /// With `--stream`, fetched once per track rather than per tick.
@@ -925,13 +919,10 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
             }
             CliCommand::Status {
                 stream,
-                cover,
                 lyrics: want_lyrics,
             } => {
                 if *stream {
                     let mut last_track: Option<String> = None;
-                    let mut last_art: Option<String> = None;
-                    let mut last_frame_art = String::new();
                     let mut lyrics: Option<LrcData> = None;
                     loop {
                         let state = client.get_status().await.map_err(|e| e.to_string())?;
@@ -981,29 +972,12 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                                 .or_else(|| l.lines.iter().find(|ln| ln.timestamp < 0.0))
                                 .map(|ln| ln.text.trim().to_string())
                         });
-                        // Refetch the art only on a track change — it is its
-                        // own request, and re-asking twice a second would be
-                        // a second round trip per tick for a constant image.
-                        if *cover
-                            && state.current_track.as_ref().map(|t| t.path.as_str())
-                                != last_art.as_deref()
-                        {
-                            last_art = state.current_track.as_ref().map(|t| t.path.clone());
-                            let art = cover_str(&state, &client).await;
-                            last_frame_art = match art.as_str() {
-                                "no track" | "none" => String::new(),
-                                _ => art,
-                            };
-                        }
                         // Full-frame redraw rather than the `\r` + cursor-up
                         // this used. Once the frame is a variable number of
                         // rows tall, partial overwrites leave the tail of a
                         // taller previous frame on screen; home-and-clear is
                         // the only correct one.
                         print!("\x1b[H\x1b[J");
-                        if !last_frame_art.is_empty() {
-                            println!("{last_frame_art}");
-                        }
                         print!("Stream: {} | {}s / {}s | {}%", track, elapsed, dur, vol);
                         if let Some(line) = active {
                             print!("\n  ♪ {}", line);
@@ -1054,17 +1028,9 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         } else {
                             "Unmuted"
                         };
-                        // `--cover` replaces the `Cover:` line with the art
-                        // itself: the half-block grid the TUI uses when the
-                        // terminal has no image protocol, so a plain pipe gets a
-                        // picture rather than "none".
-                        let cover_line = if *cover {
-                            cover_str(&state, &client).await
-                        } else {
-                            match state.current_track.as_ref() {
-                                Some(t) => t.cover_path.clone().unwrap_or_else(|| "none".into()),
-                                None => "no track".into(),
-                            }
+                        let cover_line = match state.current_track.as_ref() {
+                            Some(t) => t.cover_path.clone().unwrap_or_else(|| "none".into()),
+                            None => "no track".into(),
                         };
                         // `--lyrics` appends the line being sung at the current
                         // position, fetched once.
@@ -1517,79 +1483,6 @@ fn command_exists(name: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
         .unwrap_or(false)
-}
-
-/// Cover art for the current track, rendered as half-block ANSI colour.
-///
-/// Art is not in `DaemonState` — it travels as its own request — so this is a
-/// second round trip. Bounded and best-effort: a track with no art, a daemon
-/// that cannot answer, or a terminal that renders nothing readable all land on
-/// the same "no cover" line rather than failing the status command.
-async fn cover_str(state: &DaemonState, client: &DaemonClient) -> String {
-    let Some(track) = state.current_track.as_ref() else {
-        return "no track".to_string();
-    };
-    let Ok(Some(b64)) = client
-        .art()
-        .cover_for(track.id, Some(track.path.clone()))
-        .await
-    else {
-        return "none".to_string();
-    };
-    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) else {
-        return "none".to_string();
-    };
-    cover_text(&bytes, 16, 8)
-}
-
-/// Cover bytes as a half-block grid: each cell is one upper-pixel/lower-pixel
-/// pair, foreground over background, which is the same trick the TUI's
-/// non-image-protocol path uses so both renderings look alike.
-fn cover_text(bytes: &[u8], w: u32, h: u32) -> String {
-    use std::fmt::Write as _;
-    let Ok(img) = image::load_from_memory(bytes) else {
-        return "none".to_string();
-    };
-    let src = img.into_rgba8();
-    // Centre-crop to the target aspect so the art is not squashed.
-    let (sw, sh) = (src.width() as f64, src.height() as f64);
-    let want = w as f64 / (h * 2) as f64;
-    let have = sw / sh;
-    let cropped = if (have - want).abs() < 0.01 {
-        src
-    } else {
-        let dims = if have > want {
-            ((sh * want) as u32, src.height())
-        } else {
-            (src.width(), (sw / want) as u32)
-        };
-        let (cw, ch) = (dims.0.clamp(1, src.width()), dims.1.clamp(1, src.height()));
-        let (ox, oy) = ((src.width() - cw) / 2, (src.height() - ch) / 2);
-        image::imageops::crop_imm(&src, ox, oy, cw, ch).to_image()
-    };
-    let thumb =
-        image::imageops::resize(&cropped, w, h * 2, image::imageops::FilterType::CatmullRom);
-    let mut out = String::new();
-    for y in 0..h {
-        if y > 0 {
-            out.push('\n');
-        }
-        for x in 0..w {
-            let top = thumb.get_pixel(x, y * 2);
-            let bot = if y * 2 + 1 < h * 2 {
-                *thumb.get_pixel(x, y * 2 + 1)
-            } else {
-                image::Rgba([0, 0, 0, 255])
-            };
-            let _ = write!(
-                out,
-                "\x1b[38;2;{};{};{}m\x1b[48;2;{};{};{}m\u{2580}",
-                top[0], top[1], top[2], bot[0], bot[1], bot[2]
-            );
-        }
-    }
-    out.push_str("\x1b[0m");
-    out
 }
 
 fn format_spotify_status(st: &SpotifyStatus) -> String {

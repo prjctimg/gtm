@@ -2753,3 +2753,41 @@ fn scrobbling_and_state_persistence() {
         );
     }
 }
+
+/// The `--cover` flag is gone, and the half-block renderer with it.
+///
+/// It printed a fixed 16x8 grid that looked like a blurred thumbnail, and
+/// making it render at full resolution was not a parameter change:
+/// `ratatui-image`'s protocols write into a ratatui `Buffer`, and outside the
+/// TUI there is no `Terminal` or `Buffer` to write into. Emitting real
+/// artwork from the CLI meant hand-writing a Buffer-to-ANSI backend, which is
+/// not something to ship unverified. The flag and the flag's only purpose
+/// are removed rather than left rendering badly.
+#[test]
+fn no_cover_flag_or_halfblock_renderer() {
+    let cli = include_str!("../src/cli.rs");
+    let man = include_str!("../../docs/man/gtm.1.md");
+
+    assert!(
+        !cli.contains("fn cover_text("),
+        "the half-block renderer is still there"
+    );
+    assert!(
+        !cli.contains("async fn cover_str("),
+        "the cover fetcher is still there"
+    );
+    assert!(!cli.contains("cover: bool,"), "the --cover flag is back");
+    assert!(
+        !cli.contains("last_frame_art") && !cli.contains("last_art"),
+        "the per-tick art fetch in --stream mode is back"
+    );
+    // `status` still reports where the cover is; only the rendering is gone.
+    assert!(
+        cli.contains("\\x1b[1mCover:"),
+        "status lost its Cover: line"
+    );
+    assert!(
+        !man.contains("\\--cover"),
+        "the man page still documents --cover"
+    );
+}
