@@ -374,3 +374,105 @@ impl Pickers {
         }
     }
 }
+
+impl Pickers {
+    /// Everything the daemon knows about the track on air, as `label: value`
+    /// rows (`i`).
+    ///
+    /// A track list shows the name and the artist and stops there, but the
+    /// daemon has a great deal more: the file behind a provider URI, the
+    /// format it decoded to, where the artwork came from, and whether the
+    /// entry is a favourite. The panes that show any of it are the ones that
+    /// get dismissed, so the one place to read it all did not exist.
+    ///
+    /// Read-only and non-navigable: there is nothing to select here, so
+    /// `picker_item_count` is zero and the arrow keys do nothing rather than
+    /// moving a cursor over a form.
+    pub(crate) fn render_track_info(f: &mut ratatui::Frame, area: Rect, app: &App) {
+        let block = Self::picker_panel(app, " Track Info ", Some("Esc: close"));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let Some(track) = app.state.current_track.clone() else {
+            let msg = Paragraph::new("Nothing is playing")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(app.theme.fg_dim));
+            f.render_widget(msg, inner);
+            return;
+        };
+
+        let provider = classify_remote_source(&track.path).map_or("Local", |(key, _)| key);
+        let mut rows: Vec<(&str, String)> = Vec::new();
+        let mut push = |label: &'static str, value: String| {
+            // An empty value is a field the daemon does not have, not a field
+            // with an empty value; showing "Genre:" with nothing after it
+            // reads as a bug rather than as absent metadata.
+            if !value.trim().is_empty() {
+                rows.push((label, value));
+            }
+        };
+
+        push("Title", track.title.clone());
+        push("Artist", track.artist.clone());
+        push("Album", track.album.clone());
+        if let Some(n) = track.track_number {
+            push("Track", n.to_string());
+        }
+        if let Some(y) = track.year {
+            push("Year", y.to_string());
+        }
+        push("Genre", track.genre.clone());
+        if track.duration > 0.0 {
+            push("Length", format_duration(track.duration as u64));
+        }
+        if let Some(actual) = track.actual_duration.filter(|a| *a > 0.0) {
+            push("Decoded", format_duration(actual as u64));
+        }
+        if let Some(b) = track.bitrate {
+            push("Bitrate", format!("{b} kbps"));
+        }
+        if let Some(s) = track.samplerate {
+            push("Sample rate", format!("{s} kHz"));
+        }
+        if let Some(lufs) = track.loudness_lufs {
+            push("Loudness", format!("{lufs:.1} LUFS"));
+        }
+        if let Some(pk) = track.loudness_peak_db {
+            push("Peak", format!("{pk:.1} dB"));
+        }
+        if track.favourite {
+            push("Favourite", "yes".to_string());
+        }
+        push("Source", provider.to_string());
+        push("Path", track.path.clone());
+        if let Some(p) = track.cover_path.as_ref().filter(|p| !p.is_empty()) {
+            push("Cover file", p.clone());
+        }
+        if let Some(u) = track.cover_url.as_ref().filter(|u| !u.is_empty()) {
+            push("Cover URL", u.clone());
+        }
+        if let Some(id) = track.album_id.as_ref().filter(|i| !i.is_empty()) {
+            push("Album ID", id.clone());
+        }
+        if !track.hash.is_empty() {
+            push("Hash", track.hash.clone());
+        }
+
+        // Long values (paths, URLs, hashes) are the reason this pane exists, so
+        // they are wrapped across the panel rather than truncated at the edge.
+        let value_w = inner.width.saturating_sub(16) as usize;
+        let label_style = Style::default().fg(app.theme.fg_dim);
+        let mut lines: Vec<Line> = Vec::new();
+        for (label, value) in rows {
+            let wrapped = wrap_text(&value, value_w.max(8));
+            for (i, chunk) in wrapped.iter().enumerate() {
+                let l = if i == 0 { label } else { "" };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{l:>14}  "), label_style),
+                    Span::styled(chunk.clone(), Style::default().fg(app.theme.fg_bright)),
+                ]));
+            }
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+}

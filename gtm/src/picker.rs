@@ -57,6 +57,8 @@ pub enum PickerId {
     /// Songs plus the user's playlists. Row 0 is Liked Songs; the rest are the
     /// synced playlists, filterable by the picker's query.
     SpotifyDest,
+    /// Everything the daemon knows about the track on air (`i`).
+    TrackInfo,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.

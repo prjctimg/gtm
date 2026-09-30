@@ -295,6 +295,11 @@ pub fn default_keybindings() -> Keybindings {
             b!(KeyCode::Char('['), KeyboardAction::FocusLeft, NORMAL),
             b!(KeyCode::Char(']'), KeyboardAction::FocusRight, NORMAL),
             b!(KeyCode::Char('l'), KeyboardAction::FetchLyrics, NORMAL),
+            b!(
+                KeyCode::Char('i'),
+                KeyboardAction::OpenOverlay(PickerId::TrackInfo),
+                NORMAL
+            ),
             b!(KeyCode::Char('r'), KeyboardAction::CycleRepeat, NORMAL),
             b!(KeyCode::Char('R'), KeyboardAction::CycleRepeat, NORMAL),
             b!(KeyCode::Char('S'), KeyboardAction::ToggleShuffle, NORMAL),

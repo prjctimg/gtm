@@ -1209,6 +1209,8 @@ impl App {
             PickerId::Equalizer => EQ_PRESETS.len().saturating_sub(1),
             PickerId::SleepTimer => 8,
             PickerId::Crossfade => 5,
+            // Read-only: nothing to select, so no cursor to move.
+            PickerId::TrackInfo => 0,
             PickerId::VisualizerPreset => VisualizerPreset::all().len().saturating_sub(1),
             PickerId::FooterPreset => self.footer_presets.len().saturating_sub(1),
             PickerId::ProgressStyle => ProgressStyle::all().len().saturating_sub(1),
@@ -1257,6 +1259,7 @@ impl App {
             PickerId::Equalizer => EQ_PRESETS.len(),
             PickerId::SleepTimer => 9,
             PickerId::Crossfade => 6,
+            PickerId::TrackInfo => 0,
             PickerId::VisualizerPreset => VisualizerPreset::all().len(),
             PickerId::FooterPreset => self.footer_presets.len(),
             PickerId::ProgressStyle => ProgressStyle::all().len(),

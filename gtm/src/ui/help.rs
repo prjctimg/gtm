@@ -54,6 +54,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   Alt+E       Equalizer"),
     ("", "   Alt+Z       Sleep Timer"),
     ("", "   l           Fetch Lyrics"),
+    ("", "   i           Track Info (what the daemon knows)"),
     ("topic", "── Queue ──"),
     ("", "   a           Add to Queue"),
     ("", "   A           Add to Playlist"),
