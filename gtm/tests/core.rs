@@ -2540,3 +2540,62 @@ fn list_rows_have_no_bracketed_stream_suffix() {
         "the kind tag lost its unbracketed form"
     );
 }
+
+/// The lyrics header needs its own cover protocol, not the now-playing one.
+///
+/// Both panes can be on screen in the same frame, and one `StatefulProtocol`
+/// rendered twice writes into the same cell buffer twice, so each pane would
+/// draw part of the other. The state must therefore be per-pane.
+#[test]
+fn lyrics_cover_has_its_own_protocol() {
+    let app = include_str!("../src/app/mod.rs");
+    let cover = include_str!("../src/app/cover.rs");
+    let chrome = include_str!("../src/ui/chrome.rs");
+
+    assert!(
+        app.contains("pub lyrics_cover: NowPlayingCoverState,"),
+        "App has no separate cover state for the lyrics pane"
+    );
+    // Built in the same place as the now-playing one, from the same bytes.
+    assert!(
+        cover.contains("self.lyrics_cover.stateful = Some(picker.new_resize_protocol(img2))"),
+        "the lyrics protocol is not built alongside the now-playing one"
+    );
+    // The renderer must take the lyrics one, not the shared now-playing one.
+    assert!(
+        chrome.contains("app.lyrics_cover.stateful.as_mut()"),
+        "the lyrics header does not use its own protocol"
+    );
+    assert!(
+        !chrome.contains("app.np_cover.stateful.as_mut(),\n                        app.np_cover.image.as_deref(),\n                        app.theme.fg_dim,\n                        Some(\" \\u{266b} \"),\n                    );\n                }\n\n                let para"),
+        "the lyrics header still borrows the now-playing protocol"
+    );
+}
+
+/// The now-playing cover and the left pane's card must place their artwork the
+/// same way, or the two images sit at different heights in the same view.
+#[test]
+fn covers_are_placed_identically_in_both_panes() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+
+    // The left pane's card centres horizontally in its area and takes the
+    // area's own top edge.
+    assert!(
+        chrome.contains("x: area.x + cover_hpad,"),
+        "the left card no longer centres its cover"
+    );
+    // The now-playing pane now does the same, with no `y + 1` nudge.
+    assert!(
+        chrome.contains("x: col.x + col.width.saturating_sub(cw) / 2,"),
+        "the now-playing cover is not centred in its column"
+    );
+    assert!(
+        chrome.contains("y: col.y + col.height.saturating_sub(ch) / 2,"),
+        "the now-playing cover is not centred vertically"
+    );
+    // A leftover top-anchored variant would be the old geometry.
+    assert!(
+        !chrome.contains("y: hchunks[0].y + 1,"),
+        "the old top-anchored now-playing cover rect is back"
+    );
+}

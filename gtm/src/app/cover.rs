@@ -363,11 +363,25 @@ impl App {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
                     self.np_cover.stateful = Some(picker.new_resize_protocol(img));
+                    // The lyrics header shows the same artwork, but through its
+                    // own protocol instance. Sharing `np_cover.stateful` would
+                    // mean the same image drawn twice into the same cell buffer,
+                    // so each pane would draw part of the other. The decoded
+                    // image is cheap to clone relative to a second decode.
+                    if let Ok(img2) = image::load_from_memory(bytes) {
+                        self.lyrics_cover.stateful = Some(picker.new_resize_protocol(img2));
+                    } else {
+                        self.lyrics_cover.stateful = None;
+                    }
                 } else {
                     self.np_cover.stateful = None;
+                    self.lyrics_cover.stateful = None;
                 }
             }
-            _ => self.np_cover.stateful = None,
+            _ => {
+                self.np_cover.stateful = None;
+                self.lyrics_cover.stateful = None;
+            }
         }
     }
 

@@ -959,11 +959,21 @@ impl Render {
                         ])
                         .split(inner);
 
+                    // Match the left pane's card: centre the artwork in its
+                    // column rather than pinning it to the pane's left edge, and
+                    // drop the extra `y + 1`, which pushed the image a row below
+                    // the left pane's cover so the two never lined up. Centred
+                    // vertically as well -- pinned to the top of a tall pane it
+                    // left a band of dead space under it that read as a
+                    // rendering fault rather than as layout.
+                    let col = hchunks[0];
+                    let ch = cover_h.min(col.height);
+                    let cw = cover_w.min(col.width);
                     let cover_area = Rect {
-                        x: hchunks[0].x,
-                        y: hchunks[0].y + 1,
-                        width: cover_w.min(hchunks[0].width),
-                        height: cover_h.min(hchunks[0].height.saturating_sub(1)),
+                        x: col.x + col.width.saturating_sub(cw) / 2,
+                        y: col.y + col.height.saturating_sub(ch) / 2,
+                        width: cw,
+                        height: ch,
                     };
                     Render::cover(
                         f,
@@ -2330,8 +2340,7 @@ impl Render {
             return;
         }
 
-        let header_area = if inner.height >= 4 {
-            let header_h = 1;
+        let header_area = if inner.height >= 5 {
             let title = lyrics.title.clone().unwrap_or_else(|| {
                 app.state
                     .current_track
@@ -2346,38 +2355,75 @@ impl Render {
                     .map(|t| t.artist.clone())
                     .unwrap_or_default()
             });
-            let album = lyrics.album.clone().unwrap_or_else(|| {
-                app.state
-                    .current_track
-                    .as_ref()
-                    .map(|t| t.album.clone())
-                    .unwrap_or_default()
-            });
-            let header_text = if !album.is_empty() && !artist.is_empty() {
-                format!("{} — {} · {}", title, artist, album)
-            } else if !artist.is_empty() {
-                format!("{} — {}", title, artist)
-            } else {
-                title.clone()
-            };
-            if !header_text.is_empty() {
-                let header_para = Paragraph::new(Line::from(Span::styled(
-                    header_text,
+            // Title and artist on their own lines, not one `title — artist`
+            // run. On one line the separator is the only thing marking where
+            // the song ends, and a long title pushes the artist off the edge or
+            // into an ellipsis where it cannot be read.
+            let mut rows: Vec<Line> = Vec::new();
+            if !title.is_empty() {
+                rows.push(Line::from(Span::styled(
+                    title.clone(),
                     Style::default()
                         .fg(app.theme.accent)
                         .add_modifier(Modifier::BOLD),
-                )))
-                .alignment(Alignment::Center);
+                )));
+            }
+            if !artist.is_empty() {
+                rows.push(Line::from(Span::styled(
+                    artist.clone(),
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+            }
+            let header_h = rows.len().min(3) as u16;
+            if header_h == 0 {
+                None
+            } else {
+                // The artwork sits inline to the left of both lines, so the
+                // text starts one cover-width in rather than being centred over
+                // the full pane and drifting out from under the image.
+                let cover_h = 2u16.min(inner.height.saturating_sub(1));
+                let cover_w = cover_h * 2;
+                let show_cover = cover_w > 0 && cover_w + 2 < inner.width;
+                let text_x = if show_cover {
+                    inner.x + cover_w + 1
+                } else {
+                    inner.x
+                };
+                let text_w = inner.width.saturating_sub(text_x - inner.x);
+
+                if show_cover {
+                    let cover_area = Rect {
+                        x: inner.x,
+                        y: inner.y,
+                        width: cover_w,
+                        height: cover_h,
+                    };
+                    Render::cover(
+                        f,
+                        cover_area,
+                        app.lyrics_cover.stateful.as_mut(),
+                        app.np_cover.image.as_deref(),
+                        app.theme.fg_dim,
+                        Some(" \u{266b} "),
+                    );
+                }
+
+                let para = Paragraph::new(rows)
+                    .alignment(Alignment::Center)
+                    .style(Style::default());
                 let hdr_rect = Rect {
+                    x: text_x,
+                    y: inner.y,
+                    width: text_w,
+                    height: header_h,
+                };
+                f.render_widget(para, hdr_rect);
+                Some(Rect {
                     x: inner.x,
                     y: inner.y,
                     width: inner.width,
                     height: header_h,
-                };
-                f.render_widget(header_para, hdr_rect);
-                Some(hdr_rect)
-            } else {
-                None
+                })
             }
         } else {
             None

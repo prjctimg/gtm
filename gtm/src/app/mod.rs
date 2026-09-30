@@ -235,6 +235,13 @@ pub struct App {
     pub pickers: PickerManager,
     pub sleep_timer: SleepTimerState,
     pub np_cover: NowPlayingCoverState,
+    /// The lyrics pane's own copy of the current cover.
+    ///
+    /// It needs a `StatefulProtocol` of its own: the now-playing pane and the
+    /// lyrics pane can both be on screen in the same frame, and one protocol
+    /// rendered twice writes the image into the same cell buffer twice, so the
+    /// two panes would fight over it and each would draw half of the other.
+    pub lyrics_cover: NowPlayingCoverState,
     /// The live `StreamTitle` seen on the previous frame, used to spot the
     /// track on air advancing without a path change.
     pub live_title: Option<String>,
@@ -950,6 +957,14 @@ impl App {
                 focus: 0,
             },
             np_cover: NowPlayingCoverState {
+                image: None,
+                track_id: None,
+                track_path: None,
+                picker: None,
+                stateful: None,
+                pending_gen: None,
+            },
+            lyrics_cover: NowPlayingCoverState {
                 image: None,
                 track_id: None,
                 track_path: None,
