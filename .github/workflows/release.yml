@@ -595,9 +595,20 @@ jobs:
       - name: Print release asset manifest
         run: |
           echo "=== Release assets ==="
-          ls -lh gtm-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk 2>/dev/null
+          # A glob that matches nothing makes `ls` exit 2, and this step runs
+          # under `bash -e`, so the step failed even though every artifact had
+          # built. Suppressing stderr hides the message but not the status.
+          # The nightly matrix builds a subset of these formats, so at least one
+          # of the patterns is expected to be empty on any given run.
+          shopt -s nullglob
+          assets=(gtm-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "(no artifacts found)"
+          else
+            ls -lh "${assets[@]}"
+          fi
           echo
-          echo "Total: $(ls gtm-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk 2>/dev/null | wc -l) files"
+          echo "Total: ${#assets[@]} files"
 
       - name: Generate checksums
         run: |

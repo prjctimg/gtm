@@ -2829,3 +2829,69 @@ fn picker_row_counts_match_their_renderers() {
         "the crossfade Enter arm's row range moved"
     );
 }
+
+/// Every built-in theme's list text must clear WCAG AA against its own pane
+/// background.
+///
+/// `fg_dim` is the colour behind every label, hint, footer and secondary field,
+/// and it was below 4.5:1 in eleven of the sixteen themes -- as low as 1.69:1
+/// in Nord. The theme constructors are the right place to fix that: correcting
+/// it at the call site would force `readable_fg` on every consumer and flatten
+/// the dim/bright hierarchy the themes are built around.
+#[test]
+fn theme_dim_text_is_readable_in_every_builtin() {
+    let theme = include_str!("../src/theme.rs");
+
+    // The corrected values, so a theme edit that undoes one is caught here.
+    for (name, field, hex) in [
+        ("chadrula", "fg_dim", "0x8a91ae"),
+        ("one_dark", "fg_dim", "0x90959e"),
+        ("tokyonight", "fg_dim", "0x7d84a4"),
+        ("catppuccin_mocha", "fg_dim", "0x848799"),
+        ("gruvbox_dark", "fg_dim", "0x9c8e81"),
+        ("nord", "fg_dim", "0x999faa"),
+        ("rose_pine", "fg_dim", "0x848098"),
+        ("everforest", "fg_dim", "0x99a097"),
+        ("kanagawa", "fg_dim", "0x8a8982"),
+        ("classic", "fg_dim", "0x858585"),
+        ("monochrome", "fg_dim", "0x84858c"),
+        ("solarized_dark", "fg_dim", "0x829298"),
+        ("solarized_dark", "accent", "0x3a95d6"),
+    ] {
+        let start = theme
+            .find(&format!("fn {name}() -> AppTheme"))
+            .unwrap_or_else(|| panic!("no {name} theme constructor"));
+        let body = &theme[start..start + 1400];
+        assert!(
+            body.contains(&format!("{field}: hex({hex})")),
+            "{name}.{field} is no longer the value that clears 4.5:1"
+        );
+    }
+}
+
+/// `readable_fg` must return colours `contrast` can actually measure.
+///
+/// `contrast` computes relative luminance and only understands `Color::Rgb`;
+/// every other variant collapses to 0.5. Returning `Color::Black` from
+/// `readable_fg` therefore meant the function chose an endpoint by comparing
+/// two values it could not measure, and returned a colour whose readability it
+/// could not verify -- a terminal-dependent named colour at that.
+#[test]
+fn readable_fg_returns_measurable_colours() {
+    let theme = include_str!("../src/theme.rs");
+    let start = theme.find("pub fn readable_fg").expect("no readable_fg");
+    let body = &theme[start..start + 2000];
+    assert!(
+        body.contains("const BLACK: Color = Color::Rgb(0, 0, 0);"),
+        "readable_fg no longer pins its endpoints to explicit RGB"
+    );
+    assert!(
+        body.contains("const WHITE: Color = Color::Rgb(255, 255, 255);"),
+        "readable_fg no longer pins its endpoints to explicit RGB"
+    );
+    // The named variants are what could not be measured.
+    assert!(
+        !body.contains("Color::Black\n") && !body.contains("Color::White\n"),
+        "readable_fg returns a named colour again"
+    );
+}

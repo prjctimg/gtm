@@ -119,19 +119,27 @@ pub fn readable_fg(fg: Color, bg: Color) -> Color {
     // Walk from the background towards the other end of the axis. Black and
     // white are the two colours guaranteed to bracket it, so one of the two
     // always clears the bar, and the nearer one is the least visually jarring.
-    let (black, white) = (contrast(Color::Black, bg), contrast(Color::White, bg));
+    //
+    // These are explicit RGB, not `Color::Black`/`Color::White`. The named
+    // variants are terminal-dependent -- the same request renders differently
+    // under a dozen palettes -- and, worse, `contrast` measures relative
+    // luminance and only understands `Color::Rgb`, so every other variant
+    // collapses to 0.5. Returning `Color::Black` here therefore meant the
+    // function chose an endpoint by comparing two values it could not
+    // actually measure, and then returned a colour whose readability it could
+    // not verify. On #e6e6e6 it picked Black, which is 16.8:1 -- and was
+    // scored by its own arithmetic as 1.53:1.
+    const BLACK: Color = Color::Rgb(0, 0, 0);
+    const WHITE: Color = Color::Rgb(255, 255, 255);
+    let (black, white) = (contrast(BLACK, bg), contrast(WHITE, bg));
     if black >= MIN_RATIO && black <= white {
-        Color::Black
+        BLACK
     } else if white >= MIN_RATIO {
-        Color::White
+        WHITE
     } else {
         // Neither clears it: the background itself is mid-grey. Go to whichever
         // end is further away rather than picking one and losing the text.
-        if black >= white {
-            Color::Black
-        } else {
-            Color::White
-        }
+        if black >= white { BLACK } else { WHITE }
     }
 }
 
@@ -185,7 +193,7 @@ pub(crate) fn chadrula() -> AppTheme {
         elevated_bg: hex(0x1a1e2e),
         muted_border: hex(0x3b4261),
         fg: hex(0xc0caf5),
-        fg_dim: hex(0x565f89),
+        fg_dim: hex(0x8a91ae),
         fg_bright: hex(0xe0e6ff),
         accent: hex(0x7aa2f7),
         secondary_accent: hex(0x9ece6a),
@@ -215,7 +223,7 @@ fn one_dark() -> AppTheme {
         elevated_bg: hex(0x1c2026),
         muted_border: hex(0x3e4451),
         fg: hex(0xabb2bf),
-        fg_dim: hex(0x5c6370),
+        fg_dim: hex(0x90959e),
         fg_bright: hex(0xe6e6e6),
         accent: hex(0x61afef),
         secondary_accent: hex(0x98c379),
@@ -245,7 +253,7 @@ fn tokyonight() -> AppTheme {
         elevated_bg: hex(0x12121a),
         muted_border: hex(0x292e42),
         fg: hex(0xa9b1d6),
-        fg_dim: hex(0x565f89),
+        fg_dim: hex(0x7d84a4),
         fg_bright: hex(0xc0caf5),
         accent: hex(0x7aa2f7),
         secondary_accent: hex(0x9ece6a),
@@ -286,7 +294,7 @@ fn catppuccin_mocha() -> AppTheme {
         elevated_bg: hex(0x141422),
         muted_border: hex(0x313244),
         fg: hex(0xcdd6f4),
-        fg_dim: hex(0x6c7086),
+        fg_dim: hex(0x848799),
         fg_bright: hex(0xf5f5ff),
         accent: hex(0x89b4fa),
         secondary_accent: hex(0xa6e3a1),
@@ -316,7 +324,7 @@ fn gruvbox_dark() -> AppTheme {
         elevated_bg: hex(0x181b1c),
         muted_border: hex(0x504945),
         fg: hex(0xebdbb2),
-        fg_dim: hex(0x928374),
+        fg_dim: hex(0x9c8e81),
         fg_bright: hex(0xfbf1c7),
         accent: hex(0xd3869b),
         secondary_accent: hex(0xb8bb26),
@@ -346,7 +354,7 @@ fn nord() -> AppTheme {
         elevated_bg: hex(0x262b35),
         muted_border: hex(0x3b4252),
         fg: hex(0xd8dee9),
-        fg_dim: hex(0x4c566a),
+        fg_dim: hex(0x999faa),
         fg_bright: hex(0xeceff4),
         accent: hex(0x88c0d0),
         secondary_accent: hex(0xa3be8c),
@@ -376,7 +384,7 @@ fn rose_pine() -> AppTheme {
         elevated_bg: hex(0x0d0d16),
         muted_border: hex(0x26233a),
         fg: hex(0xe0def4),
-        fg_dim: hex(0x6e6a86),
+        fg_dim: hex(0x848098),
         fg_bright: hex(0xf0edf6),
         accent: hex(0xc4a7e7),
         secondary_accent: hex(0x9ccfd8),
@@ -406,7 +414,7 @@ fn everforest() -> AppTheme {
         elevated_bg: hex(0x232a30),
         muted_border: hex(0x414b52),
         fg: hex(0xd3c6aa),
-        fg_dim: hex(0x7a8478),
+        fg_dim: hex(0x99a097),
         fg_bright: hex(0xeae4c9),
         accent: hex(0xa7c080),
         secondary_accent: hex(0xa7c080),
@@ -436,7 +444,7 @@ fn kanagawa() -> AppTheme {
         elevated_bg: hex(0x14141b),
         muted_border: hex(0x727169),
         fg: hex(0xdcd7ba),
-        fg_dim: hex(0x727169),
+        fg_dim: hex(0x8a8982),
         fg_bright: hex(0xc8c0b3),
         accent: hex(0x7e9cd8),
         secondary_accent: hex(0x98bb6c),
@@ -563,9 +571,9 @@ fn solarized_dark() -> AppTheme {
         elevated_bg: hex(0x042b36),
         muted_border: hex(0x586e75),
         fg: hex(0x839496),
-        fg_dim: hex(0x586e75),
+        fg_dim: hex(0x829298),
         fg_bright: hex(0x93a1a1),
-        accent: hex(0x268bd2),
+        accent: hex(0x3a95d6),
         secondary_accent: hex(0x2aa198),
         tertiary_accent: hex(0xcb4b16),
         error: hex(0xdc322f),
@@ -593,7 +601,7 @@ fn classic() -> AppTheme {
         elevated_bg: hex(0x121212),
         muted_border: hex(0x444444),
         fg: hex(0xd0d0d0),
-        fg_dim: hex(0x707070),
+        fg_dim: hex(0x858585),
         fg_bright: hex(0xffffff),
         accent: hex(0xff8800),
         secondary_accent: hex(0x44ff44),
@@ -625,7 +633,7 @@ fn monochrome() -> AppTheme {
         elevated_bg: hex(0x111214),
         muted_border: hex(0x3a3c42),
         fg: hex(0xd0d2d6),
-        fg_dim: hex(0x6e7078),
+        fg_dim: hex(0x84858c),
         fg_bright: hex(0xffffff),
         accent,
         secondary_accent: accent,

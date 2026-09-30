@@ -124,7 +124,11 @@ mod tests {
     fn row_counts_match_the_declared_lists() {
         assert_eq!(rows_for(0).len(), 6);
         assert_eq!(rows_for(1).len(), 16);
-        assert_eq!(rows_for(2).len(), 5);
+        // Status, Link Account, Unlink. The Spotify Next/Previous rows went
+        // when the Connect transport moved to the command palette, and this
+        // count was left at 5 -- so the test had been failing ever since,
+        // asserting a row list that no longer existed.
+        assert_eq!(rows_for(2).len(), 3);
         for cat in 0..3 {
             assert!(!rows_for(cat).is_empty(), "category {cat} is empty");
             for (i, (label, _)) in rows_for(cat).iter().enumerate() {
