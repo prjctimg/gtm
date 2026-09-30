@@ -5,6 +5,7 @@
 // This is free software released under the GPL-3.0 license.
 
 use rspotify::AuthCodePkceSpotify;
+use rspotify::ClientError;
 use rspotify::clients::{BaseClient, OAuthClient};
 use rspotify::model::idtypes::Id;
 use rspotify::model::{
@@ -161,6 +162,36 @@ pub async fn search(
     Ok(tracks)
 }
 
+/// Name a catalog endpoint Spotify has switched off, and say so.
+///
+/// Spotify's February 2026 Web API changes removed a batch of catalog
+/// endpoints for Developer Mode integrations -- `artists`, `albums`,
+/// `tracks`, `user`, `new_releases`, `categories` and `artist_top_tracks`
+/// among them -- for new integrations from 11 Feb 2026 and for all existing
+/// ones from 9 Mar 2026. See rspotify issue #550.
+///
+/// The three drill-down routes all sit on that list, so they now fail
+/// permanently: `/albums/{id}/tracks` and `/playlists/{id}/tracks` answer 404
+/// and `/artists/{id}/albums` answers 400. A bare "status code 400 Bad
+/// Request" reads as a transient fault and invites a retry that can never
+/// work, so name the cause instead. `/v1/search` and the playlist endpoints
+/// are not on the list and still answer.
+fn catalog_gone(what: &str, err: &ClientError) -> String {
+    let text = err.to_string();
+    // Only the two statuses Spotify returns for a switched-off endpoint; a 401
+    // is a token problem and a 429 is a rate limit, and calling either of those
+    // "removed" would send the reader down the wrong path.
+    let removed = text.contains("404") || text.contains("400");
+    if removed {
+        format!(
+            "{what}: {text} (Spotify removed this catalog endpoint for developer-mode \
+             integrations in 2026; see rspotify issue #550)"
+        )
+    } else {
+        format!("{what}: {text}")
+    }
+}
+
 /// Resolve a web-search album result to its track list.
 pub async fn album_tracks(
     client: &AuthCodePkceSpotify,
@@ -170,7 +201,7 @@ pub async fn album_tracks(
     let page = client
         .album_track_manual(album_id, None, Some(50), Some(0))
         .await
-        .map_err(|e| format!("album tracks: {e}"))?;
+        .map_err(|e| catalog_gone("album tracks", &e))?;
     let mut tracks = Vec::new();
     for (i, t) in page.items.into_iter().enumerate() {
         tracks.push(SpotifyTrack {
@@ -204,7 +235,7 @@ pub async fn artist_top(
             Some(0),
         )
         .await
-        .map_err(|e| format!("artist albums: {e}"))?;
+        .map_err(|e| catalog_gone("artist albums", &e))?;
 
     let mut tracks: Vec<SpotifyTrack> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -266,7 +297,7 @@ pub async fn web_playlist(
     let page = client
         .playlist_items_manual(playlist_id, None, None, Some(50), Some(0))
         .await
-        .map_err(|e| format!("playlist tracks: {e}"))?;
+        .map_err(|e| catalog_gone("playlist tracks", &e))?;
     let mut tracks = Vec::new();
     for item in page.items {
         if let Some(playable) = item.item.as_ref()

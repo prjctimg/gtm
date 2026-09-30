@@ -1204,11 +1204,21 @@ impl App {
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
                                         let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                            if let Ok(charts) =
-                                                c.charts().list(Some(source_id)).await
-                                            {
-                                                let _ =
-                                                    ipc_tx2.send(IpcResult::ChartsLoaded(charts));
+                                            // Not `if let Ok(..)`: with no `else`, a
+                                            // failed request sent nothing at all,
+                                            // so a dead token or an API error left
+                                            // the level blank and silent -- the
+                                            // charts simply looked empty.
+                                            match c.charts().list(Some(source_id)).await {
+                                                Ok(charts) => {
+                                                    let _ = ipc_tx2
+                                                        .send(IpcResult::ChartsLoaded(charts));
+                                                }
+                                                Err(e) => {
+                                                    let _ = ipc_tx2.send(IpcResult::Error(
+                                                        format!("Could not load charts: {e}"),
+                                                    ));
+                                                }
                                             }
                                         }));
                                     }
@@ -1229,11 +1239,16 @@ impl App {
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
                                         let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                            if let Ok(tracks) =
-                                                c.charts().tracks(source_id, chart_id).await
-                                            {
-                                                let _ = ipc_tx2
-                                                    .send(IpcResult::ChartTracksLoaded(tracks));
+                                            match c.charts().tracks(source_id, chart_id).await {
+                                                Ok(tracks) => {
+                                                    let _ = ipc_tx2
+                                                        .send(IpcResult::ChartTracksLoaded(tracks));
+                                                }
+                                                Err(e) => {
+                                                    let _ = ipc_tx2.send(IpcResult::Error(
+                                                        format!("Could not load chart: {e}"),
+                                                    ));
+                                                }
                                             }
                                         }));
                                     }
@@ -3079,7 +3094,21 @@ impl App {
                                 let track_index = track.index;
                                 let c = self.client.clone();
                                 let ipc_tx = self.ipc_tx.clone();
-                                self.pickers.close_top();
+                                // Only a track closes the picker: it is about to
+                                // play. A drill-down is a request whose outcome
+                                // is not known yet, and closing first meant a
+                                // failure left the user with a notification and
+                                // no list -- nothing to retry from, and no way to
+                                // see what the album or artist actually held.
+                                let is_drill_down = matches!(
+                                    track.kind,
+                                    Some(SpotifySearchKind::Album)
+                                        | Some(SpotifySearchKind::Artist)
+                                        | Some(SpotifySearchKind::Playlist)
+                                );
+                                if !is_drill_down {
+                                    self.pickers.close_top();
+                                }
                                 if playlist_id == "web" {
                                     match track.kind {
                                         Some(SpotifySearchKind::Album)
