@@ -167,6 +167,13 @@ impl LastfmManager {
     /// already holds.
     pub fn auth_url(&self, token: &str) -> Option<String> {
         let api_key = self.api_key.as_ref()?;
+        // No token, no URL. The authorize page renders nothing authorizable
+        // without one, so handing the caller a URL ending in `token=` promised
+        // a step that could not complete.
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
         Some(format!(
             "https://www.last.fm/api/auth/?api_key={api_key}&token={token}"
         ))

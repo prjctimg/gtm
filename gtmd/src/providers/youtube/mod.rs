@@ -1059,7 +1059,13 @@ pub(crate) async fn download_into(
 /// *different* video can be newer, and the daemon then queues the wrong track
 /// under the right title. yt-dlp states the answer; this reads it.
 fn parse_destination(line: &str) -> Option<&str> {
-    let rest = line.trim().strip_prefix("[download] Destination:")?;
+    // The label and the path are located separately, and the gap between them
+    // is trimmed, because the gap is not fixed. Matching the whole prefix in
+    // one `strip_prefix` meant a single extra space lost the line, and a lost
+    // line means the destination is unknown — which is the guess this function
+    // exists to avoid.
+    let rest = line.trim().strip_prefix("[download]")?;
+    let rest = rest.trim_start().strip_prefix("Destination:")?;
     let rest = rest.trim();
     if rest.is_empty() { None } else { Some(rest) }
 }

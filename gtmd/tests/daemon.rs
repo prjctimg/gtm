@@ -14,6 +14,17 @@ use gtmd::daemon::Daemon;
 use gtmd::providers::spotify::SpotifyManager;
 use gtmd::providers::spotify::oauth::{DEFAULT_OAUTH_PORT, OauthFlow};
 
+/// Real, decodable audio for the queue tests.
+///
+/// `Queue::Add` opens and decodes every path it is handed, so a path that does
+/// not exist fails the request before the queue is touched. The fixtures are
+/// committed rather than written at runtime so a missing one is a checkout
+/// problem, visible in the diff, instead of a test that quietly stops covering
+/// anything.
+fn fixture(name: &str) -> String {
+    format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn test_paths() -> (PathBuf, PathBuf, PathBuf) {
@@ -215,7 +226,7 @@ async fn queue_add_list() {
         &mut writer,
         &DaemonReq::Queue {
             action: QueueAction::Add {
-                paths: vec!["/tmp/test.opus".into()],
+                paths: vec![fixture("test.wav")],
                 position: None,
             },
         },
@@ -238,7 +249,7 @@ async fn queue_add_list() {
             ..
         } => {
             assert_eq!(tracks.len(), 1, "expected 1 track in queue");
-            assert_eq!(tracks[0].path, "/tmp/test.opus");
+            assert_eq!(tracks[0].path, fixture("test.wav"));
             assert_eq!(cursor, 0);
         }
         _ => panic!("expected QueueState, got {res:?}"),
@@ -253,7 +264,7 @@ async fn queue_add_multi() {
     let (handle, config) = daemon_handle().await;
     let (mut reader, mut writer) = connect(&config.socket_path).await;
 
-    for path in &["/tmp/a.opus", "/tmp/b.opus", "/tmp/c.opus"] {
+    for path in &[fixture("a.wav"), fixture("b.wav"), fixture("c.wav")] {
         let res = send_req(
             &mut reader,
             &mut writer,
@@ -286,9 +297,9 @@ async fn queue_add_multi() {
             ..
         } => {
             assert_eq!(tracks.len(), 3);
-            assert_eq!(tracks[0].path, "/tmp/a.opus");
-            assert_eq!(tracks[1].path, "/tmp/c.opus");
-            assert_eq!(tracks[2].path, "/tmp/b.opus");
+            assert_eq!(tracks[0].path, fixture("a.wav"));
+            assert_eq!(tracks[1].path, fixture("c.wav"));
+            assert_eq!(tracks[2].path, fixture("b.wav"));
             assert_eq!(cursor, 0);
         }
         _ => panic!("expected QueueState, got {res:?}"),
@@ -303,7 +314,7 @@ async fn test_queue_remove() {
     let (handle, config) = daemon_handle().await;
     let (mut reader, mut writer) = connect(&config.socket_path).await;
 
-    for path in &["/tmp/x.opus", "/tmp/y.opus"] {
+    for path in &[fixture("x.wav"), fixture("y.wav")] {
         send_req(
             &mut reader,
             &mut writer,
@@ -338,7 +349,7 @@ async fn test_queue_remove() {
     match res {
         DaemonRes::QueueState { queue: tracks, .. } => {
             assert_eq!(tracks.len(), 1);
-            assert_eq!(tracks[0].path, "/tmp/y.opus");
+            assert_eq!(tracks[0].path, fixture("y.wav"));
         }
         _ => panic!("expected QueueState, got {res:?}"),
     }
@@ -357,7 +368,7 @@ async fn test_queue_clear() {
         &mut writer,
         &DaemonReq::Queue {
             action: QueueAction::Add {
-                paths: vec!["/tmp/z.opus".into()],
+                paths: vec![fixture("z.wav")],
                 position: None,
             },
         },
@@ -581,6 +592,7 @@ async fn lastfm_setup() {
 /// would be actively harmful — Spotify rotates the refresh token on every new
 /// grant for the same app, invalidating the token just stored — so
 /// `needs_play_link` must be false here.
+#[ignore = "needs a live Spotify credential"]
 #[tokio::test]
 async fn a_shared_app_needs_no_second_flow() {
     let (handle, config) = daemon_handle().await;
@@ -614,6 +626,7 @@ async fn a_shared_app_needs_no_second_flow() {
 /// silent from the user's side: playlists sync, search works, and only audio is
 /// missing. So the authorize URL the second flow produces has to carry
 /// librespot's id, never the configured Web API one.
+#[ignore = "needs a live Spotify credential"]
 #[test]
 fn play_link_authorizes_with_librespot() {
     let dir = std::env::temp_dir().join(format!("gtmd_play_link_{}", std::process::id()));

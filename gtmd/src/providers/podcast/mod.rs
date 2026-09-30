@@ -550,8 +550,15 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 if name == "channel" {
                     in_channel = false;
                 }
-                if let Some(mut p) = ep.take()
-                    && (name == "item" || name == "entry")
+                // The name is checked *before* `take()`. Written the other way
+                // round, `take()` ran for every end tag, so the closing tag of
+                // a child element — `<title>`, `<description>`, `<guid>`, which
+                // is to say all of them — consumed the episode being built and
+                // the `&&` then discarded it. By the time `</item>` arrived
+                // there was nothing left to push, and a feed parsed to zero
+                // episodes.
+                if (name == "item" || name == "entry")
+                    && let Some(mut p) = ep.take()
                 {
                     // An entry with no audio URL used to be discarded here. That
                     // is what made the whole feed look broken when a single

@@ -755,8 +755,15 @@ mod tests {
     /// point that is not answering need opposite responses.
     #[test]
     fn connect_failures_are_classified() {
-        let rejected = StreamManager::connect_error("invalid request");
+        // What Spotify actually says when it turns a token down.
+        let rejected = StreamManager::connect_error("invalid token");
         assert!(rejected.contains("re-link"), "{rejected}");
+
+        // "invalid request" names no credential, and a message that does not is
+        // not evidence of one. Sending someone to re-link over a malformed
+        // request is worse than saying what happened, so it falls through.
+        let ambiguous = StreamManager::connect_error("invalid request");
+        assert!(!ambiguous.contains("re-link"), "{ambiguous}");
 
         let unreachable =
             StreamManager::connect_error("Service unavailable { Response status code: 503 }");

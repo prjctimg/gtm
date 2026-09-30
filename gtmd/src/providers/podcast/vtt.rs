@@ -338,12 +338,16 @@ mod tests {
         assert_eq!(l.lines[1].timestamp, 65.25);
     }
 
+    /// The two-field form is `mm:ss`, so the minutes have to be scaled. It
+    /// previously asserted that `00:01.000` was 60 seconds, which is one
+    /// second: the field is minutes, not a bare count. The cue here is a real
+    /// minute so the assertion can tell the two readings apart.
     #[test]
     fn short_timestamps_and_voice_tags_are_handled() {
-        let vtt = "WEBVTT\n\n00:01.000 --> 00:03.000\n<v Host>Welcome <b>back</b>\n";
+        let vtt = "WEBVTT\n\n01:30.000 --> 01:33.000\n<v Host>Welcome <b>back</b>\n";
         let l = parse_transcript(vtt);
         assert_eq!(l.lines.len(), 1, "{:?}", l.lines);
-        assert_eq!(l.lines[0].timestamp, 60.0);
+        assert_eq!(l.lines[0].timestamp, 90.0);
         assert_eq!(l.lines[0].text, "Welcome back");
     }
 
