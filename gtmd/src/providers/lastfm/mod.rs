@@ -617,8 +617,11 @@ mod tests {
         let url = mgr.auth_url("TOK").expect("api key set");
         assert!(url.contains("api_key=KEY"), "{url}");
         assert!(url.contains("token=TOK"), "{url}");
-        // The token is the thing being authorized; it is not optional.
-        assert!(!mgr.auth_url("").unwrap().ends_with("token="), "{url}");
+        // The token is the thing being authorized; without one there is no URL
+        // to offer, rather than one that renders a page nothing can be
+        // authorized against.
+        assert!(mgr.auth_url("").is_none());
+        assert!(mgr.auth_url("   ").is_none());
     }
 
     /// No api key means no URL, rather than one that would 404 at Last.fm.

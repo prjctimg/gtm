@@ -146,7 +146,7 @@ fn parse_cues(body: &str, comma: &str, period: &str) -> Vec<LrcLine> {
         let Some((start, end)) = timing else {
             continue;
         };
-        let (words, plain) = split_words(&text.join("\n"));
+        let (words, plain) = split_words(&strip_spaced_tags(&text.join("\n")));
         if plain.trim().is_empty() {
             continue;
         }
@@ -216,6 +216,39 @@ fn parse_timestamp(s: &str, comma: &str, period: &str) -> Option<f64> {
 
 /// Pull `<00:00:01.500>` word timings out of a cue and strip all WebVTT
 /// markup, returning karaoke words plus the clean line they spell out.
+/// Remove the tags whose content may contain spaces, before the text is split
+/// on whitespace.
+///
+/// `<v Roger Bingham>` is two whitespace-separated tokens, so `clean_text` was
+/// handed `<v` with no closing bracket and `Roger` with an unmatched `>`. It
+/// stripped the first, passed the second through, and the speaker's name ended
+/// up in the cue as text. Inline timestamps are left alone: they carry the word
+/// timings, so they are the one thing in angle brackets that has to survive.
+fn strip_spaced_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let Some(close) = rest[open..].find('>') else {
+            // Unterminated: the tail is not a tag either, so keep it verbatim.
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let inner = &rest[open + 1..open + close];
+        let is_stamp = !inner.starts_with('/')
+            && !inner.is_empty()
+            && inner
+                .split(':')
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit() || c == '.'));
+        if is_stamp {
+            out.push_str(&rest[open..open + close + 1]);
+        }
+        rest = &rest[open + close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn split_words(text: &str) -> (Vec<LrcWord>, String) {
     let mut words = Vec::new();
     let mut plain = String::new();

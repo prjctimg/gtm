@@ -451,8 +451,12 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                         p.url = href;
                     }
                 }
+                // Not gated on `is_atom`, unlike the start-element arm above it.
+                // `<media:content url=... type="audio/mpeg"/>` is how a growing
+                // number of RSS feeds carry the audio, and self-closing is how
+                // they write it: the Atom-only gate meant those feeds parsed to
+                // episodes with no audio, which is no better than none at all.
                 if name == "content"
-                    && is_atom
                     && let Some(p) = ep.as_mut()
                     && p.url.is_empty()
                     && let Some(url) = attr_str(&e, "url")
@@ -871,8 +875,18 @@ Hello]]></podcast:transcript>
             rel: Some("captions".into()),
         };
         assert!(b.rank() < a.rank());
+        // A hosted transcript is present even with an empty inline body: the
+        // body is not the only way to get the text.
         a.text = Some(String::new());
-        assert!(!a.is_present(), "an empty body is not a transcript");
+        assert!(a.is_present());
+        // An empty body and no url is nothing at all.
+        let hollow = PodcastTranscript {
+            url: None,
+            text: Some(String::new()),
+            kind: None,
+            rel: Some("captions".into()),
+        };
+        assert!(!hollow.is_present(), "an empty body is not a transcript");
         b.text = Some("WEBVTT".into());
         assert!(b.is_present());
     }
