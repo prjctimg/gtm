@@ -8,16 +8,13 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm/ci.yml?label=CI)](https://github.com/prjctimg/gtm/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/prjctimg/gtm)](https://github.com/prjctimg/gtm/blob/main/LICENSE)
 
-A terminal music player (**gtm** — "goto music") with background playback and
-YouTube/Spotify integration. It is a background daemon (`gtmd`) with a client
-(`gtm`); you control it through the terminal.
+`gtm` is a terminal music player: a background daemon (`gtmd`) with a client
+(`gtm`), both driven from the terminal.
 
 ## On this page
 
 - [Features](#features)
 - [Install](#install)
-  - [Build from Source](#build-from-source)
-  - [Termux](#termux-native-on-device)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [Acknowledgements](#acknowledgements)
@@ -68,40 +65,13 @@ curl -fsSL https://gtmd.dev/install.sh | bash -s -- --nightly
 
 Or grab an archive [releases page](https://github.com/prjctimg/gtm/releases/latest), extract it, and run the `./install.sh` in its directory
 
-### Build from Source
 
-Requires Rust 1.85+ (the workspace is edition 2024) and ALSA development headers (`libasound2-dev` on Debian/Ubuntu). `clang` is the default compiler (fallback to `gcc`) and uses `mold` when available instead of `ld`.
+See [CONTRIBUTING.md](./CONTRIBUTING.md#build-from-source) for more installation routes.
 
-This produces a `nightly` build, for tagged versions, checkout first.
-
-```bash
-
-git clone https://github.com/prjctimg/gtm
-cd gtm
-
-cargo build --release
-
-# Also installs completions,manpages etc
-sudo make install
-```
-
-#### Termux (native, on-device)
-
-```bash
-pkg install rust clang pkg-config pulseaudio make
-
-# build.rs auto-detects Termux and the Makefile enables the PulseAudio backend for you.
-# (A manual equivalent is `cargo build --release --features pulseaudio`.)
-make termux
-```
-
-`gtmd` auto-detects Termux at runtime, picks the PulseAudio
-backend, and starts the PulseAudio server automatically — no manual
-`pulseaudio --start` needed.
 
 ## Documentation
 
-- [gtmd.dev](https://gtmd.dev) — guides, configuration reference and troubleshooting
+- [gtmd.dev](https://gtmd.dev) 
 - [gtm(1)](docs/man/gtm.1.md)
 - [gtmd(1)](docs/man/gtmd.1.md)
 - [gtmd-ipc(1)](docs/man/gtmd-ipc.1.md)
@@ -115,9 +85,7 @@ You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-termi
 
 ## Contributing
 
-This is a hobby project. It is feature complete and stable enough to use as a daily driver, though still largely a WIP.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions & the crate layout, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for participation guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) & [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ---
 
