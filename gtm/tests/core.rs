@@ -3311,12 +3311,19 @@ fn completion_consumers_all_invoke_the_one_generator() {
         script.contains("for bin in gtm gtmd; do"),
         "the generator no longer covers both binaries"
     );
-    // clap's zsh script is a completion function and is installed as `_gtm`.
-    // Emitting it as `gtm.zsh` matches nothing that consumes it.
+    // clap's zsh script is a completion *function*, so it is installed as
+    // `_gtm`. Emitting `gtm.zsh` or `gtm._` matches nothing that consumes it,
+    // and the .deb staging resolves the asset by name and fails the build.
     assert!(
-        script.contains("names=(bash _ fish elv ps1)"),
-        "the zsh output is no longer named `_`, which is what consumers install"
+        script.contains(">\"$dest/_$bin\""),
+        "the zsh output is no longer written as _$bin"
     );
+    for name in ["$bin.bash", "$bin.fish", "$bin.elv", "$bin.ps1"] {
+        assert!(
+            script.contains(&format!(">\"$dest/{name}\"")),
+            "no output for {name}"
+        );
+    }
 
     // Every consumer that reads the directory must also produce it.
     for (what, path) in [

@@ -14,21 +14,20 @@ outdir="${1:?usage: completions.sh <outdir>}"
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo"
 
-# clap's zsh output is a completion function, so it is installed as `_gtm`,
-# not under the shell's own name.
-shells=(bash zsh fish elvish powershell)
-names=(bash _ fish elv ps1)
+dest="$outdir/completions"
+mkdir -p "$dest"
 
-for i in "${!shells[@]}"; do
-  shell="${shells[$i]}"
-  ext="${names[$i]}"
-  for bin in gtm gtmd; do
-    path="target/release/$bin"
-    if [[ ! -x "$path" ]]; then
-      echo "completions.sh: $path not built; run 'cargo build --release' first" >&2
-      exit 1
-    fi
-    mkdir -p "$outdir/completions"
-    "$path" --completions "$shell" >"$outdir/completions/$bin.$ext"
-  done
+for bin in gtm gtmd; do
+  path="target/release/$bin"
+  if [[ ! -x "$path" ]]; then
+    echo "completions.sh: $path not built; run 'cargo build --release' first" >&2
+    exit 1
+  fi
+  "$path" --completions bash >"$dest/$bin.bash"
+  # clap's zsh output is a completion *function*, so it is installed as
+  # `_gtm`, not as `gtm.zsh` or `gtm._`. Every consumer expects the former.
+  "$path" --completions zsh >"$dest/_$bin"
+  "$path" --completions fish >"$dest/$bin.fish"
+  "$path" --completions elvish >"$dest/$bin.elv"
+  "$path" --completions powershell >"$dest/$bin.ps1"
 done

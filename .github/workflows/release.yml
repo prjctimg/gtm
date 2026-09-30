@@ -348,6 +348,14 @@ jobs:
         if: matrix.family != 'musl' && matrix.family != 'arch-arm'
         run: ./scripts/build/manpages.sh artifacts
 
+      - name: Install host build deps for completions
+        # The Android job cross-compiles through the NDK, so it never needed
+        # ALSA headers. Generating completions needs a *host* build of the
+        # binaries, and `rodio` is not optional, so that build wants
+        # libasound2-dev. The other families already installed it earlier.
+        if: matrix.family == 'android'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Generate shell completions
         # musl and arch-arm generate inside their build containers, which run
         # the same script. Android is here rather than in its ndk build because
