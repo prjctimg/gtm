@@ -3390,6 +3390,39 @@ impl App {
                                     self.pickers.open(PickerId::YTSearch);
                                 } else if action == "search lib" {
                                     self.pickers.open(PickerId::SearchLibrary);
+                                } else if action == "search this list" {
+                                    // `/` in normal mode. The palette listed
+                                    // this row with no arm behind it, so
+                                    // selecting it did nothing.
+                                    self.pickers.close_top();
+                                    self.input_mode = InputMode::Searching;
+                                    self.dismiss_track_popup();
+                                } else if action == "library lists" {
+                                    // `Alt+.`
+                                    self.pickers.close_top();
+                                    self.pickers.open(PickerId::Libraries);
+                                    self.on_picker_opened(PickerId::Libraries);
+                                } else if action == "multiselect up" {
+                                    // Fully implemented already -- these two
+                                    // arms were simply missing, so the rows did
+                                    // nothing when chosen.
+                                    self.pickers.close_top();
+                                    if self.multiselect_mode && !self.library_pane_focus {
+                                        let pos = self.list_pos().saturating_sub(1);
+                                        self.set_list_pos(pos);
+                                        self.update_track_popup();
+                                        self.add_row_selection(pos);
+                                    }
+                                } else if action == "multiselect down" {
+                                    self.pickers.close_top();
+                                    if self.multiselect_mode && !self.library_pane_focus {
+                                        let max = self.library_list_len().saturating_sub(1);
+                                        let pos = (self.list_pos() + 1).min(max);
+                                        self.set_list_pos(pos);
+                                        self.update_track_popup();
+                                        self.preload_upcoming_covers();
+                                        self.add_row_selection(pos);
+                                    }
                                 } else if action == "eq" {
                                     self.pickers.open(PickerId::Equalizer);
                                 } else if action == "sleeptimer" {

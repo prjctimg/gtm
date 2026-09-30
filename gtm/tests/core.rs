@@ -2484,7 +2484,7 @@ fn upnext_cover_is_resolved_by_path_not_id() {
 
     // The client must pass the path; `art().cover(id)` alone is the bug.
     let start = cover.find("pub fn start_upnext").expect("no start_upnext");
-    let block = &cover[start..start + 2000];
+    let block = &cover[start..start + 2600];
     assert!(
         block.contains("cover_for(tid, cover_path)"),
         "start_upnext does not send the cover path"

@@ -177,13 +177,7 @@ impl Pickers {
             }
             2 => {
                 let st = app.spotify.status.clone().unwrap_or_default();
-                vec![
-                    Self::spotify_status_line(&st),
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                    String::new(),
-                ]
+                vec![Self::spotify_status_line(&st), String::new(), String::new()]
             }
             _ => Vec::new(),
         }
