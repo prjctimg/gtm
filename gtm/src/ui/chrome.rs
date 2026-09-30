@@ -427,12 +427,18 @@ impl Render {
         let track = app.state.current_track.clone();
         // One row is always reserved for the lyric line, whether or not there
         // is a lyric to show, so toggling `l` does not resize the artwork.
+        //
+        // The progress band used to be read out of `vchunks[2]` — the artwork's
+        // own band — which drew the bar over the top of the cover and the
+        // elapsed time two rows into it, and left the 3 rows reserved below
+        // never rendered at all. That read as a cover floating too high with a
+        // band of dead space under it.
         let vchunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(2),
-                Constraint::Length(1),
                 Constraint::Min(0),
+                Constraint::Length(1),
                 Constraint::Length(3),
             ])
             .split(area);
@@ -441,17 +447,14 @@ impl Render {
             Render::zen_track_header(f, app, t, vchunks[0]);
         }
 
-        // The lyric line gets its own band directly under the title and
-        // artist, and the artwork centres in whatever is left. It used to be
-        // the last row of the middle band, pinned to the bottom of the art, so
-        // it read as a caption on the artwork rather than as the line being
-        // sung, and the art was then centred in a band one row shorter than
-        // the space it actually had — which put the whole composition about a
-        // row and a half above the middle of the screen.
-        let lyric_rect = vchunks[1];
+        // Everything the cover is not: the header above it, and the lyric line
+        // and progress below it. The artwork centres in the band that is left,
+        // so the composition as a whole sits in the middle of the screen rather
+        // than the art alone.
+        let lyric_rect = vchunks[2];
         // Enlarged cover centred in what is left. Half-block art keeps the
         // image square at a 1:2 cell aspect, so width = height * 2.
-        let art_band = vchunks[2];
+        let art_band = vchunks[1];
         let max_w = art_band.width.saturating_sub(4);
         let max_h = art_band.height.saturating_sub(2);
         let mut w = max_w.min(max_h.saturating_mul(2));
@@ -480,7 +483,7 @@ impl Render {
 
         // Centered progress bar with elapsed / total underneath; hidden for
         // live streams (mirrors the now-playing pane).
-        let prog = vchunks[2];
+        let prog = vchunks[3];
         let dur = if app.state.duration > 0.0 {
             app.state.duration as u64
         } else {
@@ -908,7 +911,15 @@ impl Render {
 
             if let Some(track) = app.state.current_track.clone() {
                 let inner = np_inner;
-                let avail_h = inner.height.saturating_sub(2);
+                // Narrow panes have no row to spare: the 2-row padding meant
+                // for breathing room around the cover cost half the art, and on
+                // a 5-row pane left it 4x2 cells. The cover fills the pane
+                // there instead, which is wider than the padding it displaces.
+                let avail_h = if is_narrow {
+                    inner.height
+                } else {
+                    inner.height.saturating_sub(2)
+                };
                 let cover_h = if is_small_height {
                     avail_h.clamp(2, 5)
                 } else {
@@ -2145,6 +2156,21 @@ impl Render {
             }
         };
 
+        // On narrow/medium screens the lyrics take over the results pane, so
+        // skip rendering the list underneath and registering hit zones for rows
+        // that are not visible.
+        //
+        // Only while the lyrics hold focus. This condition never consulted
+        // focus, so with `l` on the list was gone for good: under 100 columns
+        // the lyrics were drawn over the pane permanently and Tab moved a
+        // one-column focus bar between two panes that both stayed put. On
+        // narrow it was worse than that — the list renders into `panes[1]`,
+        // which is `Length(0)` whenever the left pane has focus, so it was
+        // being drawn into a zero-width rect and was not on screen at all.
+        // Gating on `pane_focus` makes the existing `cycle_library_focus` states
+        // swap the two views instead of just moving the highlight.
+        let lyrics_results_pane = app.lyrics.show && lyrics_area.is_none() && app.lyrics.pane_focus;
+
         if (want_playlist_card || want_spot_track_card)
             && left_info_area.height > 0
             && (info_sep_area.height > 0 || left_info_area.height > 0)
@@ -2155,21 +2181,19 @@ impl Render {
             && left_info_area.height >= info_block_h()
             && (info_sep_area.height > 0 || left_info_area.height > 0)
         {
-            // Narrow + lyrics: the middle pane is given over to lyrics, so the
-            // info block is repurposed to show the currently-highlighted list
+            // Narrow + lyrics: the results pane is given over to the lyrics, so
+            // the block is repurposed to show the currently-highlighted list
             // contents (the selected row and its neighbours) instead of the
-            // now-playing track card.
-            if is_narrow && app.lyrics.show {
+            // now-playing track card. Only while the lyrics are actually on
+            // screen there; when the left pane holds focus the pane is the
+            // library again and the list preview is the sensible thing to keep.
+            if is_narrow && lyrics_results_pane {
                 Render::list_in_info(f, left_info_area, app);
             } else {
                 Render::info_in_pane(f, info_sep_area, left_info_area, app);
             }
         }
 
-        // On narrow/medium screens lyrics take over the results pane entirely,
-        // so skip rendering the list underneath and registering hit zones for
-        // rows that are not visible.
-        let lyrics_results_pane = app.lyrics.show && lyrics_area.is_none();
         if !lyrics_results_pane {
             let right_para = Paragraph::new(right_lines);
             // The detail is the title for every category except Spotify, where
@@ -2224,7 +2248,7 @@ impl Render {
 
         if let Some(lyrics_area) = lyrics_area {
             Render::lyrics_pane(f, lyrics_area, app);
-        } else if app.lyrics.show && !lyrics_third_pane {
+        } else if lyrics_results_pane {
             // Medium-width screens (60-99 cols): show lyrics in the results pane
             // instead of a separate third pane.
             let base = panes
@@ -2374,16 +2398,26 @@ impl Render {
                     Style::default().fg(app.theme.fg_dim),
                 )));
             }
-            let header_h = rows.len().min(3) as u16;
+            // The artwork sits inline to the left of both lines, so the text
+            // starts one cover-width in rather than being centred over the full
+            // pane and drifting out from under the image.
+            //
+            // 3 rows, up from 2: at 4 columns wide the art was too small to
+            // recognise as the album. It is suppressed on narrow screens, where
+            // the lyrics have the whole width to themselves and the now-playing
+            // cover is the one worth the room.
+            let cover_h = 3u16.min(inner.height.saturating_sub(2));
+            let cover_w = cover_h * 2;
+            let show_cover = app.terminal_cols >= 60 && cover_w + 2 < inner.width;
+            // The band the art and the text share. It has to be at least as tall
+            // as the art: sized off the text alone it is 2 rows for a title and
+            // an artist, and a 3-row cover then overwrote the first line of the
+            // lyrics underneath, because the art was only ever clamped to the
+            // pane and never to the band.
+            let header_h = (rows.len() as u16).max(if show_cover { cover_h } else { 0 });
             if header_h == 0 {
                 None
             } else {
-                // The artwork sits inline to the left of both lines, so the
-                // text starts one cover-width in rather than being centred over
-                // the full pane and drifting out from under the image.
-                let cover_h = 2u16.min(inner.height.saturating_sub(1));
-                let cover_w = cover_h * 2;
-                let show_cover = cover_w > 0 && cover_w + 2 < inner.width;
                 let text_x = if show_cover {
                     inner.x + cover_w + 1
                 } else {

@@ -2986,3 +2986,158 @@ fn discord_is_a_setup_service_and_alt_x_is_not_duplicated() {
         "the Discord brand glyph is missing"
     );
 }
+
+/// Zen's four bands, in order, and the progress indicator actually landing in
+/// the last one.
+///
+/// `zen_now_playing` read the progress bar and the elapsed time out of
+/// `vchunks[2]` — the artwork's own band. The bar drew over the top of the
+/// cover, the time drew two rows into it, and the 3 rows reserved below were
+/// never rendered to at all, which read as the cover floating too high above a
+/// band of dead space. Whitespace is stripped so reformatting cannot hide a
+/// reordering.
+#[test]
+fn zen_bands_are_header_cover_lyric_progress() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let squish = |s: &str| s.split_whitespace().collect::<String>();
+
+    let zen = chrome
+        .split("fn zen_now_playing")
+        .nth(1)
+        .expect("zen_now_playing is gone");
+    let zen = &zen[..zen
+        .find("fn zen_lyric_line")
+        .expect("zen_lyric_line is gone")];
+
+    assert!(
+        squish(zen).contains(&squish(
+            ".constraints([Constraint::Length(2),Constraint::Min(0),Constraint::Length(1),Constraint::Length(3),])"
+        )),
+        "zen's bands are not header / cover / lyric / progress"
+    );
+
+    // Each band is claimed by exactly one thing, and the cover's is not the
+    // progress bar's.
+    for (band, owner) in [
+        ("0", "Render::zen_track_header(f, app, t, vchunks[0]);"),
+        ("1", "let art_band = vchunks[1];"),
+        ("2", "let lyric_rect = vchunks[2];"),
+        ("3", "let prog = vchunks[3];"),
+    ] {
+        assert!(zen.contains(owner), "zen band {band} is no longer {owner}");
+    }
+
+    // The regression itself, in the shape it had.
+    assert!(
+        !squish(zen).contains(&squish("let prog = vchunks[2];")),
+        "the progress bar is reading the artwork's band again"
+    );
+}
+
+/// Tab has to swap the lyrics out of the results pane, not just move a focus
+/// bar.
+///
+/// `lyrics_results_pane` was `lyrics.show && lyrics_area.is_none()` and never
+/// consulted focus, so under 100 columns the moment `l` was on the library
+/// results list was skipped for good and the lyrics sat over the pane
+/// permanently. On narrow the list was additionally being drawn into
+/// `panes[1]`, which is `Length(0)` while the left pane has focus, so it was
+/// not on screen at all.
+#[test]
+fn lyrics_own_the_results_pane_only_while_focused() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let keys = include_str!("../src/app/keys.rs");
+
+    assert!(
+        chrome.contains(
+            "let lyrics_results_pane = app.lyrics.show && lyrics_area.is_none() && app.lyrics.pane_focus;"
+        ),
+        "the results pane no longer yields to the lyrics when focus moves away"
+    );
+    // And the list is skipped, and the lyrics drawn, off that one flag.
+    assert!(chrome.contains("if !lyrics_results_pane {"));
+    assert!(chrome.contains("} else if lyrics_results_pane {"));
+
+    // Every way of turning the lyrics on has to move focus into them, or `l`
+    // puts the pane in the unfocused state and nothing appears. Checked per
+    // occurrence: the transcript key and the palette action are the same
+    // statement, so searching for the first would pass on the first alone.
+    let mut sites = 0;
+    let mut at = 0;
+    while let Some(found) = keys[at..].find("self.lyrics.show = true;") {
+        let start = at + found;
+        let tail = &keys[start..start + 240];
+        assert!(
+            tail.contains("self.lyrics.pane_focus = true;"),
+            "a site that turns the lyrics on does not focus them, so they do not appear"
+        );
+        sites += 1;
+        at = start + 1;
+    }
+    assert_eq!(
+        sites, 2,
+        "expected the transcript key and the palette action"
+    );
+
+    // The `l` toggle, as a slice: a fixed character window measured how far the
+    // explanatory comment happened to run.
+    let l = keys
+        .split("Some(KeyboardAction::FetchLyrics) => {")
+        .nth(1)
+        .expect("`l` is gone");
+    let l = &l[..l
+        .find("Some(KeyboardAction::")
+        .expect("FetchLyrics arm is unterminated")];
+    assert!(l.contains("self.lyrics.show = !self.lyrics.show;"));
+    assert!(
+        l.contains("self.lyrics.pane_focus = true;"),
+        "`l` turns the lyrics on without focusing them, so they do not appear"
+    );
+    assert!(
+        l.contains("self.lyrics.pane_focus = false;"),
+        "`l` leaves the lyrics pane focused after hiding them"
+    );
+}
+
+/// The lyrics cover: 3 rows rather than 2, never on a narrow screen, and never
+/// tall enough to overwrite the first lyric line.
+#[test]
+fn lyrics_cover_is_bigger_but_bounded_by_its_band() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+
+    assert!(
+        chrome.contains("let cover_h = 3u16.min(inner.height.saturating_sub(2));"),
+        "the lyrics cover is not 3 rows"
+    );
+    // Narrow (<60 cols) gives the width to the lyrics and the room to the
+    // now-playing cover instead.
+    assert!(
+        chrome.contains("let show_cover = app.terminal_cols >= 60 && cover_w + 2 < inner.width;"),
+        "the lyrics cover is not suppressed on narrow screens"
+    );
+    // The band the art shares with the title and artist has to be at least as
+    // tall as the art. It was sized off the text alone, so a 3-row cover
+    // overwrote the first line of lyrics underneath.
+    assert!(
+        chrome.contains(
+            "let header_h = (rows.len() as u16).max(if show_cover { cover_h } else { 0 });"
+        ),
+        "the lyrics header no longer grows to fit its cover"
+    );
+}
+
+/// The now-playing cover uses the whole pane on narrow screens.
+///
+/// The 2-row padding cost half the art there: on the 5-row pane a narrow
+/// terminal gets, `avail_h` was 2 and the cover 4x2 cells.
+#[test]
+fn now_playing_cover_fills_a_narrow_pane() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+
+    assert!(
+        chrome.contains(
+            "let avail_h = if is_narrow {\n                    inner.height\n                } else {\n                    inner.height.saturating_sub(2)\n                };"
+        ),
+        "the narrow now-playing cover is padded again"
+    );
+}

@@ -853,7 +853,14 @@ impl App {
                     }
                     Some(KeyboardAction::FetchLyrics) => {
                         self.lyrics.show = !self.lyrics.show;
-                        if !self.lyrics.show {
+                        if self.lyrics.show {
+                            // The lyrics only take the results pane while they
+                            // hold focus, so turning them on has to move focus
+                            // into them. Without this, `l` under 100 columns put
+                            // the pane into the "not focused" state and the
+                            // lyrics only appeared after a further Tab.
+                            self.lyrics.pane_focus = true;
+                        } else {
                             self.lyrics.pane_focus = false;
                             self.lyrics.manual_scroll = false;
                         }
@@ -2654,6 +2661,7 @@ impl App {
                         if ep.as_ref().is_some_and(|e| !e.transcripts.is_empty()) {
                             self.pickers.close_top();
                             self.lyrics.show = true;
+                            self.lyrics.pane_focus = true;
                             self.lyrics.fetching = true;
                             let label = ep
                                 .map(|e| e.title)
@@ -3513,6 +3521,7 @@ impl App {
                                     self.pickers.open(PickerId::SpotifySearch);
                                 } else if action == "fetch lyrics" {
                                     self.lyrics.show = true;
+                                    self.lyrics.pane_focus = true;
                                     self.send_high(TuiCommand::FetchLyrics);
                                 } else if action == "progress style" {
                                     self.pickers.open(PickerId::ProgressStyle);
