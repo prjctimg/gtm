@@ -429,10 +429,15 @@ impl Pickers {
                         {
                             let (_, _pl_name, track) = &app.spotify.search_results[i];
                             let prefix = if row == sel { " > " } else { "   " };
+                            // The kind tag replaces the duration in the right-hand
+                            // column, so a track shows `[3:21]` and an album shows
+                            // `[Album]`. Unbracketed: the column is already
+                            // reserved for this, and the brackets put a second set
+                            // of square brackets on rows that also end in one.
                             let tag = match track.kind {
-                                Some(SpotifySearchKind::Album) => Some("[Album]"),
-                                Some(SpotifySearchKind::Artist) => Some("[Artist]"),
-                                Some(SpotifySearchKind::Playlist) => Some("[Playlist]"),
+                                Some(SpotifySearchKind::Album) => Some("Album"),
+                                Some(SpotifySearchKind::Artist) => Some("Artist"),
+                                Some(SpotifySearchKind::Playlist) => Some("Playlist"),
                                 _ => None,
                             };
                             let body = match track.kind {
@@ -443,10 +448,14 @@ impl Pickers {
                                 .duration_ms
                                 .map(|ms| format_duration_short(ms / 1000))
                                 .unwrap_or_default();
-                            let content = format!(
-                                "{prefix}{body} [{}]",
-                                tag.map(|t| t.to_string()).unwrap_or(dur)
-                            );
+                            // A track has no kind tag, so the column keeps the
+                            // bracketed duration and the row looks the same as
+                            // every other list in the app.
+                            let content = match tag {
+                                Some(t) => format!("{prefix}{body} {t}"),
+                                None if dur.is_empty() => format!("{prefix}{body}"),
+                                None => format!("{prefix}{body} [{dur}]"),
+                            };
                             let style = if row == sel {
                                 Style::default()
                                     .fg(app.theme.selection_fg_readable())

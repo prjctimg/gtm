@@ -2469,3 +2469,74 @@ fn no_spotify_charts_provider() {
         "the spotify chart module is still declared"
     );
 }
+
+/// The up-next card must resolve its cover by path, not by track id.
+///
+/// A provider track (Spotify, YouTube) has no row in the local library, so
+/// its `id` is not a library id and collides with whatever local track holds
+/// that number. The cover lookup matched on `id` alone, so the up-next card
+/// rendered the currently playing track's artwork. Both ends are asserted
+/// here: the client sends the path, and the daemon prefers it.
+#[test]
+fn upnext_cover_is_resolved_by_path_not_id() {
+    let cover = include_str!("../src/app/cover.rs");
+    let daemon_cover = include_str!("../../gtmd/src/daemon/cover.rs");
+
+    // The client must pass the path; `art().cover(id)` alone is the bug.
+    let start = cover.find("pub fn start_upnext").expect("no start_upnext");
+    let block = &cover[start..start + 2000];
+    assert!(
+        block.contains("cover_for(tid, cover_path)"),
+        "start_upnext does not send the cover path"
+    );
+    assert!(
+        !block.contains("art().cover(tid)"),
+        "start_upnext still looks the cover up by id alone"
+    );
+
+    // The daemon must prefer a path match over an id match.
+    assert!(
+        daemon_cover.contains("let by_path = track_path.and_then(|p| {"),
+        "the known-cover lookup does not try the path first"
+    );
+    assert!(
+        daemon_cover.contains("None if track_id == 0 => None,"),
+        "a non-zero id is still consulted ahead of the path"
+    );
+}
+
+/// List rows must not print a bracketed `[stream]` where a duration goes.
+///
+/// The link glyph already marks a remote row, and `[stream]` sat in the
+/// duration column looking like a length. Search rows lost the same brackets
+/// around their kind tag, which put two sets of square brackets on one row.
+#[test]
+fn list_rows_have_no_bracketed_stream_suffix() {
+    let queue = include_str!("../src/ui/pickers/queue.rs");
+    let spotify = include_str!("../src/ui/pickers/mod.rs");
+
+    assert!(
+        !queue.contains("\"stream\".to_string()"),
+        "the queue still builds a `[stream]` suffix"
+    );
+    // A remote row prints no tag at all; only `live` and durations survive.
+    assert!(
+        queue.contains("} else if remote {\n                None"),
+        "the remote branch no longer suppresses the tag"
+    );
+
+    for gone in [
+        "Some(\"[Album]\")",
+        "Some(\"[Artist]\")",
+        "Some(\"[Playlist]\")",
+    ] {
+        assert!(
+            !spotify.contains(gone),
+            "search rows still wrap the kind tag in brackets: {gone}"
+        );
+    }
+    assert!(
+        spotify.contains("Some(SpotifySearchKind::Album) => Some(\"Album\"),"),
+        "the kind tag lost its unbracketed form"
+    );
+}

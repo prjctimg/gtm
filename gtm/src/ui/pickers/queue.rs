@@ -93,14 +93,21 @@ impl Pickers {
             } else {
                 format!(" - {}", track.artist)
             };
+            // A remote track has no length to print, and the link icon
+            // already says it is remote. `[stream]` said the same thing twice
+            // while looking like a duration sitting in the duration column,
+            // which is the one place a number is expected.
             let dur = if live {
-                "live".to_string()
+                Some("live".to_string())
             } else if remote {
-                "stream".to_string()
+                None
             } else {
-                format_duration_short(track.duration as u64)
+                Some(format_duration_short(track.duration as u64))
             };
-            let row = format!("{prefix}{icon}{label}{artist} [{dur}]");
+            let row = format!(
+                "{prefix}{icon}{label}{artist}{}",
+                dur.map(|d| format!(" [{d}]")).unwrap_or_default()
+            );
 
             let row = if is_sel {
                 format!("{row}{}", " ".repeat(row_pad(&row, inner.width)))

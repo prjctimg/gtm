@@ -28,10 +28,16 @@ impl App {
             return;
         };
         let tid = track.id;
+        // A provider track (Spotify, YouTube) has no row in the local library,
+        // so its `id` is not a library id and `art().cover(id)` looks up
+        // whatever local track happens to hold that number -- the wrong art,
+        // and for an up-next card the art of the track currently playing. The
+        // daemon needs the path to resolve provider covers.
+        let cover_path = track.cover_path.clone();
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover(tid).await
+            if let Ok(Some(b64)) = client.art().cover_for(tid, cover_path).await
                 && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
             {
                 let _ = ipc_tx.send(IpcResult::UpNextCover(Some(bytes), tid, fetch_gen));

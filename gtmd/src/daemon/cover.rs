@@ -65,20 +65,28 @@ impl Cover {
         // enough to leave a playing track with no cover at all.
         let known_cover = {
             let state = inner.state.read().await;
-            let by_key = if track_id == 0 {
-                track_path.and_then(|p| {
-                    state
-                        .queue
-                        .iter()
-                        .chain(state.default_list.iter())
-                        .find(|t| t.path == p)
-                })
-            } else {
+            // A path is the only trustworthy key. Provider tracks (Spotify,
+            // YouTube) have no library row, so their `id` is not a library id
+            // and collides with whatever local track happens to hold that
+            // number -- which for an up-next request is how the card ended up
+            // showing the *currently playing* track's art. The caller already
+            // knows the exact track, so prefer its path and fall back to the id
+            // only when no path was supplied.
+            let by_path = track_path.and_then(|p| {
                 state
                     .queue
                     .iter()
                     .chain(state.default_list.iter())
-                    .find(|t| t.id == track_id)
+                    .find(|t| t.path == p)
+            });
+            let by_key = match by_path {
+                Some(t) => Some(t),
+                None if track_id == 0 => None,
+                None => state
+                    .queue
+                    .iter()
+                    .chain(state.default_list.iter())
+                    .find(|t| t.id == track_id),
             };
             by_key.and_then(|t| t.cover_path.clone()).or_else(|| {
                 state.current_track.as_ref().and_then(|t| {
@@ -99,12 +107,12 @@ impl Cover {
         if discovered_artist.is_empty() {
             let state = inner.state.read().await;
             let mut in_merged = state.queue.iter().chain(state.default_list.iter());
-            // Track ids of `0` collide across every locally-queued entry, so
-            // resolve id-0 tracks by their exact path; otherwise match by id.
-            let hit = if track_id == 0 {
-                track_path.and_then(|p| in_merged.find(|t| t.path == p))
-            } else {
-                in_merged.find(|t| t.id == track_id)
+            // Same reasoning as `known_cover` above: the path identifies the
+            // track; a bare id can name a different one.
+            let hit = match track_path.and_then(|p| in_merged.find(|t| t.path == p)) {
+                Some(t) => Some(t),
+                None if track_id == 0 => None,
+                None => in_merged.find(|t| t.id == track_id),
             };
             if let Some(t) = hit {
                 discovered_artist = t.artist.clone();
