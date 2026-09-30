@@ -59,6 +59,21 @@ pub(crate) fn preview_pick(
     )
 }
 
+/// A control aimed at whatever Spotify Connect device is currently active,
+/// rather than at gtm's own queue.
+///
+/// `n` and `p` move the local queue. These move the Connect session — which,
+/// after a phone has been playing, is the phone — so they are named and
+/// opt-in rather than folded into the transport keys, where a press would act
+/// on the wrong thing with nothing on screen to say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Remote {
+    Next,
+    Previous,
+    Shuffle,
+    Repeat,
+}
+
 impl App {
     /// Search picker matching the focused list. The library search covers the
     /// local library; provider categories open their own provider's search so
@@ -187,6 +202,67 @@ impl App {
             // for this track dropped.
             let bytes = client.image_cover(&url).await.ok().flatten();
             let _ = ipc_tx.send(IpcResult::SpotifyPopupCover(bytes, url, fetch_gen));
+        });
+    }
+
+    /// Run one Connect control and feed the refreshed status back into the
+    /// view, so a shuffle or repeat change shows in the footer immediately.
+    pub(crate) fn spot_remote(&mut self, control: Remote) {
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        let st = self.spotify.status.clone().unwrap_or_default();
+        tokio::spawn(async move {
+            // The client is moved in and matched here rather than outside: each
+            // arm borrows it, so a future built before the spawn would not
+            // outlive the borrow.
+            let label = match control {
+                Remote::Next => match c.spotify().next().await {
+                    Ok(s) => {
+                        let _ = ipc_tx.send(IpcResult::SpotifyStatus(s));
+                        return;
+                    }
+                    Err(e) => e,
+                },
+                Remote::Previous => match c.spotify().previous().await {
+                    Ok(s) => {
+                        let _ = ipc_tx.send(IpcResult::SpotifyStatus(s));
+                        return;
+                    }
+                    Err(e) => e,
+                },
+                Remote::Shuffle => {
+                    let want = !st.shuffle;
+                    match c.spotify().set_shuffle(want).await {
+                        Ok(s) => {
+                            let _ = ipc_tx.send(IpcResult::SpotifyStatus(s));
+                            return;
+                        }
+                        Err(e) => e,
+                    }
+                }
+                Remote::Repeat => {
+                    // off -> context -> track -> off
+                    let next = match st.repeat.as_str() {
+                        "off" => "context",
+                        "context" => "track",
+                        _ => "off",
+                    };
+                    match c.spotify().set_repeat(next).await {
+                        Ok(s) => {
+                            let _ = ipc_tx.send(IpcResult::SpotifyStatus(s));
+                            return;
+                        }
+                        Err(e) => e,
+                    }
+                }
+            };
+            let name = match control {
+                Remote::Next => "next",
+                Remote::Previous => "previous",
+                Remote::Shuffle => "shuffle",
+                Remote::Repeat => "repeat",
+            };
+            let _ = ipc_tx.send(IpcResult::Error(format!("Spotify {name}: {label}")));
         });
     }
 

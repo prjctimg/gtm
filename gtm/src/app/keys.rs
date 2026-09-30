@@ -3486,6 +3486,22 @@ impl App {
                                     ));
                                 } else if action == "love last.fm" {
                                     self.manage_lastfm_love();
+                                } else if action == "spotify next" {
+                                    // Connect-device transport, not the local
+                                    // queue: `n` and `p` already own that, and
+                                    // these act on whichever device Spotify
+                                    // currently has active.
+                                    self.pickers.close_top();
+                                    self.spot_remote(SpotifyRemote::Next);
+                                } else if action == "spotify previous" {
+                                    self.pickers.close_top();
+                                    self.spot_remote(SpotifyRemote::Previous);
+                                } else if action == "spotify shuffle" {
+                                    self.pickers.close_top();
+                                    self.spot_remote(SpotifyRemote::Shuffle);
+                                } else if action == "spotify repeat" {
+                                    self.pickers.close_top();
+                                    self.spot_remote(SpotifyRemote::Repeat);
                                 } else if action == "like spotify" {
                                     self.like_live();
                                 } else if action == "add to spotify" {

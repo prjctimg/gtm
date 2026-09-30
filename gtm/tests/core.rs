@@ -2227,3 +2227,49 @@ fn chart_rows_are_not_answered_from_the_local_library() {
         );
     }
 }
+
+/// Every command-palette hint must have a dispatch arm, and vice versa.
+///
+/// A palette entry with no arm is a dead row; an arm with no entry is a feature
+/// nobody can reach. The Spotify Connect controls were removed from the
+/// Settings pane and re-homed here, and the two lists are the only place that
+/// can catch a half-finished move.
+#[test]
+fn palette_hints_all_have_a_dispatch_arm() {
+    let palette = include_str!("../src/ui/command.rs");
+    let keys = include_str!("../src/app/keys.rs");
+
+    let mut hints: Vec<String> = Vec::new();
+    for line in palette.lines() {
+        let Some(rest) = line.trim().strip_prefix("hint: \"") else {
+            continue;
+        };
+        if let Some(h) = rest.strip_suffix("\",") {
+            hints.push(h.to_string());
+        }
+    }
+    assert!(hints.len() > 30, "only parsed {} hints", hints.len());
+
+    let missing: Vec<&String> = hints
+        .iter()
+        .filter(|h| !keys.contains(&format!("action == \"{h}\"")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "palette hints with no dispatch arm: {missing:?}"
+    );
+
+    // The four Connect controls must survive the move out of Settings.
+    for h in [
+        "spotify next",
+        "spotify previous",
+        "spotify shuffle",
+        "spotify repeat",
+    ] {
+        assert!(hints.iter().any(|x| x == h), "{h} missing from the palette");
+        assert!(
+            keys.contains(&format!("action == \"{h}\"")),
+            "{h} has no arm"
+        );
+    }
+}

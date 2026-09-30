@@ -5,6 +5,7 @@
 // This is free software released under the GPL-3.0 license.
 
 pub mod app;
+pub(crate) use app::Remote as SpotifyRemote;
 pub mod dest;
 pub mod picker;
 

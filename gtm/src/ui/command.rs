@@ -142,6 +142,26 @@ impl CommandPalette {
                 hint: "spotify",
             },
             Command {
+                icon: "\u{f04ad} Spotify Next",
+                keys: "",
+                hint: "spotify next",
+            },
+            Command {
+                icon: "\u{f04a8} Spotify Previous",
+                keys: "",
+                hint: "spotify previous",
+            },
+            Command {
+                icon: "\u{f0577} Spotify Shuffle",
+                keys: "",
+                hint: "spotify shuffle",
+            },
+            Command {
+                icon: "\u{f0577} Spotify Repeat",
+                keys: "",
+                hint: "spotify repeat",
+            },
+            Command {
                 icon: "\u{f1dd} Fetch Lyrics",
                 keys: "l",
                 hint: "fetch lyrics",
@@ -402,6 +422,26 @@ impl CommandPalette {
                 hint: "spotify",
             },
             Command {
+                icon: "\u{23ed}\u{fe0f} Spotify Next",
+                keys: "",
+                hint: "spotify next",
+            },
+            Command {
+                icon: "\u{23ea}\u{fe0f} Spotify Previous",
+                keys: "",
+                hint: "spotify previous",
+            },
+            Command {
+                icon: "\u{1f500} Spotify Shuffle",
+                keys: "",
+                hint: "spotify shuffle",
+            },
+            Command {
+                icon: "\u{1f501} Spotify Repeat",
+                keys: "",
+                hint: "spotify repeat",
+            },
+            Command {
                 icon: "\u{1f4dd} Fetch Lyrics",
                 keys: "l",
                 hint: "fetch lyrics",
@@ -547,7 +587,7 @@ impl CommandPalette {
 
 pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("Playback", 14),
-    ("Library & Queue", 16),
+    ("Library & Queue", 20),
     ("View & Overlays", 11),
     ("System", 10),
 ];

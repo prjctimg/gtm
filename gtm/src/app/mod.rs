@@ -12,6 +12,7 @@ pub(crate) use std::path::Path;
 pub(crate) use std::pin::Pin;
 pub(crate) use std::time::Duration;
 
+pub(crate) use crate::providers::spotify::SpotifyRemote;
 pub(crate) use crate::shared::client::{DaemonClient, LastfmStatus};
 pub(crate) use crate::shared::custom::CustomRadioStation;
 pub(crate) use crate::shared::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
