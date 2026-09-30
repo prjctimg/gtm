@@ -2617,6 +2617,58 @@ fn covers_are_placed_identically_in_both_panes() {
     );
 }
 
+/// Every cover is centred on the size its protocol will actually draw.
+///
+/// `ratatui_image` fits the image and never upscales it past its own pixel size,
+/// and every protocol draws from the top-left of the rect it is handed. So a box
+/// sized for a full-bleed cover — the Zen screen, the info card — put the art in
+/// its upper-left corner on any cover smaller than the box, and the two axes
+/// were off by different amounts: high, and a little to the left. Handing the
+/// protocol the rect it will fill is the only geometry that cannot drift.
+#[test]
+fn covers_centre_on_the_size_the_protocol_will_draw() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let squish = |s: &str| s.split_whitespace().collect::<String>();
+
+    assert!(
+        chrome.contains(
+            "f.render_stateful_widget(image, Render::cover_fit(area, protocol), protocol);"
+        ),
+        "the cover is handed the whole box instead of the rect it will fill"
+    );
+
+    let fit = chrome
+        .split("pub(crate) fn cover_fit(")
+        .nth(1)
+        .expect("cover_fit is gone");
+    let fit = &fit[..fit.find("pub(crate) fn cover(").expect("unterminated")];
+
+    // The size the protocol will use, asked of the protocol: `StatefulImage` is
+    // built with `Resize::Fit`, and a `Crop` or `Scale` here would describe a
+    // rect the renderer never uses.
+    assert!(
+        squish(fit).contains(&squish(
+            "let fit = protocol.size_for(Resize::Fit(None), Size::new(area.width, area.height));"
+        )),
+        "cover_fit does not ask the protocol for the size it will render"
+    );
+    // Both axes, and never outside the box it was given.
+    assert!(
+        squish(fit).contains(&squish(
+            "x: area.x + area.width.saturating_sub(w) / 2, y: area.y + area.height.saturating_sub(h) / 2,"
+        )),
+        "the fitted cover is not centred on both axes"
+    );
+    assert!(
+        squish(fit).contains(&squish("let w = fit.width.min(area.width).max(1);")),
+        "the fitted cover can be wider than its box"
+    );
+    assert!(
+        squish(fit).contains(&squish("let h = fit.height.min(area.height).max(1);")),
+        "the fitted cover can be taller than its box"
+    );
+}
+
 /// Three crossfade defects, all playback-visible.
 ///
 /// PulseAudio muted the incoming stream, the `Finished` path advanced twice,
@@ -3116,30 +3168,196 @@ fn lyrics_own_the_results_pane_only_while_focused() {
     );
 }
 
-/// The lyrics cover: 3 rows rather than 2, never on a narrow screen, and never
-/// tall enough to overwrite the first lyric line.
+/// The lyrics header is a cover and nothing else, and only on one column.
+///
+/// The pane carried a 3-row cover *and* the track's title and artist in every
+/// layout. Beside the now-playing band that repeated the pane next to it, and on
+/// one column it took five rows off a band that is five rows tall — while the
+/// "LYRICS" label above it named a pane the band had already titled. The
+/// artwork is the one thing the band cannot spare, so it comes here instead,
+/// at twice the size.
 #[test]
-fn lyrics_cover_is_bigger_but_bounded_by_its_band() {
+fn lyrics_header_is_a_cover_only_on_one_column() {
     let chrome = include_str!("../src/ui/chrome.rs");
+    let squish = |s: &str| s.split_whitespace().collect::<String>();
+
+    let pane = chrome
+        .split("pub(crate) fn lyrics_pane(")
+        .nth(1)
+        .expect("lyrics_pane is gone");
+    let pane = &pane[..pane
+        .find("pub(crate) fn lyrics_body(")
+        .expect("lyrics_pane is unterminated")];
+
+    // The fit, not the width it landed in, decides the label and the cover —
+    // they sit on opposite sides of it.
+    assert!(
+        squish(pane).contains(&squish(
+            "let label = match fit { LyricsFit::Docked => \"LYRICS\", LyricsFit::Solo => \"\", };"
+        )),
+        "the LYRICS label is not docked-only any more"
+    );
+    assert!(
+        squish(pane).contains(&squish(
+            "let header_h = match fit { LyricsFit::Docked => 0, LyricsFit::Solo => 6u16.min(inner.height.saturating_sub(4)), };"
+        )),
+        "the cover is not one-column-only, or is no longer 6 rows"
+    );
+    // No track header of any kind, and no terminal-width test to smuggle it back
+    // in: either the band or the pane beside it names the track.
+    for gone in ["lyrics.title", "lyrics.artist", "app.terminal_cols"] {
+        assert!(!pane.contains(gone), "the lyrics header still reads {gone}");
+    }
+
+    // And both arms are reachable: the third pane is docked, the results pane
+    // is docked unless the whole screen is one column.
+    assert!(chrome.contains("Render::lyrics_pane(f, lyrics_area, app, LyricsFit::Docked);"));
+    assert!(chrome.contains("Render::lyrics_pane(f, lyrics, app, fit);"));
+    assert!(
+        squish(chrome).contains(&squish(
+            "let fit = if is_narrow { LyricsFit::Solo } else { LyricsFit::Docked };"
+        )),
+        "the results-pane lyrics no longer key off the one-column layout"
+    );
+}
+
+/// The now-playing band starts at the results column, and the library list runs
+/// the full height beside it.
+///
+/// The band used to sit above the library column, so the cover, the title and
+/// the progress were a screen away from the list they belonged to, and the
+/// category list started a third of the way down the screen for no reason.
+#[test]
+fn now_playing_starts_at_the_results_column() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let squish = |s: &str| s.split_whitespace().collect::<String>();
 
     assert!(
-        chrome.contains("let cover_h = 3u16.min(inner.height.saturating_sub(2));"),
-        "the lyrics cover is not 3 rows"
+        chrome.contains("let (np_area, lib_area, results_area) = if is_narrow {"),
+        "the three panes are not split in one place any more"
     );
-    // Narrow (<60 cols) gives the width to the lyrics and the room to the
-    // now-playing cover instead.
+    // Wide: the library column off the left, then the band stacked over the
+    // results in what is left. Narrow keeps the band across the full width
+    // because the column below it collapses to nothing when it holds focus.
     assert!(
-        chrome.contains("let show_cover = app.terminal_cols >= 60 && cover_w + 2 < inner.width;"),
-        "the lyrics cover is not suppressed on narrow screens"
+        squish(chrome).contains(&squish(
+            "let h = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Length(lib_width), Constraint::Min(0)]).split(left_area);"
+        )),
+        "the library column is not split off the left first"
     );
-    // The band the art shares with the title and artist has to be at least as
-    // tall as the art. It was sized off the text alone, so a 3-row cover
-    // overwrote the first line of lyrics underneath.
     assert!(
-        chrome.contains(
-            "let header_h = (rows.len() as u16).max(if show_cover { cover_h } else { 0 });"
-        ),
-        "the lyrics header no longer grows to fit its cover"
+        squish(chrome).contains(&squish(
+            "let v = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(np_height), Constraint::Min(1)]).split(h[1]);"
+        )),
+        "the band is not stacked over the results"
+    );
+
+    // Each pane is drawn from its own rect, and the band from the one that
+    // starts where the results start.
+    for pane in ["np_area", "lib_area", "results_area"] {
+        assert!(
+            squish(chrome).contains(&squish(&format!("Render::pane_header(f, {pane}, app,"))),
+            "{pane} is not drawn from its own rect"
+        );
+    }
+
+    // The band is narrower than it was, so the cover has to give up the columns
+    // the title, artist, album and progress need.
+    assert!(
+        chrome.contains("let cover_h = cover_h.min(inner.width.saturating_sub(20) / 2).max(3);"),
+        "the now-playing cover is not capped by the width left for the details"
+    );
+}
+
+/// The visualizer is a Zen surface, not a third of the now-playing band.
+///
+/// It drew into a third of the band, which is the same rows the cover and the
+/// progress were on, and the frame loop spun at 60fps for it whether or not it
+/// was on screen.
+#[test]
+fn the_visualizer_is_zen_only() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let run = include_str!("../src/app/run.rs");
+
+    let lib = chrome
+        .split("pub(crate) fn library(")
+        .nth(1)
+        .expect("library() is gone");
+    let lib = &lib[..lib
+        .find("pub(crate) fn footer(")
+        .expect("library() is unterminated")];
+
+    assert!(
+        !lib.contains("visualizer"),
+        "the library view still draws the visualizer"
+    );
+    assert!(
+        !chrome.contains("show_vis"),
+        "the band still reserves rows for it"
+    );
+    // Zen is where it lives now.
+    assert!(chrome.contains("pub(crate) fn zen_visualizer("));
+    assert!(
+        run.contains("|| (self.zen && self.visualizer.is_enabled())"),
+        "the frame loop still redraws every frame for a visualizer nobody can see"
+    );
+}
+
+/// Zen has three surfaces again, and the lyrics are one of them.
+#[test]
+fn zen_cycles_now_playing_lyrics_and_the_visualizer() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let state = include_str!("../src/app/state.rs");
+    let app = include_str!("../src/app/mod.rs");
+    let squish = |s: &str| s.split_whitespace().collect::<String>();
+
+    for surface in ["NowPlaying", "Lyrics", "Visualizer"] {
+        assert!(
+            state.contains(&format!("    {surface},")),
+            "ZenSurface::{surface} is gone"
+        );
+    }
+    // A three-arm cycle in both directions, or Tab lands on nothing.
+    for f in ["next", "prev"] {
+        let body = state
+            .split(&format!("pub(crate) fn {f}(self) -> ZenSurface {{"))
+            .nth(1)
+            .expect(&format!("ZenSurface::{f} is gone"));
+        let body = &body[..body.find("\n    }").expect("unterminated")];
+        for surface in ["NowPlaying", "Lyrics", "Visualizer"] {
+            assert!(
+                body.contains(&format!("ZenSurface::{surface} =>")),
+                "{f} does not reach {surface}"
+            );
+        }
+    }
+
+    // Every surface is dispatched, and the lyrics render through the same body
+    // as the docked pane rather than a copy of it.
+    for arm in [
+        "ZenSurface::NowPlaying => Render::zen_now_playing(f, area, app),",
+        "ZenSurface::Lyrics => Render::zen_lyrics(f, area, app),",
+        "ZenSurface::Visualizer => Render::zen_visualizer(f, area, app),",
+    ] {
+        assert!(chrome.contains(arm), "zen does not dispatch {arm}");
+    }
+    assert!(
+        chrome.contains("Render::lyrics_body(f, body, app, lyrics);"),
+        "the zen lyrics do not share the pane's body"
+    );
+    // And Zen is painted on its own background, lifted off the app surface out
+    // of the reactive palette — the app's own surface is already washed with
+    // it, so on a fullscreen surface the two were indistinguishable.
+    assert!(
+        squish(chrome).contains(&squish(
+            "let bg = if zen { app.zen_bg() } else { app.surface_bg() };"
+        )),
+        "the zen surfaces are still painted on the app background"
+    );
+    assert!(app.contains("pub fn zen_bg(&self)"), "App::zen_bg is gone");
+    assert!(
+        app.contains("self.reactive_palette.filter(|_| self.reactive_theme)"),
+        "the zen background is no longer taken from the reactive palette"
     );
 }
 
@@ -3166,8 +3384,15 @@ fn now_playing_cover_fills_a_narrow_pane() {
 /// sixth of the rows it was describing. Floating it is what it used to do
 /// before it was folded into the pane, and the point of the assertion on
 /// ordering is that a float drawn before the list is a float under the list.
+///
+/// The two halves of the size are the defect worth pinning. The box was the
+/// docked card's geometry — 24 columns and `info_block_h()` rows — while the
+/// artwork inside was sized off the height the float was left with, so the box
+/// came out eight columns wider than the art it held and taller than its own
+/// contents. And the list was sized to the whole pane, so it scrolled rows
+/// underneath the card where they could be neither seen nor clicked.
 #[test]
-fn narrow_floats_the_track_card_over_the_list() {
+fn narrow_floats_a_card_sized_around_its_own_art() {
     let chrome = include_str!("../src/ui/chrome.rs");
     let squish = |s: &str| s.split_whitespace().collect::<String>();
 
@@ -3192,8 +3417,9 @@ fn narrow_floats_the_track_card_over_the_list() {
     let lib = &lib[..lib
         .find("pub(crate) fn footer(")
         .expect("library() is unterminated")];
+    // Over the rows below the now-playing band, and painted after them.
     let float = lib
-        .find("Render::floating_card(f, chunks[1], app);")
+        .find("Render::floating_card(f, results_area, app);")
         .expect("the card never floats");
     let rows = lib
         .find("Render::evolving(f, right_inner, right_para, \"lib\"")
@@ -3211,6 +3437,50 @@ fn narrow_floats_the_track_card_over_the_list() {
     assert!(chrome.contains("f.render_widget(Clear, rect);"));
     assert!(chrome.contains(".borders(Borders::ALL)"));
     assert!(chrome.contains("Render::info_in_pane(f, Rect::new(0, 0, 0, 0), inner, app);"));
+
+    // The box is built from the artwork, in rows the band left over: the field
+    // block and the two border rows come off the top, then a cap, then a floor.
+    assert!(
+        squish(chrome).contains(&squish(
+            "let art = area.height.saturating_sub(INFO_FIELDS_H + 8).min(6).min(area.height / 4).max(2);"
+        )),
+        "the floating card is not sized from the artwork it holds"
+    );
+    assert!(
+        squish(chrome).contains(&squish("(art * 2 + 4).min(area.width.saturating_sub(1)),")),
+        "the floating card is not as wide as its artwork"
+    );
+    // The list gives up the rows the card covers, on every category branch: a
+    // single budget they all read, rather than fifteen copies of `height - 3`.
+    assert!(
+        squish(chrome).contains(&squish(
+            "let window_rows = || results_area.height.saturating_sub(3 + float_h) as usize;"
+        )),
+        "the list is not sized around the floating card"
+    );
+    assert!(
+        !lib.contains("let reserve = 3usize;"),
+        "a category branch is still sizing its own window, without the card's rows"
+    );
+    assert_eq!(
+        squish(lib)
+            .matches(&squish("let available = window_rows();"))
+            .count(),
+        squish(lib)
+            .matches(&squish("app.viewport_items = available;"))
+            .count(),
+        "a category branch sets a viewport without the shared budget"
+    );
+
+    // The card's own cover gate has to be the box it was handed: gating on the
+    // docked card's `COVER_W` threw the art away and left four lines of text
+    // marooned in a box built for a cover.
+    assert!(
+        chrome.contains(
+            "let can_cover = !no_image_protocol() && area.width >= 6 && area.height >= 8;"
+        ),
+        "the info card still demands the docked card's width before drawing art"
+    );
 }
 
 /// Every chart level and the Radio list must produce an info card, and a chart's

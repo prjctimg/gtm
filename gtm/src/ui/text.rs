@@ -25,6 +25,13 @@ pub(crate) const INFO_CARD_H: u16 = 16;
 
 pub(crate) const INFO_TEXT_H: u16 = 6;
 
+/// Rows the track-info card's field block needs: title, artist, album, meta.
+///
+/// Fixed rather than per-track so the artwork above it does not change size
+/// between a release with an album line and a single without one, and so the
+/// floating card can size its box from the same count.
+pub(crate) const INFO_FIELDS_H: u16 = 4;
+
 pub(crate) fn info_block_h() -> u16 {
     if no_image_protocol() {
         INFO_TEXT_H

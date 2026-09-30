@@ -705,6 +705,29 @@ impl App {
         }
     }
 
+    /// Background for the Zen surface: the reactive palette washed in a little
+    /// harder than the rest of the app, then lifted a step toward white.
+    ///
+    /// The app's own surface is already washed with the palette at
+    /// `reactive_theme_intensity`, so on a fullscreen surface with no panes to
+    /// tell it apart from, Zen came up looking like the library it covers. The
+    /// lift is what gives the artwork something to sit on, and it widens the
+    /// gap on light themes too, where the foreground is dark.
+    pub fn zen_bg(&self) -> ratatui::style::Color {
+        const LIFT: f64 = 0.08;
+        const WASH: f64 = 0.55;
+        let base = self.surface_bg();
+        let washed = match self.reactive_palette.filter(|_| self.reactive_theme) {
+            Some(pal) => blend_colors(
+                base,
+                ratatui::style::Color::Rgb(pal.primary[0], pal.primary[1], pal.primary[2]),
+                WASH,
+            ),
+            None => base,
+        };
+        blend_colors(washed, ratatui::style::Color::Rgb(255, 255, 255), LIFT)
+    }
+
     pub(crate) fn next_cover_gen(&mut self) -> u64 {
         let g = self.next_cover_gen;
         self.next_cover_gen = self.next_cover_gen.wrapping_add(1).max(1);

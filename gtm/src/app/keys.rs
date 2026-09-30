@@ -499,9 +499,9 @@ impl App {
                         );
                         self.zen = !self.zen;
                         if self.zen {
-                            // Zen now has two surfaces, not three: the lyrics
-                            // line lives under the art on the now-playing one,
-                            // so there is nothing to choose.
+                            // Enter Zen on the now-playing surface whatever was
+                            // last cycled to: the lyrics and the visualizer are
+                            // Tab's, not the key's.
                             self.zen_surface = ZenSurface::NowPlaying;
                             self.dismiss_track_popup();
                         }

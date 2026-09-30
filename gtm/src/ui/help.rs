@@ -16,7 +16,10 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   .           Seek Forward"),
     ("", "   ,           Seek Backward"),
     ("", "   + / -       Volume Up / Down"),
-    ("", "   z           Zen Mode (now playing / visualizer)"),
+    (
+        "",
+        "   z           Zen Mode (now playing / lyrics / visualizer)",
+    ),
     ("", "   (in Zen)    Tab cycles the surface, q or Esc leaves"),
     ("", "   (in Zen)    Everything else keeps its usual binding"),
     ("", "   m           Mute Toggle"),

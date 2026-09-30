@@ -16,7 +16,6 @@ pub(crate) use crate::app::{
     RadioPick, RadioSection, TrackInfoKind, ZenSurface, folder_name, lyrics_are_synced,
     no_image_protocol, setup_selection,
 };
-pub(crate) use crate::extensions::ExtensionId;
 pub(crate) use crate::footer::{
     classify_remote_source, draw as footer_draw, format_duration, format_uptime, is_live_stream,
     render as footer_render,
@@ -45,15 +44,15 @@ pub(crate) use crossterm::terminal::{
 };
 pub(crate) use ratatui::Terminal;
 pub(crate) use ratatui::backend::CrosstermBackend;
-pub(crate) use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
+pub(crate) use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect, Size};
 pub(crate) use ratatui::style::Color;
 pub(crate) use ratatui::style::{Modifier, Style};
 pub(crate) use ratatui::text::{Line, Span};
 pub(crate) use ratatui::widgets::{
     Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap,
 };
-pub(crate) use ratatui_image::StatefulImage;
 pub(crate) use ratatui_image::protocol::StatefulProtocol;
+pub(crate) use ratatui_image::{Resize, StatefulImage};
 
 /// Grouped render helpers: previously free `render_*` functions.
 pub struct Render;

@@ -1723,8 +1723,9 @@ impl App {
             let playing = self.state.status == PlaybackStatus::Playing;
             let force_render = pos_changed
                 || (playing && frame_count.is_multiple_of(2))
-                // Visualizer animates continuously (idle wave included).
-                || self.visualizer.is_enabled()
+                // Visualizer animates continuously (idle wave included), but only
+                // Zen draws it now, so only Zen pays for the frames.
+                || (self.zen && self.visualizer.is_enabled())
                 || !self.notifications.is_empty()
                 || frame_count.is_multiple_of(10)
                 || self.cover_art_dirty

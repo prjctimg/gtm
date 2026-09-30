@@ -497,6 +497,9 @@ pub enum ZenSurface {
     /// own lines, the current lyric line under the art, and the progress bar
     /// below all of it.
     NowPlaying,
+    /// Full-screen lyrics for the track on air, sharing the body rendering of
+    /// the normal lyrics pane.
+    Lyrics,
     /// Full-screen audio visualizer.
     Visualizer,
 }
@@ -504,7 +507,8 @@ pub enum ZenSurface {
 impl ZenSurface {
     pub(crate) fn next(self) -> ZenSurface {
         match self {
-            ZenSurface::NowPlaying => ZenSurface::Visualizer,
+            ZenSurface::NowPlaying => ZenSurface::Lyrics,
+            ZenSurface::Lyrics => ZenSurface::Visualizer,
             ZenSurface::Visualizer => ZenSurface::NowPlaying,
         }
     }
@@ -512,7 +516,8 @@ impl ZenSurface {
     pub(crate) fn prev(self) -> ZenSurface {
         match self {
             ZenSurface::NowPlaying => ZenSurface::Visualizer,
-            ZenSurface::Visualizer => ZenSurface::NowPlaying,
+            ZenSurface::Visualizer => ZenSurface::Lyrics,
+            ZenSurface::Lyrics => ZenSurface::NowPlaying,
         }
     }
 }
