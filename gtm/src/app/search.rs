@@ -94,9 +94,11 @@ impl App {
             }
             PickerId::Libraries => {
                 // Open on the category already showing, so the picker is a
-                // view of the list rather than a jump back to the top.
+                // view of the list rather than a jump back to the top. Read
+                // through the filtered list so a lingering query cannot leave
+                // the cursor on a row the picker is not drawing.
                 if let Some(row) = self
-                    .visible_library_indices()
+                    .filtered_library_indices()
                     .iter()
                     .position(|&i| i == self.library_category)
                     && let Some(top) = self.pickers.top_mut()
@@ -191,6 +193,27 @@ impl App {
         } else {
             out
         }
+    }
+
+    /// The library categories the picker is currently showing: the configured
+    /// lists, narrowed by the picker's search query.
+    ///
+    /// Every consumer of the picker's rows goes through here — the count the
+    /// cursor is clamped against, the renderer, and the Enter handler. Those
+    /// three used to derive the list independently, and when the query narrowed
+    /// what was drawn but not what Enter opened, a filtered picker highlighted
+    /// one category and opened another.
+    pub fn filtered_library_indices(&self) -> Vec<usize> {
+        // Only the library picker's own query filters it. Another picker on top
+        // of the stack owns `query` and must not narrow this list.
+        let query = match self.pickers.top() {
+            Some(t) if t.id == PickerId::Libraries => t.query.as_str(),
+            _ => "",
+        };
+        self.visible_library_indices()
+            .into_iter()
+            .filter(|&i| fuzzy_match(query, LIBRARY_CATEGORIES[i]))
+            .collect()
     }
 
     /// Item count shown next to a library category. `Top Charts` and anything

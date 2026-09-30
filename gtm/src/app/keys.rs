@@ -1890,6 +1890,56 @@ impl App {
 
         let tx = self.cmd_tx();
 
+        // The library picker (Alt+.) is a list with a search box over the
+        // user's configured lists. Typing therefore has to reach the query,
+        // which rules out the `j`/`k` vim bindings the other list pickers use
+        // and leaves the arrow keys as the way to move the cursor.
+        //
+        // It had no navigation arm at all: the arrow keys fell through to the
+        // end of this function's `_ => {}`, so they did nothing, and the single
+        // highlighted row was `library_category` rather than the cursor, so
+        // there was nothing for a keypress to move.
+        if self
+            .pickers
+            .top()
+            .is_some_and(|o| o.id == PickerId::Libraries)
+        {
+            match key.code {
+                KeyCode::Up => {
+                    self.move_picker_selection(false);
+                    return;
+                }
+                KeyCode::Down => {
+                    self.move_picker_selection(true);
+                    return;
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    // Editing the query invalidates the cursor: it addresses
+                    // rows of the list as it was, so keeping it would land the
+                    // user on whatever row shares the old index.
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.query.push(c);
+                        top.selected = 0;
+                        top.viewport_offset = 0;
+                    }
+                    return;
+                }
+                KeyCode::Backspace => {
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.query.pop();
+                        top.selected = 0;
+                        top.viewport_offset = 0;
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // Notifications picker: 'y' copies the highlighted notification's text
         // (title + message) to the clipboard so error messages are easy to grab.
         if key.code == KeyCode::Char('y')
@@ -3248,7 +3298,10 @@ impl App {
                         }
                         PickerId::Libraries => {
                             let sel = self.pickers.top().map_or(0, |t| t.selected);
-                            if let Some(cat) = self.visible_library_indices().get(sel).copied() {
+                            // Through the filtered list, not the configured
+                            // one: with a search typed in, the highlighted row
+                            // is `sel` rows into what the picker is showing.
+                            if let Some(cat) = self.filtered_library_indices().get(sel).copied() {
                                 self.reset_library_view(cat, None);
                             }
                             self.pickers.close_top();

@@ -8,64 +8,131 @@
 use crate::ui::*;
 
 impl Pickers {
-    /// The library categories, moved out of the left pane (Alt+.). Enter switches
-    /// to the highlighted category and closes.
-    pub(crate) fn render_libraries(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    /// The library categories, moved out of the left pane (Alt+.). Up/Down move
+    /// the cursor, typing searches the list, Enter switches to the highlighted
+    /// category and closes.
+    pub(crate) fn render_libraries(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
             " Library ",
-            Some("\u{2191}/\u{2193}: choose   Enter: open   Esc: cancel"),
+            Some("\u{2191}/\u{2193}: move   type: search   Enter: open   Esc: cancel"),
         );
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let cats = app.visible_library_indices();
+        let cats = app.filtered_library_indices();
         let total = cats.len();
         let sel = app
             .pickers
             .top()
             .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
-        let offset = app.pickers.top().map_or(0, |o| o.viewport_offset);
-        let (scroll_start, scroll_end) = step_viewport(offset, sel, inner.height as usize, total);
+
+        let cursor_style = cursor_span_style(app);
+        let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
+        let search_line = Line::from(vec![
+            Span::styled(" > ", Style::default().fg(app.theme.fg_dim)),
+            Span::styled(query.as_str(), Style::default().fg(app.theme.fg)),
+            Span::styled(" ", cursor_style.unwrap_or_default()),
+        ]);
+
+        if total == 0 {
+            let mut lines = vec![search_line];
+            lines.extend(empty_hint_lines(
+                app,
+                "No list matches",
+                "Hint: type to search your lists",
+            ));
+            f.render_widget(Paragraph::new(lines), inner);
+            return;
+        }
+
+        // The search row is painted into its own one-line rect and the rows are
+        // offset below it, rather than the whole thing being one Paragraph:
+        // mouse zones need the absolute row rect, which a single widget does
+        // not hand back.
+        f.render_widget(
+            Paragraph::new(search_line),
+            Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: 1,
+            },
+        );
+
+        let visible = inner.height.saturating_sub(1) as usize;
+        let (scroll_start, scroll_end) = match app.pickers.top_mut() {
+            Some(top) => {
+                let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
+                top.viewport_offset = s;
+                (s, e)
+            }
+            None => (0, total),
+        };
 
         let icons = if use_nerd_fonts() {
             LIBRARY_ICONS_NERD
         } else {
             LIBRARY_ICONS_ASCII
         };
-        let items: Vec<ListItem> = cats[scroll_start..scroll_end]
-            .iter()
-            .map(|&i| {
-                let cat = LIBRARY_CATEGORIES[i];
-                let count = app.library_count(cat);
-                let label = if count > 0 {
-                    format!(
-                        " {}  {:<14} {:>4}",
-                        icons.get(i).unwrap_or(&" "),
-                        cat,
-                        count
-                    )
-                } else {
-                    format!(" {}  {}", icons.get(i).unwrap_or(&" "), cat)
-                };
-                // The selected category gets a real highlight, like every other
-                // list in the app. It was accent-coloured text on the pane
-                // background, which is not a highlighter: it reads as emphasis
-                // rather than selection, it disappears entirely in a theme whose
-                // accent is close to the pane background, and here there is no
-                // cursor and no second pane to disambiguate — this list *is* the
-                // picker.
-                let style = if i == app.library_category {
-                    Style::default()
-                        .fg(app.theme.selection_fg_readable())
-                        .bg(app.theme.selection_bg)
-                } else {
-                    Style::default().fg(app.theme.fg)
-                };
-                ListItem::new(label).style(style)
-            })
-            .collect();
-        f.render_widget(List::new(items), inner);
+        let row_w = inner.width;
+        for (row, &i) in cats[scroll_start..scroll_end].iter().enumerate() {
+            let cat = LIBRARY_CATEGORIES[i];
+            let count = app.library_count(cat);
+            let is_sel = scroll_start + row == sel;
+            // The picker cursor and the category currently on air are two
+            // different facts and were drawn as one: the highlight keyed off
+            // `library_category`, so the cursor had no marker of its own and
+            // nothing on screen moved when it did.
+            let label = if count > 0 {
+                format!(
+                    "{} {}  {:<14} {:>4}",
+                    if is_sel { ">" } else { " " },
+                    icons.get(i).copied().unwrap_or(" "),
+                    cat,
+                    count
+                )
+            } else {
+                format!(
+                    "{} {}  {}",
+                    if is_sel { ">" } else { " " },
+                    icons.get(i).copied().unwrap_or(" "),
+                    cat
+                )
+            };
+            let style = if is_sel {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+            } else if i == app.library_category {
+                Style::default().fg(app.theme.accent)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            let pad = if is_sel { row_pad(&label, row_w) } else { 0 };
+            let line_idx = 1 + row as u16;
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("{label}{}", " ".repeat(pad)),
+                    style,
+                ))),
+                Rect {
+                    x: inner.x,
+                    y: inner.y + line_idx,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
+            app.mouse_map.register(
+                Rect {
+                    x: inner.x,
+                    y: inner.y + line_idx,
+                    width: inner.width,
+                    height: 1,
+                },
+                MouseZone::PickerItem(scroll_start + row),
+            );
+        }
     }
 
     pub(crate) fn render_playlist_select(f: &mut ratatui::Frame, area: Rect, app: &App) {

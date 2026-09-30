@@ -2273,3 +2273,95 @@ fn palette_hints_all_have_a_dispatch_arm() {
         );
     }
 }
+
+/// The library picker must resolve its rows through one filter everywhere.
+///
+/// The cursor bound, the renderer and the Enter handler each used to derive
+/// "the list" independently: two read the configured lists, and once a search
+/// box existed that made the highlighted row and the opened category different
+/// things. `filtered_library_indices` is the single answer, and this is the
+/// only place that can notice one of the three going back to reading the
+/// unfiltered list.
+#[test]
+fn library_picker_rows_come_from_one_filter() {
+    let app = include_str!("../src/app/mod.rs");
+    let search = include_str!("../src/app/search.rs");
+    let keys = include_str!("../src/app/keys.rs");
+    let lib = include_str!("../src/ui/pickers/library.rs");
+
+    assert!(
+        search.contains("pub fn filtered_library_indices"),
+        "the shared filter is gone"
+    );
+
+    // The two count sites in app/mod.rs.
+    for arm in [
+        "PickerId::Libraries => self.filtered_library_indices().len(),",
+        "PickerId::Libraries => self.filtered_library_indices().len().saturating_sub(1),",
+    ] {
+        assert!(app.contains(arm), "count site bypasses the filter: {arm}");
+    }
+
+    // The renderer.
+    assert!(
+        lib.contains("let cats = app.filtered_library_indices();"),
+        "the renderer bypasses the filter"
+    );
+    // The Enter handler.
+    assert!(
+        keys.contains("self.filtered_library_indices().get(sel).copied()"),
+        "Enter bypasses the filter"
+    );
+
+    // Nothing in these four may read the unfiltered list to address a row.
+    for (name, src) in [("app/mod.rs", app), ("ui/pickers/library.rs", lib)] {
+        assert!(
+            !src.contains("PickerId::Libraries => self.visible_library_indices().len()"),
+            "{name} still bounds the cursor by the unfiltered list"
+        );
+    }
+}
+
+/// The library picker needs arrow-key navigation and a search box, and cannot
+/// have both `j`/`k` navigation and a text query: they are the same keys.
+#[test]
+fn library_picker_has_arrows_and_search() {
+    let keys = include_str!("../src/app/keys.rs");
+    let lib = include_str!("../src/ui/pickers/library.rs");
+
+    let start = keys
+        .find("o.id == PickerId::Libraries")
+        .expect("no nav block");
+    let block = &keys[start..start + 1600];
+
+    for want in [
+        "KeyCode::Up =>",
+        "KeyCode::Down =>",
+        "KeyCode::Char(c)",
+        "KeyCode::Backspace =>",
+    ] {
+        assert!(block.contains(want), "library picker missing {want}");
+    }
+    // `j`/`k` are query characters here, so they must not be navigation.
+    assert!(
+        !block.contains("Char('j')") && !block.contains("Char('k')"),
+        "j/k would be eaten as navigation instead of typed into the search"
+    );
+    // The block must not swallow Enter/Esc, which are handled further down.
+    assert!(
+        !block.contains("KeyCode::Enter =>") && !block.contains("KeyCode::Esc =>"),
+        "the nav block swallows Enter or Esc"
+    );
+
+    // The search line is what makes the query visible.
+    assert!(
+        lib.contains("let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());"),
+        "render_libraries does not read the picker's query, so a search is invisible"
+    );
+    // The cursor needs its own marker: the old highlight keyed off
+    // `library_category`, so it never moved.
+    assert!(
+        lib.contains("scroll_start + row == sel"),
+        "the highlight is not keyed off the cursor"
+    );
+}

@@ -66,8 +66,18 @@ impl Pickers {
                 (w, h)
             }
             PickerId::Libraries => {
+                // Sized for the widest configured list name, not the count, so
+                // the search line and the full help text both fit. The height
+                // allows one row per list plus the search line and borders.
+                let w = app
+                    .visible_library_indices()
+                    .iter()
+                    .map(|&i| LIBRARY_CATEGORIES[i].len() as u16 + 24)
+                    .max()
+                    .unwrap_or(56)
+                    .clamp(56, 72);
                 let n = app.visible_library_indices().len() as u16;
-                (44, (n + 6).clamp(14, 30))
+                (w, (n + 7).clamp(14, 30))
             }
             PickerId::ThemePicker => (58, 24),
             PickerId::CommandPalette => (46, 18),
