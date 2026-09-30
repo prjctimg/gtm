@@ -2209,9 +2209,26 @@ fn chart_rows_are_not_answered_from_the_local_library() {
     let end = body.find("\n    }").unwrap_or(body.len());
     let body = &body[..end];
 
+    // Charts resolve on how deep the drill-down is, so the arm is a match on
+    // the level rather than a single kind. Every arm still has to be a chart
+    // kind: a fall-through to `Track` here is the bug this test exists for.
+    for kind in ["ChartSource", "Chart", "ChartTrack"] {
+        assert!(
+            body.contains(&format!("TrackInfoKind::{kind}")),
+            "category 12 (Top Charts) must not fall through to TrackInfoKind::Track \
+             at any level, and {kind} is missing:\n{body}"
+        );
+    }
     assert!(
-        body.contains("12 => TrackInfoKind::ChartTrack"),
-        "category 12 (Top Charts) must not fall through to TrackInfoKind::Track:\n{body}"
+        body.contains("12 => match (self.charts.selected_source, self.charts.selected_chart)"),
+        "category 12 no longer resolves per level:\n{body}"
+    );
+
+    // Radio rows are virtual `radio://` stations, not library tracks, so it
+    // needs an arm for the same reason.
+    assert!(
+        body.contains("6 => TrackInfoKind::RadioStation"),
+        "category 6 (Radio) must not fall through to TrackInfoKind::Track:\n{body}"
     );
 
     // And the other list-shaped categories, for the same reason.

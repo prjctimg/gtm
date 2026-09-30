@@ -27,4 +27,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      # `--no-fail-fast`: without it cargo stops at the first failing target, so
+      # a red test in `gtm` hid every failure in `gtmd` behind it and the job
+      # looked like one broken test rather than a backlog.
+      - run: cargo test --workspace --no-fail-fast
