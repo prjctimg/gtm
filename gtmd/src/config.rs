@@ -281,13 +281,13 @@ impl DaemonConfig {
 
 /// Resolve `discord_app_id` from config.toml.
 fn discord_id(toml: Option<&toml::Value>) -> Option<String> {
-    let raw = match toml.and_then(|v| v.get("discord_app_id")) {
-        Some(v) => match v {
+    let raw = {
+        let v = toml.and_then(|v| v.get("discord_app_id"))?;
+        match v {
             toml::Value::String(s) => s.clone(),
             toml::Value::Integer(i) => i.to_string(),
             _ => return None,
-        },
-        None => return None,
+        }
     };
     let id = raw.trim();
     // Discord's ids are numeric. Anything else is a paste error, and refusing

@@ -148,15 +148,15 @@ pub(crate) async fn serve(inner: std::sync::Arc<DaemonInner>, app_id: String) {
         let activity = {
             let state = inner.state.read().await;
             let playing = state.status == PlaybackStatus::Playing;
-            let activity = state
+
+            state
                 .current_track
                 .as_ref()
                 .filter(|_| playing)
                 // Track start, not now: the daemon's position is authoritative
                 // and re-anchoring to the poll would make the elapsed time in
                 // Discord jump backwards on every tick.
-                .map(|t| Activity::of(t, now_secs() - state.time_pos as i64));
-            activity
+                .map(|t| Activity::of(t, now_secs() - state.time_pos as i64))
         };
 
         if sock.is_none() {
