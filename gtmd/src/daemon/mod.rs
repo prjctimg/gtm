@@ -2002,16 +2002,14 @@ impl Daemon {
             sync_progress: Arc::new(SyncProgress::default()),
         });
 
-        // Initialize charts registry with Spotify provider if configured.
-        // The free (no-auth) providers are always registered so Top Charts
-        // works even before any account is linked.
+        // The only chart provider left is the free, no-auth iTunes feed, so it
+        // is always registered and Top Charts works before any account is
+        // linked. The Spotify provider used to be added here (and again from
+        // the OAuth-link path) but it read editorial playlist tracklists, which
+        // Spotify removed for developer-mode integrations in 2026.
         {
             let mut charts = inner.charts.lock().await;
             charts.add_free_defaults();
-            let spotify_mgr = inner.spotify.lock().await;
-            if spotify_mgr.linked() {
-                charts.add_spotify(inner.spotify.clone());
-            }
         }
 
         Ok(Self {
@@ -2143,12 +2141,6 @@ impl Daemon {
                 }
             };
             if linked {
-                // The charts registry is built before any token is loaded, so
-                // register the Spotify provider now that a client exists.
-                {
-                    let mut charts = spotify_inner.charts.lock().await;
-                    charts.ensure_spotify(spotify_inner.spotify.clone());
-                }
                 let _ = spotify_inner
                     .event_tx
                     .send(DaemonEvent::SpotifyStatusChanged);

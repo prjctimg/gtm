@@ -2429,3 +2429,43 @@ fn library_picker_has_arrows_and_search() {
         "the highlight is not keyed off the cursor"
     );
 }
+
+/// The Spotify charts provider is gone, and nothing may quietly reintroduce it.
+///
+/// It read editorial playlist tracklists through `/playlists/{id}` and
+/// `/playlists/{id}/tracks`. Spotify removed both for developer-mode
+/// integrations in 2026, so the source registered as `configured` and then
+/// returned `no charts available` on every drill-down -- a permanently empty
+/// entry in a menu that looked populated. Verified against the live daemon
+/// before removal: `charts_list(apple)` returned 18 charts while
+/// `charts_list(spotify)` returned "no charts available".
+#[test]
+fn no_spotify_charts_provider() {
+    let registry = include_str!("../../gtmd/src/providers/charts/mod.rs");
+    let daemon = include_str!("../../gtmd/src/daemon/mod.rs");
+    let cmd = include_str!("../../gtmd/src/providers/spotify/cmd.rs");
+
+    for (name, src) in [
+        ("charts/mod.rs", registry),
+        ("daemon/mod.rs", daemon),
+        ("spotify/cmd.rs", cmd),
+    ] {
+        for gone in ["add_spotify", "ensure_spotify", "SpotifyCharts"] {
+            assert!(
+                !src.contains(gone),
+                "{name} still references {gone}: the endpoint it needs was removed by Spotify"
+            );
+        }
+    }
+
+    // The provider file itself is deleted, and the registry registers only the
+    // free feed -- so charts work with no account linked.
+    assert!(
+        registry.contains("pub fn add_free_defaults"),
+        "the free chart provider must still be registered"
+    );
+    assert!(
+        !registry.contains("mod spotify;"),
+        "the spotify chart module is still declared"
+    );
+}

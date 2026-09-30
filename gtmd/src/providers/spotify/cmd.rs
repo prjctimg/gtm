@@ -235,13 +235,6 @@ impl Spotify {
                     if inner2.spotify.lock().await.needs_play_link() {
                         Self::play_link(&inner2, port).await;
                     }
-                    // The charts registry is built before any token exists, so
-                    // register the Spotify provider now that a client is ready
-                    // (idempotent: a no-op when already registered).
-                    {
-                        let mut charts = inner2.charts.lock().await;
-                        charts.ensure_spotify(inner2.spotify.clone());
-                    }
                     // Background playlist sync. It pages every playlist on a
                     // cloned client so the manager mutex is never held across
                     // the network pass; no artificial timeout here — the first

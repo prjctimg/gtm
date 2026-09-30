@@ -3,9 +3,7 @@
 // and register themselves here; the client lists whatever `sources()` returns.
 
 mod apple;
-mod spotify;
 
-use crate::spotify::SpotifyManager;
 use gtm::shared::chart::{ChartError, ChartPlaylist, ChartProvider, ChartSource, ChartTrack};
 
 pub struct ChartsRegistry {
@@ -24,19 +22,6 @@ impl ChartsRegistry {
     /// first daemon start.
     pub fn add_free_defaults(&mut self) {
         self.providers.push(Box::new(apple::AppleCharts::new()));
-    }
-
-    pub fn add_spotify(&mut self, spotify: std::sync::Arc<tokio::sync::Mutex<SpotifyManager>>) {
-        self.providers.push(Box::new(SpotifyCharts::new(spotify)));
-    }
-
-    /// Register the Spotify charts provider exactly once. The registry is
-    /// built in `Daemon::new` before any token is loaded, so the startup and
-    /// OAuth-link paths re-register here once the client is actually ready.
-    pub fn ensure_spotify(&mut self, spotify: std::sync::Arc<tokio::sync::Mutex<SpotifyManager>>) {
-        if self.get("spotify").is_none() {
-            self.add_spotify(spotify);
-        }
     }
 
     pub fn sources(&self) -> Vec<ChartSource> {
@@ -94,5 +79,3 @@ impl ChartsRegistry {
         provider.chart_tracks(chart_id).await
     }
 }
-
-pub use self::spotify::SpotifyCharts;
