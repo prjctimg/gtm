@@ -2791,3 +2791,41 @@ fn no_cover_flag_or_halfblock_renderer() {
         "the man page still documents --cover"
     );
 }
+
+/// A picker's row count must match the rows its renderer draws.
+///
+/// The crossfade picker draws six rows (a "Duration" header plus the five
+/// durations) but reported fourteen, so the cursor could be moved eight rows
+/// past the end of the list. The renderer clamped it back for drawing while
+/// the cursor kept counting, which reads as the list refusing to scroll --
+/// navigation that does nothing rather than navigation that is wrong.
+#[test]
+fn picker_row_counts_match_their_renderers() {
+    let app = include_str!("../src/app/mod.rs");
+    let presets = include_str!("../src/ui/pickers/presets.rs");
+
+    // 1 header + CROSSFADE_DURATIONS.len().
+    assert!(
+        presets.contains("rows.push(\" Duration \".to_string());"),
+        "the crossfade picker lost its header row"
+    );
+    assert!(
+        app.contains("PickerId::Crossfade => 6,"),
+        "the crossfade picker's row count is wrong again"
+    );
+    assert!(
+        app.contains("PickerId::Crossfade => 5,"),
+        "the crossfade picker's max index is wrong again"
+    );
+
+    // The Enter arm addresses durations at rows 1..=5, which has to agree.
+    let keys = include_str!("../src/app/keys.rs");
+    let at = keys
+        .find("PickerId::Crossfade =>")
+        .expect("no crossfade arm");
+    let block = &keys[at..at + 700];
+    assert!(
+        block.contains("(1..=5).contains(&sel)"),
+        "the crossfade Enter arm's row range moved"
+    );
+}
