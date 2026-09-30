@@ -230,8 +230,9 @@ pub enum PlaybackStatus {
     Paused,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum RepeatMode {
+    #[default]
     Off,
     One,
     All,
@@ -534,20 +535,34 @@ pub struct Image {
 /// persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedState {
+    #[serde(default)]
     pub queue: Vec<TrackInfo>,
+    #[serde(default)]
     pub queue_cursor: u64,
+    #[serde(default)]
     pub volume: u8,
+    #[serde(default)]
     pub repeat: RepeatMode,
+    #[serde(default)]
     pub shuffle: bool,
+    #[serde(default)]
     pub mute: bool,
     /// Force mono playback (downmix to a single summed channel).
     #[serde(default)]
     pub mono: bool,
+    #[serde(default)]
     pub crossfade: Option<CrossfadeConfig>,
     #[serde(flatten)]
     pub audio: AudioSettings,
+    #[serde(default)]
     pub gapless: bool,
+    #[serde(default)]
     pub dynamic_mode: DynamicModeConfig,
+    /// Present in every state this build writes, but a state file written by
+    /// an older version lacks the key -- and without a default that made the
+    /// *whole* file fail to deserialize, silently dropping the queue, volume
+    /// and resume position with it. See `SavedState::load`.
+    #[serde(default)]
     pub scrobble: ScrobbleConfig,
     /// Last played track. Restored on startup so playback resumes exactly as
     /// the user left it (position included).
@@ -629,7 +644,18 @@ impl SavedState {
     /// or is corrupted.
     pub fn load(path: &std::path::Path) -> Option<Self> {
         let data = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&data).ok()
+        // Not `.ok()`. A malformed or unrecognised state file used to be
+        // discarded in total silence, so every persisted preference, the queue
+        // and the resume position vanished and the only symptom was that
+        // gtm had "forgotten" everything. One unrecognised key could take the
+        // whole file with it, which is why the fields above all default.
+        match serde_json::from_str(&data) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                tracing::warn!("ignoring unreadable state file {}: {e}", path.display());
+                None
+            }
+        }
     }
 }
 

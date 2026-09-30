@@ -341,7 +341,13 @@ impl LastfmManager {
         let artist = track.artist.clone();
         let title = track.title.clone();
         let album = track.album.clone();
-        let timestamp = chrono::Utc::now().timestamp();
+        // Last.fm's `timestamp` is *when the track started*, not when the
+        // scrobble was sent. Stamping it with the submission time put every
+        // play into the history at the moment the track ended -- or, on a
+        // queued retry, whenever the network came back -- so the user's
+        // timeline drifted by the length of each track. The caller knows how
+        // far into the track playback got, so the start is that far back.
+        let timestamp = chrono::Utc::now().timestamp() - played_secs.round() as i64;
 
         match self
             .submit_scrobble(&artist, &title, &album, timestamp)

@@ -763,12 +763,28 @@ impl Cmd {
             mixer.stop()?;
         }
         *inner.crossfade_loaded_for.lock().await = None;
+
+        // Scrobble before the track is cleared. Stopping dropped the play
+        // entirely, so listening to three minutes of a five-minute track and
+        // then pressing stop lost it from Last.fm even though it had met the
+        // scrobble threshold -- the only way it survived was to let the track
+        // finish on its own. The state lock is taken and dropped around the
+        // read so the network call does not hold it.
+        let (track, played_secs) = {
+            let state = inner.state.read().await;
+            (state.current_track.clone(), state.time_pos.max(0.0))
+        };
+        if let Some(track) = track {
+            Cmd::scrobble_track(inner, &track, played_secs).await;
+        }
+
         let mut state = inner.state.write().await;
         if state.status != PlaybackStatus::Stopped {
             state.stop()?;
         }
         state.radio_title = None;
         drop(state);
+        inner.scrobble.lock().await.start("", 0.0);
         Daemon::push_event(inner, DaemonEvent::PlaybackStopped);
         Daemon::push_event(inner, DaemonEvent::RadioTitleChanged { title: None });
         Ok(DaemonRes::Ok)
@@ -4170,6 +4186,12 @@ impl Daemon {
             state.current_track = Some(track.clone());
             state.duration = dur;
         }
+        // A promoted track is playing, so Last.fm has to hear about it. The
+        // normal advance path announces; this one did not, so a crossfaded
+        // track left the *previous* track sitting in "now playing" for its
+        // whole length -- and since a crossfade promotes most auto-advances,
+        // that was the common case rather than an edge one.
+        Cmd::announce_now_playing(inner).await;
         Self::push_event(
             inner,
             DaemonEvent::PlaybackStarted {

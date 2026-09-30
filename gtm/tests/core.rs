@@ -2683,3 +2683,73 @@ fn upnext_countdown_follows_the_crossfade_setting() {
         "the countdown window no longer matches the daemon's"
     );
 }
+
+/// Four scrobbling and state-persistence defects.
+///
+/// A scrobble that never lands and a state file that never loads both fail
+/// silently, which is why they are pinned here rather than left to the log.
+#[test]
+fn scrobbling_and_state_persistence() {
+    let lastfm = include_str!("../../gtmd/src/providers/lastfm/mod.rs");
+    let daemon = include_str!("../../gtmd/src/daemon/mod.rs");
+    let state = include_str!("../src/shared/state.rs");
+
+    // 1. Last.fm's `timestamp` is when the track *started*. Stamping it with
+    //    the submission time slid every play by the length of the track.
+    assert!(
+        lastfm.contains("chrono::Utc::now().timestamp() - played_secs.round() as i64"),
+        "the scrobble timestamp is not backdated to the track's start"
+    );
+    assert!(
+        !lastfm.contains("let timestamp = chrono::Utc::now().timestamp();"),
+        "the scrobble timestamp is submission time again"
+    );
+
+    // 2. `Cmd::stop` cleared the track without scrobbling it, so stopping
+    //    partway through lost the play.
+    let stop = daemon
+        .find("pub async fn stop(inner: &DaemonInner)")
+        .expect("no stop");
+    let block = &daemon[stop..stop + 1400];
+    assert!(
+        block.contains("Cmd::scrobble_track(inner, &track, played_secs).await;"),
+        "stop no longer scrobbles the track it interrupts"
+    );
+    assert!(
+        block.find("Cmd::scrobble_track").unwrap() < block.find("state.stop()?").unwrap(),
+        "stop clears the track before scrobbling it"
+    );
+
+    // 3. A crossfaded track never reached Last.fm's "now playing", so the
+    //    previous track sat there for the promoted track's whole length.
+    let promoted = daemon
+        .find("async fn report_promoted")
+        .expect("no report_promoted");
+    let block = &daemon[promoted..promoted + 1400];
+    assert!(
+        block.contains("Cmd::announce_now_playing(inner).await;"),
+        "a crossfaded track is still never announced to Last.fm"
+    );
+
+    // 4. `SavedState::load` swallowed a parse failure, so one unrecognised key
+    //    silently discarded the queue, the volume and the resume position.
+    assert!(
+        !state.contains("serde_json::from_str(&data).ok()"),
+        "SavedState::load is discarding parse errors silently again"
+    );
+    assert!(
+        state.contains("ignoring unreadable state file"),
+        "a bad state file is not reported"
+    );
+    let saved = state.find("pub struct SavedState").expect("no SavedState");
+    let block = &state[saved..saved + 1200];
+    // `scrobble` was the field missing a default; every field now has one.
+    for field in ["pub queue:", "pub volume:", "pub repeat:", "pub scrobble:"] {
+        let at = block.find(field).expect(field);
+        let before = &block[at.saturating_sub(40)..at];
+        assert!(
+            before.contains("#[serde(default)]"),
+            "{field} can still fail the whole state file to deserialize"
+        );
+    }
+}
