@@ -59,6 +59,8 @@ pub enum PickerId {
     SpotifyDest,
     /// Everything the daemon knows about the track on air (`i`).
     TrackInfo,
+    /// Discord Rich Presence application id (`Alt+X`).
+    DiscordSetup,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.

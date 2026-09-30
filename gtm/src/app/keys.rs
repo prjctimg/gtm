@@ -2373,7 +2373,7 @@ impl App {
         if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::Setup)) {
             match key.code {
                 KeyCode::Up | KeyCode::Down => {
-                    let n = 3;
+                    let n = 4;
                     self.setup.selection = (self.setup.selection as i32
                         + if key.code == KeyCode::Down { 1 } else { -1 })
                     .rem_euclid(n) as usize;
@@ -2464,6 +2464,64 @@ impl App {
                             }
                         }
                     }));
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Discord presence form ───
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::DiscordSetup)
+        ) {
+            match key.code {
+                KeyCode::Char(c) if !c.is_control() && self.setup.discord_input.len() < 32 => {
+                    self.setup.discord_input.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.setup.discord_input.pop();
+                }
+                KeyCode::Esc => {
+                    self.pickers.close_top();
+                }
+                KeyCode::Enter => {
+                    let raw = self.setup.discord_input.trim().to_string();
+                    // Discord ids are numeric. Anything else is a paste error,
+                    // and storing it would leave presence silently off with
+                    // nothing to say why.
+                    let (id, ok) = if raw.is_empty() {
+                        (None, true)
+                    } else if !raw.chars().all(|c| c.is_ascii_digit()) {
+                        (self.discord_id.clone(), false)
+                    } else {
+                        (Some(raw.clone()), true)
+                    };
+                    if ok {
+                        self.discord_id = id.clone();
+                        self.setup.discord_input = String::new();
+                        save_prefs(&self.current_prefs());
+                        self.pickers.close_top();
+                        let msg = match id {
+                            Some(v) => format!("Discord presence: {v}"),
+                            None => "Discord presence off".to_string(),
+                        };
+                        self.notify_typed(
+                            "System",
+                            msg,
+                            NotificationKind::Info,
+                            false,
+                            NotifType::System,
+                        );
+                    } else {
+                        self.notify_typed(
+                            "System",
+                            "Not a Discord application id (expected digits)",
+                            NotificationKind::Error,
+                            false,
+                            NotifType::System,
+                        );
+                    }
                 }
                 _ => {}
             }

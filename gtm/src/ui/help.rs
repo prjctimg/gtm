@@ -53,6 +53,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   Alt+A       About"),
     ("", "   Alt+E       Equalizer"),
     ("", "   Alt+Z       Sleep Timer"),
+    ("", "   Alt+X       Discord Rich Presence"),
     ("", "   l           Fetch Lyrics"),
     ("", "   i           Track Info (what the daemon knows)"),
     ("topic", "── Queue ──"),

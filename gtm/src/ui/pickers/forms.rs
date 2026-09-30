@@ -14,7 +14,7 @@ impl Pickers {
         f.render_widget(block, area);
 
         // (name, description, live status)
-        let services: [(&str, &str, String); 3] = [
+        let services: [(&str, &str, String); 4] = [
             ("Spotify", "OAuth link", {
                 if app.spotify.status.as_ref().is_some_and(|s| s.linked) {
                     "✓ linked".to_string()
@@ -34,6 +34,12 @@ impl Pickers {
                     "✓ cookies set".to_string()
                 } else {
                     "no cookies".to_string()
+                }
+            }),
+            ("Discord", "rich presence", {
+                match app.discord_id.as_deref() {
+                    Some(v) => format!("✓ app {v}"),
+                    None => "off".to_string(),
                 }
             }),
         ];
@@ -215,6 +221,54 @@ impl Pickers {
             " lets yt-dlp / the daemon access age-restricted and member-only media; empty Enter clears it",
             Style::default().fg(app.theme.fg_dim),
         )));
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+impl Pickers {
+    /// Discord Rich Presence application id (`Alt+X`).
+    ///
+    /// An empty value clears the id, which is how presence is turned off --
+    /// there is no separate on/off switch, because an id is the whole setting.
+    pub(crate) fn render_discord_setup(f: &mut ratatui::Frame, area: Rect, app: &App) {
+        let block = Self::picker_panel(app, " Discord Rich Presence ", None);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let draft = app.setup.discord_input.clone();
+        let active = app.discord_id.as_deref().unwrap_or("not set");
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("  Application id: ", Style::default().fg(app.theme.fg_dim)),
+                Span::styled(
+                    draft.clone(),
+                    Style::default()
+                        .fg(app.theme.fg_bright)
+                        .add_modifier(Modifier::UNDERLINED),
+                ),
+                match cursor_span_style(app) {
+                    Some(style) => Span::styled(" ", style),
+                    None => Span::raw(""),
+                },
+            ]),
+            Line::from(Span::styled(
+                format!("  Currently: {active}"),
+                Style::default().fg(app.theme.fg_dim),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Find it at the Discord Developer Portal, General Information.",
+                Style::default().fg(app.theme.fg_dim),
+            )),
+            Line::from(Span::styled(
+                "  Enter saves and applies it; an empty value turns presence off.",
+                Style::default().fg(app.theme.fg_dim),
+            )),
+            Line::from(Span::styled(
+                "  Needs the Discord desktop client running on this machine.",
+                Style::default().fg(app.theme.fg_dim),
+            )),
+        ];
         f.render_widget(Paragraph::new(lines), inner);
     }
 }

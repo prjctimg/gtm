@@ -99,6 +99,10 @@ pub struct Prefs {
     pub(crate) cover_provider: String,
     #[serde(default = "default_cover_cache_mb")]
     pub(crate) cover_cache_mb: u64,
+    /// Discord application id for Rich Presence, written by the `Alt+X` form.
+    /// `None` disables presence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) discord_id: Option<String>,
     #[serde(default = "default_fetch_lyrics")]
     pub(crate) auto_fetch_lyrics: bool,
     #[serde(default = "default_icon_style")]
@@ -275,6 +279,7 @@ impl Default for Prefs {
             footer_key_action: FooterKeyAction::default(),
             cover_provider: default_cover_provider(),
             cover_cache_mb: default_cover_cache_mb(),
+            discord_id: None,
             auto_fetch_lyrics: default_fetch_lyrics(),
             icon_style: default_icon_style(),
             hide_footer: false,

@@ -209,6 +209,8 @@ pub struct App {
     pub cover_provider: String,
     /// On-disk cover cache budget in MiB, pushed to the daemon on change.
     pub cover_cache_mb: u64,
+    /// Discord application id for Rich Presence; `Alt+X` edits it.
+    pub discord_id: Option<String>,
     /// Last reported cover cache disk usage in bytes.
     pub cover_cache_bytes: u64,
     /// About window: decorative visualization state (preset rotates, waveform
@@ -936,6 +938,7 @@ impl App {
             audio_devices: Vec::new(),
             cover_provider: prefs.cover_provider.clone(),
             cover_cache_mb: prefs.cover_cache_mb,
+            discord_id: prefs.discord_id.clone(),
             cover_cache_bytes: 0,
             about_viz: AboutViz::default(),
             auto_fetch_lyrics: prefs.auto_fetch_lyrics,

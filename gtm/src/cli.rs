@@ -55,6 +55,15 @@ pub struct Args {
     #[arg(long, short, global = true, help = "Output as JSON (CLI mode only)")]
     pub json: bool,
 
+    /// Write a shell completion script to stdout and exit
+    ///
+    /// Hidden: packaging calls it, users do not. Completions used to come from
+    /// a hand-maintained copy of this struct, which is why the shipped scripts
+    /// stopped matching the CLI. Generating from the real command tree makes
+    /// drift impossible.
+    #[arg(long, value_name = "SHELL", hide = true)]
+    pub completions: Option<clap_complete::Shell>,
+
     #[command(subcommand)]
     pub command: Option<CliCommand>,
 }

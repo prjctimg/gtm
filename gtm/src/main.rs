@@ -30,6 +30,14 @@ fn main() {
 
     let args = cli::Args::parse();
 
+    // Handled before anything else so `make completions` needs no daemon, no
+    // TUI and no built state beyond this binary.
+    if let Some(shell) = args.completions {
+        let mut cmd = cli::Args::command();
+        clap_complete::generate(shell, &mut cmd, "gtm", &mut std::io::stdout());
+        return;
+    }
+
     if let Some(ref cmd) = args.command {
         // A subcommand was given → run in CLI mode, dispatch directly
         cli::run(args.socket, args.json, args.verbose, cmd);

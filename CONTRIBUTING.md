@@ -163,7 +163,6 @@ gtm/
 │       ├── config.rs       DaemonConfig (paths, settings)
 │       ├── tags.rs         Audio tag writing (lofty)
 │       └── cleaner.rs      YouTube title/filename cleaning
-├── gtm/build/              Build-time helpers, incl. build/completions.rs
 ├── docs/man/               Manpage sources
 ├── scripts/build/          Build scripts (packaging, manpages, verification)
 ├── dist/                   Packaging files (systemd service, desktop entry, termux/rpm/arch)
@@ -272,7 +271,7 @@ you can tweak just the component you care about:
 | `gtm::gtmd` | Daemon: manages queue, library, IPC socket (bin `gtmd`) |
 | `gtm::mpris` | MPRIS D-Bus interface (mpris feature) |
 | `gtm::*` | Client: TUI and CLI interface (bin `gtm`, tui feature) |
-| `gtm/build.rs` | Build script: embeds git SHA, stamps feature env, and (via `GTM_GEN_COMPLETIONS`) generates shell completions during release builds |
+| `gtm/build.rs` | Build script: embeds git SHA, stamps feature env, reports the linker in use |
 
 Every change must pass all three before it is mergeable:
 

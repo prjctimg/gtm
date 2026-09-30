@@ -50,6 +50,7 @@ impl App {
             footer_key_action: self.footer_key_action,
             cover_provider: self.cover_provider.clone(),
             cover_cache_mb: self.cover_cache_mb,
+            discord_id: self.discord_id.clone(),
             auto_fetch_lyrics: self.auto_fetch_lyrics,
             icon_style: self.icon_style.clone(),
             hide_footer: self.hide_footer,

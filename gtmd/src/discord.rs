@@ -137,25 +137,42 @@ fn set_activity(activity: Option<&Activity>) -> serde_json::Value {
 /// Keep Discord's presence in step with the track on air until the process
 /// exits. A failure to reach Discord is logged once and retried on the next
 /// poll, so a client started later still gets a presence.
-pub(crate) async fn serve(inner: std::sync::Arc<DaemonInner>, app_id: String) {
+pub(crate) async fn serve(inner: std::sync::Arc<DaemonInner>, config_dir: std::path::PathBuf) {
     let mut sock: Option<UnixStream> = None;
     let mut last: Option<Activity> = None;
-    info!("Discord presence enabled for app {app_id}");
+    // Re-read every poll rather than capturing the id once. The `Alt+X` form
+    // writes config.toml and the user should not have to restart the daemon
+    // for it to take effect; the file read is a few hundred bytes.
+    let mut app_id: Option<String> = None;
 
     loop {
         tokio::time::sleep(POLL).await;
 
+        let id = read_id(&config_dir);
+        if id != app_id {
+            if let Some(ref v) = id {
+                info!("Discord presence enabled for app {v}");
+            } else {
+                info!("Discord presence disabled");
+            }
+            app_id = id;
+            sock = None;
+            last = None;
+        }
+        let Some(app_id) = app_id.clone() else {
+            continue;
+        };
+
         let activity = {
             let state = inner.state.read().await;
             let playing = state.status == PlaybackStatus::Playing;
-
+            // Track start, not now: the daemon's position is authoritative,
+            // and re-anchoring to the poll would make the elapsed time in
+            // Discord jump backwards on every tick.
             state
                 .current_track
                 .as_ref()
                 .filter(|_| playing)
-                // Track start, not now: the daemon's position is authoritative
-                // and re-anchoring to the poll would make the elapsed time in
-                // Discord jump backwards on every tick.
                 .map(|t| Activity::of(t, now_secs() - state.time_pos as i64))
         };
 
@@ -192,6 +209,18 @@ pub(crate) async fn serve(inner: std::sync::Arc<DaemonInner>, app_id: String) {
         }
         last = activity;
     }
+}
+
+/// Read `discord_app_id` from config.toml.
+fn read_id(config_dir: &std::path::Path) -> Option<String> {
+    let toml = std::fs::read_to_string(config_dir.join("config.toml")).ok()?;
+    let v: toml::Value = toml::from_str(&toml).ok()?;
+    let raw = match v.get("discord_app_id") {
+        Some(toml::Value::String(s)) => s.trim().to_string(),
+        Some(toml::Value::Integer(i)) => i.to_string(),
+        _ => return None,
+    };
+    (!raw.is_empty() && raw.chars().all(|c| c.is_ascii_digit())).then_some(raw)
 }
 
 fn now_secs() -> i64 {

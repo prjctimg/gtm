@@ -2895,3 +2895,94 @@ fn readable_fg_returns_measurable_colours() {
         "readable_fg returns a named colour again"
     );
 }
+
+/// Completions must come from the real parsers, not a copy of them.
+///
+/// `gtm/build/completions.rs` used to be a hand-maintained duplicate of the
+/// CLI, and the shipped scripts had drifted: `api`, `cli`, `lyrics` and
+/// `stream` were missing from it. The duplicate is gone, so the guard is that
+/// both binaries expose the generator and that no copy of the arg structs is
+/// hiding in a build script.
+#[test]
+fn completions_are_generated_from_the_real_parsers() {
+    let build = include_str!("../build.rs");
+    let cli = include_str!("../src/cli.rs");
+    let main = include_str!("../src/main.rs");
+    let daemon_config = include_str!("../../gtmd/src/config.rs");
+    let daemon_lib = include_str!("../../gtmd/src/lib.rs");
+
+    // No duplicate CLI definition, and no include! of one.
+    for gone in ["include!(", "GTM_GEN_COMPLETIONS", "mod completions"] {
+        assert!(
+            !build.contains(gone),
+            "build.rs is back to carrying completion logic: {gone}"
+        );
+    }
+    for (name, src) in [
+        ("cli.rs", cli),
+        ("main.rs", main),
+        ("gtmd config.rs", daemon_config),
+        ("gtmd lib.rs", daemon_lib),
+    ] {
+        assert!(
+            !src.contains("#[derive(Parser)]") || name == "cli.rs",
+            "{name} reintroduced a parallel arg struct"
+        );
+    }
+
+    // Both binaries can emit a script, from their own command tree.
+    assert!(cli.contains("pub completions: Option<clap_complete::Shell>"));
+    assert!(daemon_config.contains("pub completions: Option<clap_complete::Shell>"));
+    assert!(main.contains("clap_complete::generate(shell, &mut cmd, \"gtm\""));
+    assert!(daemon_lib.contains("clap_complete::generate(shell, &mut cmd, \"gtmd\""));
+
+    // And the generation happens before the daemon starts or the TUI launches,
+    // so packaging needs neither.
+    let at = daemon_lib.find("clap_complete::generate").unwrap();
+    let cfg = daemon_lib.find("DaemonConfig::load").unwrap();
+    assert!(at < cfg, "gtmd generates completions after loading config");
+}
+
+/// The Setup chooser and its services must agree on how many there are.
+///
+/// `Alt+X` already opened the Setup chooser, so Discord was added as a fourth
+/// service rather than by taking the key: a second `Alt+X` binding would have
+/// shadowed the first, and a service row the chooser cannot count to would be
+/// unreachable.
+#[test]
+fn discord_is_a_setup_service_and_alt_x_is_not_duplicated() {
+    let keymap = include_str!("../src/keymap.rs");
+    let state = include_str!("../src/app/state.rs");
+    let keys = include_str!("../src/app/keys.rs");
+    let forms = include_str!("../src/ui/pickers/forms.rs");
+    let run = include_str!("../src/app/run.rs");
+    let icons = include_str!("../src/ui/icons.rs");
+
+    // Exactly one Alt+X binding, and it is the Setup chooser. Counted by the
+    // full key expression: a line-window match also counts the lines of every
+    // neighbouring binding.
+    let alt_x = "KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT)";
+    assert_eq!(
+        keymap.matches(alt_x).count(),
+        1,
+        "Alt+X is bound more than once"
+    );
+    assert!(keymap.contains("OpenOverlay(PickerId::Setup)"));
+
+    // Four services, counted consistently in the three places that care.
+    assert!(state.contains(r#"let names = ["spotify", "lastfm", "youtube", "discord"];"#));
+    assert!(state.contains("app.setup.selection.min(3)"));
+    assert!(keys.contains("let n = 4;"));
+    assert!(forms.contains("let services: [(&str, &str, String); 4] = ["));
+    assert!(forms.contains(r#"("Discord", "rich presence""#));
+
+    // And the chooser can open it.
+    assert!(run.contains("Some(\"discord\") => {"));
+    assert!(run.contains("self.pickers.open(PickerId::DiscordSetup);"));
+
+    // A real brand glyph, not a stand-in.
+    assert!(
+        icons.contains(r#""Discord" => Some("\u{f075e}")"#),
+        "the Discord brand glyph is missing"
+    );
+}

@@ -340,12 +340,14 @@ pub struct SetupView {
     pub lastfm_error: Option<String>,
     /// YouTube cookie-file draft for the `YoutubeSetup` form.
     pub youtube_cookie_input: String,
+    /// Discord application id draft for the `DiscordSetup` form.
+    pub discord_input: String,
 }
 
 /// Selected row of the `gtm setup` service chooser.
 pub fn setup_selection(app: &App) -> (usize, &'static str) {
-    let names = ["spotify", "lastfm", "youtube"];
-    let sel = app.setup.selection.min(2);
+    let names = ["spotify", "lastfm", "youtube", "discord"];
+    let sel = app.setup.selection.min(3);
     (sel, names[sel])
 }
 

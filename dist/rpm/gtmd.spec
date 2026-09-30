@@ -52,7 +52,14 @@ install -Dpm 0644 artifacts/man/gtmd-ipc.1 %{buildroot}%{_mandir}/man1/gtmd-ipc.
 install -Dpm 0644 artifacts/man/gtm.1      %{buildroot}%{_mandir}/man1/gtm.1
 
 # Shell completions
-GTM_GEN_COMPLETIONS="$(pwd)/artifacts" cargo build --release --quiet
+cargo build --release --quiet
+mkdir -p artifacts/completions
+./target/release/gtm --completions bash > artifacts/completions/gtm.bash
+./target/release/gtm --completions zsh > artifacts/completions/_gtm
+./target/release/gtm --completions fish > artifacts/completions/gtm.fish
+./target/release/gtmd --completions bash > artifacts/completions/gtmd.bash
+./target/release/gtmd --completions zsh > artifacts/completions/_gtmd
+./target/release/gtmd --completions fish > artifacts/completions/gtmd.fish
 install -Dpm 0644 artifacts/completions/gtm.bash   %{buildroot}%{_datadir}/bash-completion/completions/gtm
 install -Dpm 0644 artifacts/completions/_gtm       %{buildroot}%{_datadir}/zsh/site-functions/_gtm
 install -Dpm 0644 artifacts/completions/gtm.fish   %{buildroot}%{_datadir}/fish/vendor_completions.d/gtm.fish

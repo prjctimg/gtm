@@ -107,6 +107,14 @@ impl App {
                     top.viewport_offset = 0;
                 }
             }
+            PickerId::DiscordSetup => {
+                // Seed from the saved id so the form shows what is set rather
+                // than starting blank and inviting an overwrite.
+                if let Some(top) = self.pickers.top_mut() {
+                    top.query.clear();
+                }
+                self.setup.discord_input = self.discord_id.clone().unwrap_or_default();
+            }
             PickerId::SpotifyDest => {
                 // The destination filter is scoped to this picker, so a query
                 // left over from a previous open must not hide every row.

@@ -42,7 +42,14 @@ retry "pacman install" pacman -S --noconfirm --needed $PACMAN_PACKAGES
 cargo build --release
 
 ./scripts/build/manpages.sh artifacts
-GTM_GEN_COMPLETIONS="$(pwd)/artifacts" cargo build --release --quiet
+cargo build --release --quiet
+mkdir -p artifacts/completions
+./target/release/gtm --completions bash > artifacts/completions/gtm.bash
+./target/release/gtm --completions zsh > artifacts/completions/_gtm
+./target/release/gtm --completions fish > artifacts/completions/gtm.fish
+./target/release/gtmd --completions bash > artifacts/completions/gtmd.bash
+./target/release/gtmd --completions zsh > artifacts/completions/_gtmd
+./target/release/gtmd --completions fish > artifacts/completions/gtmd.fish
 
 root="gtm-arch-${arch}"
 mkdir -p release-assets \

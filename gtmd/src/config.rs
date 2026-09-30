@@ -119,6 +119,13 @@ pub struct DaemonArgs {
 
     #[arg(long, help = "Audio backend", value_parser = ["rodio", "pulseaudio"])]
     pub backend: Option<String>,
+
+    /// Write a shell completion script to stdout and exit
+    ///
+    /// Hidden: packaging calls it. Generated from this struct, which is the
+    /// real parser, so the script cannot drift from the flags accepted here.
+    #[arg(long, value_name = "SHELL", hide = true)]
+    pub completions: Option<clap_complete::Shell>,
 }
 
 impl DaemonConfig {
@@ -281,13 +288,10 @@ impl DaemonConfig {
 
 /// Resolve `discord_app_id` from config.toml.
 fn discord_id(toml: Option<&toml::Value>) -> Option<String> {
-    let raw = {
-        let v = toml.and_then(|v| v.get("discord_app_id"))?;
-        match v {
-            toml::Value::String(s) => s.clone(),
-            toml::Value::Integer(i) => i.to_string(),
-            _ => return None,
-        }
+    let raw = match toml.and_then(|v| v.get("discord_app_id"))? {
+        toml::Value::String(s) => s.clone(),
+        toml::Value::Integer(i) => i.to_string(),
+        _ => return None,
     };
     let id = raw.trim();
     // Discord's ids are numeric. Anything else is a paste error, and refusing

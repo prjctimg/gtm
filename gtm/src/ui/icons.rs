@@ -43,6 +43,7 @@ pub(crate) fn provider_icon(name: &str) -> Option<&'static str> {
         "Mixcloud" => Some("\u{f289}"),   // nf-fa-mixcloud
         "Twitch" => Some("\u{f1e8}"),     // nf-fa-twitch
         "Last.fm" => Some("\u{f001}"),    // nf-md-music (no brand glyph in font)
+        "Discord" => Some("\u{f075e}"),   // nf-md-discord
         "Local" => Some("\u{f0a0}"),      // nf-fa-hdd
         _ => None,
     }

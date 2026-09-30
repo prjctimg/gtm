@@ -37,6 +37,11 @@ impl App {
                 self.pickers.open(PickerId::YoutubeSetup);
                 self.on_picker_opened(PickerId::YoutubeSetup);
             }
+            Some("discord") => {
+                self.setup.selection = 3;
+                self.pickers.open(PickerId::DiscordSetup);
+                self.on_picker_opened(PickerId::DiscordSetup);
+            }
             _ => {
                 self.pickers.open(PickerId::Setup);
                 self.on_picker_opened(PickerId::Setup);

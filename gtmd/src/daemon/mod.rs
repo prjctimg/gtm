@@ -2034,8 +2034,13 @@ impl Daemon {
             crate::web::serve(Arc::clone(&inner), addr).await;
         }
 
-        if let Some(app) = discord_id {
-            tokio::spawn(crate::discord::serve(Arc::clone(&inner), app));
+        // Started whenever an id is present, and it re-reads the file each
+        // poll, so `Alt+X` takes effect without a restart.
+        if discord_id.is_some() {
+            tokio::spawn(crate::discord::serve(
+                Arc::clone(&inner),
+                inner.config.config_dir.clone(),
+            ));
         }
 
         Ok(Self {

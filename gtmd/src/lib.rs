@@ -4,7 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use tracing_subscriber::EnvFilter;
 
 pub mod cleaner;
@@ -33,6 +33,15 @@ pub use daemon::Daemon;
 
 pub async fn run() {
     let args = DaemonArgs::parse();
+
+    // Packaging calls this; it must not start the daemon, so it comes before
+    // any directory is created or config read.
+    if let Some(shell) = args.completions {
+        let mut cmd = DaemonArgs::command();
+        clap_complete::generate(shell, &mut cmd, "gtmd", &mut std::io::stdout());
+        return;
+    }
+
     let config = DaemonConfig::load(&args);
 
     if let Err(e) = config.create_dirs() {

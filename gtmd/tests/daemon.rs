@@ -39,6 +39,7 @@ fn test_config() -> DaemonConfig {
         verbose: false,
         test_mode: true,
         backend: None,
+        completions: None,
     };
     let config = DaemonConfig::load(&args);
     let _ = std::fs::remove_file(&config.socket_path);
