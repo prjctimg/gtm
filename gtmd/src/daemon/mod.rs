@@ -1868,6 +1868,7 @@ fn is_yt_slow(req: &DaemonReq) -> bool {
 impl Daemon {
     pub async fn new(config: DaemonConfig) -> Result<Self, CoreError> {
         let web_addr = config.web_addr;
+        let discord_id = config.discord_id.clone();
         let mut initial_state = DaemonState::new();
 
         if !config.test_mode
@@ -2031,6 +2032,10 @@ impl Daemon {
 
         if let Some(addr) = web_addr {
             crate::web::serve(Arc::clone(&inner), addr).await;
+        }
+
+        if let Some(app) = discord_id {
+            tokio::spawn(crate::discord::serve(Arc::clone(&inner), app));
         }
 
         Ok(Self {

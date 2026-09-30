@@ -92,6 +92,11 @@ pub struct DaemonConfig {
     /// scripts and nothing else. Set it to `0.0.0.0:PORT` to expose the
     /// current track to the LAN, or to an empty string to disable it.
     pub web_addr: Option<SocketAddr>,
+    /// Discord application id for Rich Presence, from `discord_app_id`.
+    ///
+    /// `None` disables presence. An id that Discord does not recognise simply
+    /// never gets a connection, so a wrong value costs a log line.
+    pub discord_id: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -234,6 +239,7 @@ impl DaemonConfig {
             .map(|mb| (mb as u64) * 1024 * 1024)
             .unwrap_or(crate::cover::DISK_CACHE_DEFAULT);
         let web_addr = web_addr(toml.as_ref());
+        let discord_id = discord_id(toml.as_ref());
 
         DaemonConfig {
             socket_path,
@@ -250,6 +256,7 @@ impl DaemonConfig {
             cover_provider,
             cover_cache_bytes,
             web_addr,
+            discord_id,
         }
     }
 
@@ -270,6 +277,26 @@ impl DaemonConfig {
         }
         Ok(())
     }
+}
+
+/// Resolve `discord_app_id` from config.toml.
+fn discord_id(toml: Option<&toml::Value>) -> Option<String> {
+    let raw = match toml.and_then(|v| v.get("discord_app_id")) {
+        Some(v) => match v {
+            toml::Value::String(s) => s.clone(),
+            toml::Value::Integer(i) => i.to_string(),
+            _ => return None,
+        },
+        None => return None,
+    };
+    let id = raw.trim();
+    // Discord's ids are numeric. Anything else is a paste error, and refusing
+    // it here is better than a handshake that silently never connects.
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+        eprintln!("gtmd: ignoring discord_app_id {id:?}: expected a numeric application id");
+        return None;
+    }
+    Some(id.to_string())
 }
 
 #[cfg(test)]
@@ -323,5 +350,32 @@ mod tests {
             web_addr(Some(&val("web_addr = \"not-an-addr\""))),
             Some("127.0.0.1:8991".parse().unwrap())
         );
+    }
+
+    #[test]
+    fn discord_off_by_default() {
+        assert_eq!(discord_id(None), None);
+        assert_eq!(discord_id(Some(&val("[audio]\n"))), None);
+    }
+
+    #[test]
+    fn discord_accepts_a_numeric_id() {
+        let id = "1554792961844445225".to_string();
+        assert_eq!(
+            discord_id(Some(&val(&format!("discord_app_id = {id}")))),
+            Some(id.clone())
+        );
+        assert_eq!(
+            discord_id(Some(&val(&format!("discord_app_id = \"{id}\"")))),
+            Some(id)
+        );
+    }
+
+    /// A non-numeric id is a paste error, and a handshake that never connects
+    /// is a much worse way to learn that than a refusal at load.
+    #[test]
+    fn discord_rejects_a_non_numeric_id() {
+        assert_eq!(discord_id(Some(&val("discord_app_id = \"abc\""))), None);
+        assert_eq!(discord_id(Some(&val("discord_app_id = \"\""))), None);
     }
 }

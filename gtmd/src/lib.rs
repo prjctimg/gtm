@@ -12,6 +12,7 @@ pub mod config;
 pub mod cover;
 pub mod daemon;
 pub mod deferred_mixer;
+pub mod discord;
 pub mod library;
 pub mod network;
 pub mod providers;
