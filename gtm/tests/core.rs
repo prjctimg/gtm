@@ -3322,7 +3322,7 @@ fn zen_cycles_now_playing_lyrics_and_the_visualizer() {
         let body = state
             .split(&format!("pub(crate) fn {f}(self) -> ZenSurface {{"))
             .nth(1)
-            .expect(&format!("ZenSurface::{f} is gone"));
+            .unwrap_or_else(|| panic!("ZenSurface::{f} is gone"));
         let body = &body[..body.find("\n    }").expect("unterminated")];
         for surface in ["NowPlaying", "Lyrics", "Visualizer"] {
             assert!(
