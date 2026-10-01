@@ -210,6 +210,7 @@ pub struct App {
     pub playlist_tracks: Vec<TrackInfo>,
     pub spotify: SpotifyView,
     pub charts: ChartsView,
+    pub browse: BrowseView,
     pub setup: SetupView,
     pub podcast: PodcastView,
     pub radio: RadioView,
@@ -403,6 +404,10 @@ pub(crate) enum IpcResult {
     CoverArt(Option<Vec<u8>>, Option<i64>, u64),
     PopupCoverArt(Option<Vec<u8>>, i64, u64),
     QueuePreviewCover(Option<Vec<u8>>, String, u64),
+    /// Songs, releases and people from a browse search.
+    BrowseHits(Vec<crate::shared::chart::BrowseHit>),
+    BrowseAlbumPage(crate::shared::chart::AlbumPage),
+    BrowseArtistPage(crate::shared::chart::ArtistPage),
     /// Text read from the system clipboard for a form field, named because the
     /// form may have closed while the paste tool was running.
     ClipboardPaste(ClipField, String),
@@ -1005,6 +1010,7 @@ impl App {
                 list_shown: None,
             },
             charts: ChartsView::default(),
+            browse: BrowseView::default(),
             podcast: PodcastView::default(),
             radio: RadioView::default(),
             cookie_file: None,
@@ -1351,6 +1357,7 @@ impl App {
                 .iter()
                 .filter(|c| fuzzy_match(&query, c.icon))
                 .count(),
+            PickerId::Browse => self.browse_len(),
             PickerId::PodcastFeeds => self.podcast.feeds.len(),
             PickerId::PodcastEpisodes => self.podcast.episodes.len(),
             PickerId::PodcastSubscribe => 1,
@@ -1711,6 +1718,7 @@ pub mod theme;
 
 // Per-provider actions live under `providers`; re-exported here so the glob
 // import every sibling module relies on keeps resolving them.
+pub use crate::providers::browse::app as browse;
 pub use crate::providers::charts::app as charts;
 pub use crate::providers::lastfm::app as lastfm;
 pub use crate::providers::podcast::app as podcast;
@@ -1722,6 +1730,7 @@ mod tests;
 
 // One glob per submodule: a leaf needs a single `use crate::app::*;`
 // instead of importing each shared item itself.
+pub(crate) use browse::*;
 pub(crate) use charts::*;
 pub(crate) use cover::*;
 pub(crate) use keys::*;

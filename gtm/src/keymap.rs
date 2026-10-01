@@ -386,6 +386,11 @@ pub fn default_keybindings() -> Keybindings {
                 NORMAL
             ),
             b!(
+                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+                KeyboardAction::OpenOverlay(PickerId::Browse),
+                NORMAL
+            ),
+            b!(
                 KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT),
                 KeyboardAction::OpenOverlay(PickerId::Notifications),
                 NORMAL
@@ -619,6 +624,9 @@ impl KeyboardAction {
                 KeyboardAction::OpenOverlay(PickerId::SpotifySearch)
             }
             "open_podcast" | "open_podcasts" => KeyboardAction::OpenOverlay(PickerId::PodcastFeeds),
+            "open_browse" | "browse" | "search_music" => {
+                KeyboardAction::OpenOverlay(PickerId::Browse)
+            }
             "open_radio" | "open_radios" | "open_radio_browse" | "browse_radio" => {
                 KeyboardAction::OpenOverlay(PickerId::Radio)
             }

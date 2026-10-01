@@ -10,6 +10,7 @@
 //! lyrics routers — stay in `shared`, `app` and `ui`, because each of them
 //! fans out over every provider and belongs to none.
 
+pub mod browse;
 pub mod charts;
 pub mod lastfm;
 pub mod podcast;

@@ -46,6 +46,8 @@ pub enum PickerId {
     Radio,
     /// Play an arbitrary HTTP(S) stream URL (Alt+O).
     LoadStream,
+    /// Music browse: search, album tracklists, artist pages (`/` in the library).
+    Browse,
     /// `gtm setup` entry: choose which service to configure.
     Setup,
     /// Last.fm setup form (API key/secret) plus the OAuth browser flow.

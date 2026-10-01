@@ -321,6 +321,48 @@ pub struct ChartsView {
     pub selected_chart: Option<usize>,
 }
 
+/// Which level of the Browse tree is open.
+///
+/// A search lands on songs and releases; Enter drills into an album or an
+/// artist, and the tree has to be able to get back out. This is the depth,
+/// spelled out rather than inferred from which caches happen to be populated —
+/// those go stale on their own and would leave the renderer guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BrowseLevel {
+    /// Search results.
+    #[default]
+    Results,
+    /// One album's tracklist.
+    Album,
+    /// One artist: top tracks and releases.
+    Artist,
+}
+
+/// Music browse state, grouped under `App::browse`.
+#[derive(Default)]
+pub struct BrowseView {
+    /// Songs, releases and people from the last search.
+    pub hits: Vec<crate::shared::chart::BrowseHit>,
+    /// A search is in flight.
+    pub pending: bool,
+    /// When the query should go out. Settled rather than per-keystroke: each
+    /// search is a request to a third party.
+    pub deadline: Option<std::time::Instant>,
+    /// Which level of the tree is open.
+    pub level: BrowseLevel,
+    /// The open album's tracklist, for `BrowseLevel::Album`.
+    pub album: Option<crate::shared::chart::AlbumPage>,
+    /// The open artist's page, for `BrowseLevel::Artist`.
+    pub artist: Option<crate::shared::chart::ArtistPage>,
+    /// Rows the renderer draws, whichever level is open: search hits, an
+    /// album's tracks, or an artist's top tracks.
+    pub rows: Vec<crate::shared::chart::BrowseTrack>,
+    /// Artist page releases, drawn below its tracks.
+    pub releases: Vec<crate::shared::chart::BrowseAlbum>,
+    /// Title for the pane header, so a drill-down names itself.
+    pub heading: String,
+}
+
 /// `gtm setup` wizard state, grouped under `App::setup`.
 #[derive(Default)]
 pub struct SetupView {

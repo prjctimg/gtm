@@ -5,6 +5,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use crate::app::BrowseLevel;
 use crate::ui::*;
 
 /// Rows of cover art in the one-column bottom-pane track card.
@@ -2068,6 +2069,87 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             }
+        } else if app.library_category == 14 {
+            // Browse: a search, then an album's tracklist or an artist's page.
+            // One list for all three levels, so the only thing the level changes
+            // is what a row means.
+            let rows = app.browse_len();
+            let sel = app.list_pos().min(rows.saturating_sub(1));
+            let st_line = match app.browse.level {
+                BrowseLevel::Results => format!(" {} results", app.browse.hits.len()),
+                BrowseLevel::Album => format!(" {} tracks", app.browse.rows.len()),
+                BrowseLevel::Artist => format!(
+                    " {} top \u{b7} {} releases",
+                    app.browse.rows.len(),
+                    app.browse.releases.len()
+                ),
+            };
+            let available = window_rows();
+            app.viewport_items = available;
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, rows);
+            app.list_scroll = list_scroll;
+            let mut lines = vec![Line::from("")];
+            if rows == 0 {
+                lines.extend(empty_hint_lines(
+                    app,
+                    if app.browse.pending {
+                        "Searching\u{2026}"
+                    } else {
+                        "Nothing found"
+                    },
+                    "Hint: type to search for a song, album or artist",
+                ));
+            } else {
+                // An artist page puts its releases under its tracks, under a
+                // heading, so the two are one scroller rather than two lists
+                // competing for the same cursor.
+                let tracks: &[crate::shared::chart::BrowseTrack] = &app.browse.rows;
+                let releases: &[crate::shared::chart::BrowseAlbum] = &app.browse.releases;
+                let with_releases = !releases.is_empty();
+                let total = rows;
+                for i in list_scroll..end.min(total) {
+                    let is_sel = i == sel && !left_focus;
+                    let style = if is_sel {
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg)
+                    } else {
+                        Style::default().fg(app.theme.fg)
+                    };
+                    let prefix = if is_sel { " > " } else { "   " };
+                    let text = if i < tracks.len() {
+                        let t = &tracks[i];
+                        let dur = t
+                            .duration_secs
+                            .map(format_duration_short)
+                            .unwrap_or_else(|| "--:--".to_string());
+                        let who = if t.artist.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" \u{2014} {}", t.artist)
+                        };
+                        format!("{}[{dur}] {}{who}", prefix, t.title)
+                    } else if with_releases && i == tracks.len() {
+                        "   \u{2500}\u{2500} releases \u{2500}\u{2500}".to_string()
+                    } else {
+                        let a = &releases[i - tracks.len() - usize::from(with_releases)];
+                        let n = a
+                            .track_count
+                            .map(|c| format!("\u{2003}[{c}]"))
+                            .unwrap_or_default();
+                        format!("{}\u{1f4bc} {}{n}", prefix, a.title)
+                    };
+                    let row = if is_sel {
+                        let pad = row_pad(&text, results_area.width);
+                        format!("{text}{}", " ".repeat(pad))
+                    } else {
+                        text
+                    };
+                    lines.push(Line::from(Span::styled(row, style)));
+                }
+            }
+            lib_total_rows = rows;
+            (lines, st_line)
         } else {
             let (total_len, total_dur) = {
                 let f = app.filtered_tracks();
