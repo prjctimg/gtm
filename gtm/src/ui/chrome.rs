@@ -7,18 +7,19 @@
 
 use crate::ui::*;
 
-/// Which layout the lyrics are being drawn into, which decides the pane's
-/// header.
-#[derive(Clone, Copy)]
-pub(crate) enum LyricsFit {
-    /// Two or three panes: the track is named next to the cover already, so
-    /// the pane keeps its label and takes nothing else.
-    Docked,
-    /// One column: the lyrics have the full width under the now-playing band,
-    /// which is five rows tall and cannot show the art. The band carries the
-    /// heading instead of repeating it, and the art comes here.
-    Solo,
-}
+/// Rows of cover art in the one-column bottom-pane track card.
+///
+/// A preview, not a second docked card: the pane exists to describe the list
+/// above it, and six rows of half-block art is 12 columns of recognisable
+/// album while still leaving the list most of the screen.
+const DOCK_ART_H: u16 = 6;
+
+/// Rows of cover art the Zen lyrics surface sets beside its title.
+///
+/// Eight rows of half-block art is 16x8 cells: enough to recognise the release,
+/// and the body it displaces keeps enough width that lines still wrap and the
+/// surface still scrolls.
+const ZEN_LYRICS_ART_H: u16 = 8;
 
 /// Whether an album line is worth a row next to a track's title and artist.
 ///
@@ -579,19 +580,42 @@ impl Render {
     /// under the artwork. This is the other half of that: the whole song, for
     /// reading along to, on the surface Zen exists to give a track.
     pub(crate) fn zen_lyrics(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        // The cover shares the header band with the title rather than sitting
+        // in its own full-width block. Reading along is the point of this
+        // surface, and a body spanning the whole terminal wrapped most lyric
+        // lines into a single row — which left nothing to scroll and made the
+        // highlight crawl down a static wall of text. Keeping the art beside
+        // the title narrows the body enough that lines wrap and the surface
+        // scrolls like the pane it shares code with.
+        //
+        // Sized for detail rather than presence: 8 rows of half-block art is
+        // 16x8 cells, enough to recognise the artwork, and a larger box just
+        // eats lyrics.
+        let art_h = area.height.saturating_sub(6).clamp(2, ZEN_LYRICS_ART_H);
+        let art_w = art_h * 2;
+        let header = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width.saturating_sub(art_w + 2),
+            height: 2,
+        };
         if let Some(t) = app.state.current_track.clone() {
-            Render::zen_track_header(
-                f,
-                app,
-                &t,
-                Rect {
-                    x: area.x,
-                    y: area.y,
-                    width: area.width,
-                    height: 2,
-                },
-            );
+            Render::zen_track_header(f, app, &t, header);
         }
+        let art = Rect {
+            x: area.x + area.width.saturating_sub(art_w),
+            y: area.y,
+            width: art_w,
+            height: art_h,
+        };
+        Render::cover(
+            f,
+            art,
+            app.np_cover.stateful.as_mut(),
+            app.np_cover.image.as_deref(),
+            app.theme.fg_dim,
+            Some(" \u{266b} "),
+        );
 
         let Some(ref lyrics) = app.lyrics.current else {
             let msg = if app.lyrics.fetching {
@@ -627,7 +651,7 @@ impl Render {
         let body = Rect {
             x: area.x.saturating_add(2),
             y: area.y.saturating_add(3),
-            width: area.width.saturating_sub(4),
+            width: area.width.saturating_sub(4 + art_w).max(16),
             height: area.height.saturating_sub(4),
         };
         Render::lyrics_body(f, body, app, lyrics);
@@ -936,6 +960,15 @@ impl Render {
 
         let lyrics_full_height = lyrics_third_pane;
 
+        // Rows the now-playing cover may occupy. Also the row the left pane's
+        // category list aligns to, so the two blocks read as one unit: the
+        // cover is what the list is browsing.
+        let cover_band: u16 = if is_small_height {
+            (np_height.saturating_sub(3)).clamp(2, 5)
+        } else {
+            np_height.saturating_sub(3).min(12)
+        };
+
         let (left_area, lyrics_area) = if lyrics_full_height {
             let lyrics_w = area.width / 3;
             let left_w = area.width - lyrics_w;
@@ -1011,10 +1044,13 @@ impl Render {
                 } else {
                     inner.height.saturating_sub(2)
                 };
+                // `cover_band` is computed once in `library` so the left pane's
+                // list can align to it; here it is only bounded by what the
+                // band actually has room for.
                 let cover_h = if is_small_height {
                     avail_h.clamp(2, 5)
                 } else {
-                    avail_h.min(12)
+                    avail_h.min(cover_band)
                 };
                 // Half-block art is square at a 1:2 cell aspect, so the width
                 // follows the height. The band lost the library column's width
@@ -1289,25 +1325,34 @@ impl Render {
         // `want_track_card` and needs no condition of its own.
         let has_card =
             (want_track_card || want_playlist_card || want_spot_track_card) && !is_small_height;
-        // Rows the category list may use: everything, less the card and the
-        // single padding row that keeps the cover art off the list's baseline.
-        // A pane too short for both drops the list entirely rather than
-        // squeezing the card to a sliver.
+        // Clearance between the list and the card: the padding row plus the
+        // gap that keeps the artwork from reading as a clipped list row.
+        let card_gap = if has_card {
+            LEFT_LIST_PADDING + INFO_CARD_GAP
+        } else {
+            0
+        };
+        // Sit the first category level with the cover image beside it.
+        let list_top = left_list_top(cover_band);
+        // Rows the category list may use: everything, less the top clearance
+        // and, when a card is present, the gap above it. A pane too short for
+        // both drops the list entirely rather than squeezing the card.
         let list_rows: u16 = if has_card {
-            let reserved = LEFT_LIST_PADDING + 1;
+            let reserved = list_top + card_gap + 1;
             if left_inner.height <= reserved {
                 0
             } else {
                 (left_inner.height - reserved).min(LEFT_LIST_MAX_ROWS)
             }
         } else {
-            left_inner.height
+            left_inner.height.saturating_sub(list_top)
         };
         let track_info_h: u16 = if has_card {
             let avail_h = left_inner
                 .height
                 .saturating_sub(list_rows)
-                .saturating_sub(LEFT_LIST_PADDING);
+                .saturating_sub(list_top)
+                .saturating_sub(card_gap);
             let need = info_block_h();
             need.min(avail_h.max(6))
         } else {
@@ -1316,10 +1361,11 @@ impl Render {
         let left_vchunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                // Clearance above the list, so its first row sits level with
+                // the now-playing cover rather than under the pane header.
+                Constraint::Length(list_top),
                 Constraint::Length(list_rows),
-                // Padding row above the cover art, so the two blocks do not
-                // read as one clipped list.
-                Constraint::Length(if has_card { LEFT_LIST_PADDING } else { 0 }),
+                Constraint::Length(card_gap),
                 Constraint::Length(
                     if (want_track_card || want_playlist_card) && !is_small_height {
                         1
@@ -1330,10 +1376,10 @@ impl Render {
                 Constraint::Length(track_info_h),
             ])
             .split(left_inner);
-        let left_list_area = left_vchunks[0];
-        let left_pad_area = left_vchunks[1];
-        let info_sep_area = left_vchunks[2];
-        let left_info_area = left_vchunks[3];
+        let left_list_area = left_vchunks[1];
+        let left_pad_area = left_vchunks[2];
+        let info_sep_area = left_vchunks[3];
+        let left_info_area = left_vchunks[4];
 
         if list_rows > 0 {
             let lib_icons = if use_nerd_fonts() {
@@ -1348,19 +1394,29 @@ impl Render {
                 .position(|&i| i == app.library_category)
                 .unwrap_or(0);
             let (scroll_start, scroll_end) = step_viewport(0, sel, list_rows as usize, total);
+            // The icon is its own span so the selected row can invert it.
+            //
+            // It used to be part of the label string, which meant the
+            // selection style applied to the glyph exactly like the text: the
+            // indicator bar then landed on the icon cell wearing the selection
+            // background as its foreground colour, and in every built-in theme
+            // those two are the same value — the selected category had no icon
+            // at all. Inverting is the same trick the row itself uses, so the
+            // glyph stays legible against either half of the swap.
             let left_items: Vec<ListItem> = visible_cats[scroll_start..scroll_end]
                 .iter()
                 .map(|&i| {
                     let cat = LIBRARY_CATEGORIES[i];
                     let icon = lib_icons.get(i).copied().unwrap_or(" ");
                     let count = app.library_count(cat);
-                    let label = if count > 0 {
-                        format!(" {icon}  {:<14} {:>4}", cat, count)
+                    let text = if count > 0 {
+                        format!("{:<14} {:>4}", cat, count)
                     } else {
-                        format!(" {icon}  {cat}")
+                        cat.to_string()
                     };
                     let is_active = i == app.library_category;
-                    let style = if is_active && left_focus {
+                    let picked = is_active && left_focus;
+                    let style = if picked {
                         Style::default()
                             .fg(app.theme.selection_fg_readable())
                             .bg(app.theme.selection_bg)
@@ -1369,19 +1425,32 @@ impl Render {
                     } else {
                         Style::default().fg(app.theme.fg)
                     };
-                    ListItem::new(label).style(style)
+                    let glyph = if picked {
+                        Style::default()
+                            .fg(app.theme.selection_bg)
+                            .bg(app.theme.selection_fg_readable())
+                    } else {
+                        style
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(" ", style),
+                        Span::styled(icon, glyph),
+                        Span::styled(format!("  {text}"), style),
+                    ]))
+                    .style(style)
                 })
                 .collect();
             f.render_widget(List::new(left_items), left_list_area);
 
             // Indicator marks the active row within the scrolled window, not
             // its absolute index, or it drifts off the pane once the list
-            // scrolls past the visible rows.
+            // scrolls past the visible rows. It takes the column the label
+            // reserves as leading space, clear of the icon at column 1.
             if sel >= scroll_start {
                 let indicator_y = left_list_area.y + (sel - scroll_start) as u16;
                 if indicator_y < left_list_area.y + left_list_area.height {
                     let indicator_area = Rect {
-                        x: left_list_area.x + 1,
+                        x: left_list_area.x,
                         y: indicator_y,
                         width: 1,
                         height: 1,
@@ -1417,24 +1486,25 @@ impl Render {
         // swap the two views instead of just moving the highlight.
         let lyrics_results_pane = app.lyrics.show && lyrics_area.is_none() && app.lyrics.pane_focus;
 
-        // With one pane there is nowhere to dock the track card without taking
-        // rows from the list it describes, so on narrow screens it floats over
-        // the list instead. Drawn after the rows, below.
+        // With one pane the track card is docked as a bottom pane, and the list
+        // is shortened to sit above it. It used to float over the list instead:
+        // a card anchored to the bottom-right corner of a one-column terminal is
+        // narrower than the pane but taller than the space it left, so it
+        // covered rows that were neither reachable nor clickable, and the
+        // height it reserved was a second, disagreeing estimate of its own size.
         //
-        // Decided before the list is built because the list is sized around it:
-        // the card covers the bottom of the pane, and a list sized to the whole
-        // pane put rows underneath it that could be neither seen nor clicked.
-        let float_card =
+        // Decided before the list is built because the list is sized around it.
+        let dock_card =
             is_narrow && !lyrics_results_pane && app.show_preview && app.track_popup_visible;
-        let float_h = if float_card {
-            Render::float_size(results_area).1
+        let dock_h = if dock_card {
+            Render::dock_size(results_area).1
         } else {
             0
         };
         // Every category branch sizes its window the same way: the pane less the
-        // leading blank and the stats row, less the float when it is on screen.
-        // Not named for the library column's own `list_rows` above.
-        let window_rows = || results_area.height.saturating_sub(3 + float_h) as usize;
+        // leading blank and the stats row, less the docked card when it is on
+        // screen. Not named for the library column's own `list_rows` above.
+        let window_rows = || results_area.height.saturating_sub(3 + dock_h) as usize;
 
         let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5
         {
@@ -2296,8 +2366,13 @@ impl Render {
 
             // Mouse hit zones for the visible library rows: rows start
             // below one leading blank line.
+            //
+            // The budget subtracts the docked card as well. It used to stop at
+            // the pane's own rows, so every hit zone below the card's top edge
+            // belonged to a row the card was covering — the list could be
+            // scrolled to a row and then clicked only where the card was not.
             if lib_total_rows > 0 {
-                let avail = right_inner.height.saturating_sub(2) as usize;
+                let avail = right_inner.height.saturating_sub(2).saturating_sub(dock_h) as usize;
                 let visible_rows = lib_total_rows
                     .saturating_sub(app.list_scroll)
                     .min(app.viewport_items)
@@ -2333,7 +2408,7 @@ impl Render {
         }
 
         if let Some(lyrics_area) = lyrics_area {
-            Render::lyrics_pane(f, lyrics_area, app, LyricsFit::Docked);
+            Render::lyrics_pane(f, lyrics_area, app);
         } else if lyrics_results_pane {
             // Medium-width screens (60-99 cols): show lyrics in the results pane
             // instead of a separate third pane.
@@ -2342,93 +2417,64 @@ impl Render {
             // to nothing while the library holds the cursor, and both the `l`
             // key and the palette action set the lyrics focus without
             // releasing it, so the lyrics would land in a zero-width rect and
-            // be on screen nowhere. `is_narrow`, not the width of the column it
-            // landed in, is what picks the header: on one column the lyrics
-            // span the full width under the band whichever column the cursor
-            // left collapsed.
+            // be on screen nowhere.
             let base = if results_area.width > 1 {
                 results_area
             } else {
                 lib_area
             };
-            let fit = if is_narrow {
-                LyricsFit::Solo
-            } else {
-                LyricsFit::Docked
-            };
             let lyrics = Rect {
                 height: base.height.saturating_sub(1),
                 ..base
             };
-            Render::lyrics_pane(f, lyrics, app, fit);
+            Render::lyrics_pane(f, lyrics, app);
         }
 
-        // Last, so it lands on top of the rows rather than under them.
-        if float_card {
-            Render::floating_card(f, results_area, app);
+        if dock_card {
+            Render::docked_card(f, results_area, app);
         }
     }
 
-    /// Outer size of the floating card, derived from the artwork it holds.
+    /// Height of the bottom-pane card on a one-column layout.
     ///
-    /// It used to be sized off the docked card's geometry — `COVER_W + 4`
-    /// columns and `info_block_h()` rows — while the artwork inside was sized
-    /// off whatever height the float was left with, so the box came out eight
-    /// columns wider than the art it contained and several rows taller than its
-    /// contents. Both are taken from the same artwork now, and clamped to the
-    /// rows below the now-playing band.
-    pub(crate) fn float_size(area: Rect) -> (u16, u16) {
-        // Rows for the artwork: what the pane has left once the field block and
-        // the block's two border rows are taken, never more than 6 so the card
-        // stays a preview rather than a second docked pane, and never more than
-        // a quarter of the pane — it floats over the list it describes, and a
-        // card sized to fill the pane left the list nothing to scroll. The
-        // floor is 2: anything narrower is not recognisable as the album.
+    /// Derived from the same artwork the card draws, so the box and its contents
+    /// cannot disagree the way the old float's two independent estimates did.
+    /// Capped at a quarter of the pane: the card describes the list above it, so
+    /// it may not take the rows it is describing. The floor of 2 rows for the art
+    /// is what keeps a release recognisable.
+    pub(crate) fn dock_size(area: Rect) -> (u16, u16) {
         let art = area
             .height
-            .saturating_sub(INFO_FIELDS_H + 8)
-            .min(6)
+            .saturating_sub(INFO_FIELDS_H + 4)
+            .min(DOCK_ART_H)
             .min(area.height / 4)
             .max(2);
         (
-            (art * 2 + 4).min(area.width.saturating_sub(1)),
-            (art + INFO_FIELDS_H + 4).min(area.height.saturating_sub(1)),
+            area.width,
+            (art + INFO_FIELDS_H + 1).min(area.height.saturating_sub(1)),
         )
     }
 
-    /// The track-info card floating over the list on narrow screens.
+    /// The track-info card docked under the list on narrow screens.
     ///
-    /// It was docked in the library column's info block until there was only
-    /// one pane left to dock it in, where it cost a sixth of the rows it was
-    /// describing. Floating it keeps the list the full width of the pane, at
-    /// the cost of the rows the card itself covers — which the list is sized
-    /// around, see `window_rows`. Bordered and cleared, so it reads as sitting on
-    /// top of the rows rather than as part of them.
-    pub(crate) fn floating_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let (w, h) = Render::float_size(area);
-        if w < 8 || h < INFO_FIELDS_H + 2 {
+    /// Docked rather than floating: on one column there is no second pane to
+    /// hold it, and a float anchored to the bottom-right corner covered rows of
+    /// the list underneath it that could be neither read nor clicked. Docking
+    /// spends rows the list is sized around (`window_rows`) instead, which is
+    /// the same arithmetic the library column's own card already used.
+    pub(crate) fn docked_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let (_, h) = Render::dock_size(area);
+        if area.width < 8 || h < INFO_FIELDS_H + 2 {
             return;
         }
         let rect = Rect {
-            x: area.x + area.width.saturating_sub(w + 1),
-            y: area.y + area.height.saturating_sub(h + 1),
-            width: w,
+            x: area.x,
+            y: area.y + area.height.saturating_sub(h),
+            width: area.width,
             height: h,
         };
-        f.render_widget(Clear, rect);
-        let block = Block::default()
-            .title(Line::from(Span::styled(
-                " Track Info ",
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .borders(Borders::ALL)
-            .style(Style::default().fg(app.theme.fg).bg(app.float_bg()));
-        let inner = block.inner(rect);
-        f.render_widget(block, rect);
-        // No separator band: the block's own top border is the heading here.
-        Render::info_in_pane(f, Rect::new(0, 0, 0, 0), inner, app);
+        fill_pane(f, rect, app);
+        Render::info_in_pane(f, Rect::new(0, 0, 0, 0), rect, app);
     }
 
     pub(crate) fn footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
@@ -2495,15 +2541,13 @@ impl Render {
         )
     }
 
-    pub(crate) fn lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App, fit: LyricsFit) {
-        // The heading goes on the docked pane only. With one column the lyrics
-        // own the full width under the now-playing band, which already names
-        // the track: a third "LYRICS" label above them said nothing.
-        let label = match fit {
-            LyricsFit::Docked => "LYRICS",
-            LyricsFit::Solo => "",
-        };
-        let inner = Render::pane_header(f, area, app, label, app.lyrics.pane_focus, false, true);
+    pub(crate) fn lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        // No heading, and no left rule, in any layout. "LYRICS" named a panel
+        // whose neighbours already say what is playing, and the rule drew a
+        // border that had nothing to separate — the lyrics were either the
+        // third pane in a row of three or the only thing on screen, and in
+        // neither case was there anything for a divider to divide.
+        let inner = area;
         fill_pane(f, inner, app);
 
         let Some(ref lyrics) = app.lyrics.current else {
@@ -2537,57 +2581,16 @@ impl Render {
             return;
         }
 
-        // No track title or artist above the lyrics, in any layout: the pane
-        // beside it already names the track, and on one column the now-playing
-        // band does. A header that repeated it pushed the lyrics down the pane
-        // for nothing, and on the results pane the two were side by side.
-        //
-        // The artwork is the one thing the band cannot spare on one column — it
-        // is five rows tall there — so it comes to the lyrics instead, twice
-        // the size it had while it shared those rows with the title.
-        let header_h = match fit {
-            LyricsFit::Docked => 0,
-            LyricsFit::Solo => 6u16.min(inner.height.saturating_sub(4)),
-        };
-        let header_area = if header_h == 0 {
-            None
-        } else {
-            let cover_w = header_h * 2;
-            let cover_area = Rect {
-                x: inner.x + inner.width.saturating_sub(cover_w) / 2,
-                y: inner.y,
-                width: cover_w.min(inner.width),
-                height: header_h,
-            };
-            Render::cover(
-                f,
-                cover_area,
-                app.lyrics_cover.stateful.as_mut(),
-                app.np_cover.image.as_deref(),
-                app.theme.fg_dim,
-                Some(" \u{266b} "),
-            );
-            Some(Rect {
-                x: inner.x,
-                y: inner.y,
-                width: inner.width,
-                height: header_h,
-            })
-        };
-        let lyrics_inner = if let Some(hdr) = header_area {
-            Rect {
-                x: inner.x.saturating_add(1),
-                y: hdr.y + hdr.height + 1,
-                width: inner.width.saturating_sub(2),
-                height: inner.height.saturating_sub(hdr.height + 2),
-            }
-        } else {
-            Rect {
-                x: inner.x.saturating_add(1),
-                y: inner.y.saturating_add(1),
-                width: inner.width.saturating_sub(2),
-                height: inner.height.saturating_sub(2),
-            }
+        // The whole pane is lyrics: no title, no artist, no artwork. Every
+        // layout already names the track beside these lines — the now-playing
+        // band, or the third pane's neighbour — and the artwork was the one
+        // thing repeated twice: the same bytes, decoded and uploaded a second
+        // time, for a pane whose entire job is to be read.
+        let lyrics_inner = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: inner.height,
         };
 
         Render::lyrics_body(f, lyrics_inner, app, lyrics);
@@ -2636,11 +2639,9 @@ impl Render {
             // reader nothing they had not just watched the highlight move
             // through. The line being sung is already marked; the timing is in
             // the source, and the manual offset still nudges the matching.
-            row_offsets.push(cumulative);
-            cumulative += line.text.chars().count().max(1).div_ceil(width);
             // Karaoke: the active line lights up word-by-word when the source
             // carries per-word timings (enhanced LRC). Future words stay dim.
-            if i == anchor && synced && !line.words.is_empty() {
+            let rendered = if i == anchor && synced && !line.words.is_empty() {
                 let pos = app.raw_position + offset;
                 let mut spans: Vec<Span> = Vec::with_capacity(line.words.len() + 1);
                 for w in &line.words {
@@ -2656,10 +2657,20 @@ impl Render {
                         },
                     ));
                 }
-                text.push(Line::from(spans));
+                Line::from(spans)
             } else {
-                text.push(Line::from(Span::styled(line.text.clone(), text_style)));
-            }
+                Line::from(Span::styled(line.text.clone(), text_style))
+            };
+            // Measured from the line that is actually rendered, by ratatui's own
+            // wrapper. A hand estimate (`chars().div_ceil(width)`) drifts from
+            // it — display width is not character count, and a word longer than
+            // the pane wraps differently than a `div_ceil` assumes — and every
+            // drifted row scrolls the highlight off the line it belongs to.
+            row_offsets.push(cumulative);
+            cumulative += Paragraph::new(rendered.clone())
+                .wrap(Wrap { trim: false })
+                .line_count(width as u16) as usize;
+            text.push(rendered);
         }
         let total_rows = cumulative;
         // Untimed lyrics can't highlight: reserve the bottom row for a hint

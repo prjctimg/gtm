@@ -103,16 +103,36 @@ struct StreamStat {
     samples: AtomicU64,
     first_at: Mutex<Option<std::time::Instant>>,
     loaded_at: Mutex<Option<std::time::Instant>>,
+    /// When a packet last reached the sink. The stall watchdog in the daemon
+    /// polls this: the sink and the drain side both track silence locally, but
+    /// only something outside this module can decide to tear the session down.
+    last_packet_at: Mutex<Option<std::time::Instant>>,
 }
 
 impl StreamStat {
     fn note_packet(&self, samples: usize) {
         self.packets.fetch_add(1, Ordering::Relaxed);
         self.samples.fetch_add(samples as u64, Ordering::Relaxed);
+        let now = std::time::Instant::now();
+        *self.last_packet_at.lock().unwrap() = Some(now);
         let mut first = self.first_at.lock().unwrap();
         if first.is_none() {
-            *first = Some(std::time::Instant::now());
+            *first = Some(now);
         }
+    }
+
+    /// How long the sink has gone without delivering a packet, measured from
+    /// the load when nothing ever arrived.
+    fn silence(&self) -> Duration {
+        let since = match (
+            *self.last_packet_at.lock().unwrap(),
+            *self.loaded_at.lock().unwrap(),
+        ) {
+            (Some(at), _) => at.elapsed(),
+            (None, Some(loaded)) => loaded.elapsed(),
+            (None, None) => Duration::ZERO,
+        };
+        since
     }
 
     /// One line summarising a load: how long the first packet took, and how much
@@ -197,11 +217,10 @@ pub struct PcmStreamSource {
     /// When the silence watchdog last fired, so it logs the transition once
     /// rather than on every poll.
     stalled_at: Option<std::time::Instant>,
-    /// The URI this source was loaded for, and the shared target registry, so
-    /// the end-of-track summary can be attributed to the right track even after
-    /// the target has been replaced.
+    /// The URI this source was loaded for, and the counters that belong to it,
+    /// so the end-of-track summary is attributed to the right track even after
+    /// the shared target has been replaced.
     uri: String,
-    target: SharedTarget,
     stat: Arc<StreamStat>,
 }
 
@@ -210,7 +229,6 @@ impl PcmStreamSource {
         rx: std::sync::mpsc::Receiver<Vec<f32>>,
         duration_secs: f64,
         uri: String,
-        target: SharedTarget,
         stat: Arc<StreamStat>,
     ) -> Self {
         Self {
@@ -223,7 +241,6 @@ impl PcmStreamSource {
             last_sample_at: None,
             stalled_at: None,
             uri,
-            target,
             stat,
         }
     }
@@ -264,17 +281,11 @@ impl PcmStreamSource {
 impl Drop for PcmStreamSource {
     fn drop(&mut self) {
         // Reported when the track ends or is replaced, which is the only point
-        // where the totals are meaningful.
-        let uri = self
-            .target
-            .lock()
-            .unwrap()
-            .as_ref()
-            .filter(|t| t.uri == self.uri)
-            .map(|t| t.uri.clone());
-        if let Some(uri) = uri {
-            self.stat.report(&uri);
-        }
+        // where the totals are meaningful. Attributed from this source's own
+        // URI and counters: consulting the shared target here reported nothing
+        // at all, because `EndOfTrack` clears that registry before the source
+        // finishes draining.
+        self.stat.report(&self.uri);
     }
 }
 
@@ -411,6 +422,10 @@ pub struct StreamManager {
     /// transparently refreshes it), so an expired access token never leaves a
     /// stale librespot session silently producing no audio.
     session_token: Option<String>,
+    /// Counters for the currently loaded track. Held beside the target rather
+    /// than inside it so [`StreamManager::silence`] can still read them once the
+    /// registry has been cleared for a track that ended.
+    stat: Arc<Mutex<Option<Arc<StreamStat>>>>,
     /// Where provider-level failures are reported. Held as a sender rather than
     /// the daemon itself so the event pump can never reach into daemon state.
     notify: tokio::sync::broadcast::Sender<DaemonEvent>,
@@ -430,6 +445,7 @@ impl StreamManager {
             target: Arc::new(Mutex::new(None)),
             current_uri: None,
             session_token: None,
+            stat: Arc::new(Mutex::new(None)),
             notify,
         }
     }
@@ -455,10 +471,17 @@ impl StreamManager {
     }
 
     /// Create the librespot session and player on first use, and reconnect
-    /// with a fresh access token whenever the incoming token differs from the
-    /// one the current session was established with. This keeps playback
+    /// whenever the incoming token differs from the one the current session was
+    /// established with, or the session has gone stale. This keeps playback
     /// working past a token expiry instead of leaving a stale session that
     /// silently stops producing audio.
+    ///
+    /// The liveness test is what makes a reload able to recover. Spotify drops
+    /// the access-point connection on its own schedule, and a player whose
+    /// session is gone keeps reporting the loaded track while delivering
+    /// nothing. Reusing it — which a token-only check did, since the token is
+    /// still valid — left `PcmStreamSource` waiting on a channel nobody would
+    /// ever feed, which is the permanent silence this guards against.
     ///
     /// The session connects to Spotify's access point and authenticates; it
     /// does **not** register as a Connect device. Registration is what required
@@ -482,7 +505,8 @@ impl StreamManager {
     /// so a phone cannot see or control it.
     async fn ensure_session(&mut self, spec: &SessionSpec<'_>) -> Result<(), String> {
         let SessionSpec { token, config_dir } = *spec;
-        if self.player.is_some() && self.session_token.as_deref() == Some(token) {
+        if self.player.is_some() && self.session_token.as_deref() == Some(token) && !self.is_dead()
+        {
             return Ok(());
         }
         self.teardown_session();
@@ -668,6 +692,7 @@ impl StreamManager {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
         let stat = Arc::new(StreamStat::default());
         *stat.loaded_at.lock().unwrap() = Some(std::time::Instant::now());
+        *self.stat.lock().unwrap() = Some(stat.clone());
         *self.target.lock().unwrap() = Some(StreamTarget {
             uri: uri.to_string(),
             tx,
@@ -684,7 +709,6 @@ impl StreamManager {
             rx,
             duration_secs,
             uri.to_string(),
-            self.target.clone(),
             stat,
         ))
     }
@@ -736,15 +760,40 @@ impl StreamManager {
             Some(p) => p.is_invalid(),
         }
     }
+
+    /// How long the current stream has gone without a packet, or `None` when
+    /// nothing is loaded.
+    ///
+    /// Read by the daemon's stall watchdog. A track whose position keeps
+    /// advancing while this grows is the permanent-silence case: the mixer
+    /// extrapolates off the wall clock, so a stalled stream looks like healthy
+    /// playback everywhere except here and in the source's own log line.
+    pub fn silence(&self) -> Option<Duration> {
+        let stat = self.stat.lock().unwrap().clone();
+        stat.map(|s| s.silence())
+    }
+
+    /// Packets the sink has accepted for the current track, for the watchdog's
+    /// report line.
+    pub fn packets(&self) -> Option<u64> {
+        let stat = self.stat.lock().unwrap().clone();
+        stat.map(|s| s.packets.load(Ordering::Relaxed))
+    }
+
+    /// Drop the session so the next load rebuilds it from a fresh connect.
+    ///
+    /// The recovery half of the stall watchdog. Reusing a session whose
+    /// access-point connection Spotify has dropped is what turns a hiccup into
+    /// permanent silence, so the caller has to be able to force the teardown
+    /// that [`StreamManager::load`] only performs on a token or liveness change.
+    pub fn rebuild(&mut self) {
+        self.teardown_session();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_target() -> SharedTarget {
-        Arc::new(Mutex::new(None))
-    }
 
     fn test_uri() -> String {
         "spotify:track:4cOdK2wGLETKBW3PvgPWqT".to_string()
@@ -784,13 +833,8 @@ mod tests {
     #[test]
     fn empty_channel_is_not_end_of_stream() {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
-        let mut source = PcmStreamSource::new(
-            rx,
-            180.0,
-            test_uri(),
-            test_target(),
-            Arc::new(StreamStat::default()),
-        );
+        let mut source =
+            PcmStreamSource::new(rx, 180.0, test_uri(), Arc::new(StreamStat::default()));
         // Keep the sender alive: the receiver must block, not end.
         let handle = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(120));
@@ -810,13 +854,8 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
         tx.send(vec![0.25, 0.75]).unwrap();
         drop(tx);
-        let mut source = PcmStreamSource::new(
-            rx,
-            180.0,
-            test_uri(),
-            test_target(),
-            Arc::new(StreamStat::default()),
-        );
+        let mut source =
+            PcmStreamSource::new(rx, 180.0, test_uri(), Arc::new(StreamStat::default()));
         assert_eq!(source.next(), Some(0.25));
         assert_eq!(source.next(), Some(0.75));
         assert_eq!(source.next(), None);
@@ -827,13 +866,7 @@ mod tests {
     #[test]
     fn format_matches_librespot() {
         let (_tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
-        let source = PcmStreamSource::new(
-            rx,
-            180.0,
-            test_uri(),
-            test_target(),
-            Arc::new(StreamStat::default()),
-        );
+        let source = PcmStreamSource::new(rx, 180.0, test_uri(), Arc::new(StreamStat::default()));
         use rodio::Source;
         assert_eq!(source.sample_rate().get(), SAMPLE_RATE);
         assert_eq!(source.channels().get(), NUM_CHANNELS as u16);
@@ -844,13 +877,8 @@ mod tests {
     #[test]
     fn stall_is_reported_not_fatal() {
         let (_tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
-        let mut source = PcmStreamSource::new(
-            rx,
-            180.0,
-            test_uri(),
-            test_target(),
-            Arc::new(StreamStat::default()),
-        );
+        let mut source =
+            PcmStreamSource::new(rx, 180.0, test_uri(), Arc::new(StreamStat::default()));
         source.loaded_at = std::time::Instant::now() - STARTUP_GRACE - Duration::from_secs(1);
         source.stalled_for();
         assert!(source.stalled_at.is_some(), "stall should be recorded");
@@ -905,6 +933,59 @@ mod tests {
             Some("spotify:track:55Lz7vmtisJ6BBvuIR8t7U"),
             "the replacement target must survive an event for the old track"
         );
+    }
+
+    /// Silence is measured from the load when nothing ever arrived, and from the
+    /// last packet otherwise. The distinction matters: a source that has never
+    /// been fed and one that stopped mid-track are different faults, and both
+    /// are reported against the wrong baseline if the watchdog counts from the
+    /// load in the second case.
+    #[test]
+    fn silence_counts_from_the_last_packet() {
+        let stat = StreamStat::default();
+        assert_eq!(stat.silence(), Duration::ZERO, "no load and no packets");
+
+        *stat.loaded_at.lock().unwrap() = Some(std::time::Instant::now() - Duration::from_secs(60));
+        assert!(
+            stat.silence() >= Duration::from_secs(60),
+            "a source that never delivered is timed from its load"
+        );
+
+        stat.note_packet(512);
+        assert!(
+            stat.silence() < Duration::from_secs(1),
+            "a fresh packet resets the clock"
+        );
+
+        // The point of the whole watchdog: a stalled stream still reports a
+        // growing silence rather than freezing at zero.
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(stat.silence() >= Duration::from_millis(20));
+    }
+
+    /// The per-track summary is the only thing that separates "librespot never
+    /// delivered" from "delivered but dropped before the ring", so it has to
+    /// survive the target registry being cleared for an ended track. It used to
+    /// consult that registry, which `EndOfTrack` empties before the source
+    /// drains, so it reported nothing at all.
+    #[test]
+    fn the_summary_survives_the_target_being_cleared() {
+        let target = target_for(&test_uri());
+        let stat = Arc::new(StreamStat::default());
+        *stat.loaded_at.lock().unwrap() = Some(std::time::Instant::now());
+        stat.note_packet(64);
+        let (_tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
+        let source = PcmStreamSource::new(rx, 180.0, test_uri(), stat);
+        // The registry empties exactly as it does on `EndOfTrack`.
+        drop_target(&target, &loaded());
+        assert!(
+            target.lock().unwrap().is_none(),
+            "the target really is gone"
+        );
+        // Dropping reports through the source's own counters, so the ordering
+        // between this and `EndOfTrack` no longer decides whether the track
+        // ever gets a summary line.
+        drop(source);
     }
 
     /// The threshold that turns per-track refusals into a report about the

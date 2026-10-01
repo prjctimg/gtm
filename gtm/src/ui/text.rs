@@ -21,6 +21,28 @@ pub(crate) const LEFT_LIST_MAX_ROWS: u16 = 10;
 /// row of the list rather than as a separate element.
 pub(crate) const LEFT_LIST_PADDING: u16 = 1;
 
+/// Extra blank rows above the info card, on top of [`LEFT_LIST_PADDING`].
+///
+/// The card is a full surface with its own art, and one row of clearance left
+/// it visually attached to the list — long lists ran their last rows straight
+/// into the artwork with nothing separating them.
+pub(crate) const INFO_CARD_GAP: u16 = 4;
+
+/// Rows to clear above the category list so its first row sits level with the
+/// top of the now-playing cover image.
+///
+/// The two blocks belong to one visual unit: the cover is what the list is
+/// browsing, so aligning them stops the pane reading as unrelated stacks. The
+/// pane header has already spent its row by the time `left_inner` begins, so
+/// the offset is purely how far the centred cover sits below that.
+pub(crate) fn left_list_top(cover_band: u16) -> u16 {
+    // The cover is centred in the band's inner rect (`cover.y = col.y +
+    // (inner.height - cover_h) / 2`), and the band spends one row on its
+    // header. Half the leftover slack, floored at the single row the header
+    // already implies.
+    cover_band.saturating_sub(4).max(1)
+}
+
 pub(crate) const INFO_CARD_H: u16 = 16;
 
 pub(crate) const INFO_TEXT_H: u16 = 6;

@@ -1721,7 +1721,7 @@ impl App {
             }
 
             let playing = self.state.status == PlaybackStatus::Playing;
-            let force_render = pos_changed
+            let mut force_render = pos_changed
                 || (playing && frame_count.is_multiple_of(2))
                 // Visualizer animates continuously (idle wave included), but only
                 // Zen draws it now, so only Zen pays for the frames.
@@ -1737,6 +1737,17 @@ impl App {
             self.metadata.cover_dirty = false;
             self.last_display_position = self.display_position;
             self.data_dirty = false;
+
+            // A resize forces a frame even when nothing else is dirty: the
+            // layout is all size-derived, so a pane that did not redraw would
+            // keep the old geometry until some unrelated change woke it.
+            if std::mem::take(&mut self.resized) {
+                force_render = true;
+                // Drop the buffer ratatui diffs against. It is still the old
+                // size, and diffing a new-size frame against it is what panics.
+                let _ = terminal.clear();
+                self.footer_cache.suppress_refresh = true;
+            }
 
             if force_render {
                 let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));

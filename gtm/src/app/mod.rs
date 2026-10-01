@@ -150,6 +150,9 @@ pub struct App {
     pub scanner_hold: i32,
     /// Cursor blink toggle for search pickers (alternates every ~8 frames).
     pub cursor_blink: bool,
+    /// Set by a terminal resize, cleared by the frame that draws at the new
+    /// size. The next draw has to start from an empty buffer.
+    pub(crate) resized: bool,
     pub input_mode: InputMode,
     pub search_query: String,
     /// Per-category selection index, keyed by `library_category`, so every
@@ -236,13 +239,6 @@ pub struct App {
     pub pickers: PickerManager,
     pub sleep_timer: SleepTimerState,
     pub np_cover: NowPlayingCoverState,
-    /// The lyrics pane's own copy of the current cover.
-    ///
-    /// It needs a `StatefulProtocol` of its own: the now-playing pane and the
-    /// lyrics pane can both be on screen in the same frame, and one protocol
-    /// rendered twice writes the image into the same cell buffer twice, so the
-    /// two panes would fight over it and each would draw half of the other.
-    pub lyrics_cover: NowPlayingCoverState,
     /// The live `StreamTitle` seen on the previous frame, used to spot the
     /// track on air advancing without a path change.
     pub live_title: Option<String>,
@@ -876,6 +872,7 @@ impl App {
             scanner_dir: 1,
             scanner_hold: 0,
             cursor_blink: true,
+            resized: false,
             input_mode: InputMode::Normal,
             search_query: String::new(),
             scroll_offset: [0; LIBRARY_CATEGORIES.len()],
@@ -981,14 +978,6 @@ impl App {
                 focus: 0,
             },
             np_cover: NowPlayingCoverState {
-                image: None,
-                track_id: None,
-                track_path: None,
-                picker: None,
-                stateful: None,
-                pending_gen: None,
-            },
-            lyrics_cover: NowPlayingCoverState {
                 image: None,
                 track_id: None,
                 track_path: None,
@@ -1405,7 +1394,14 @@ impl App {
                 }
                 _ => {}
             },
-            event::Event::FocusGained | event::Event::FocusLost | event::Event::Resize(_, _) => {}
+            // A resize must not wait for the next tick to be noticed. The frame
+            // loop reads the terminal size when it draws, so a draw issued
+            // between the resize and the read compares a fresh width against the
+            // buffer ratatui still holds at the old one — and that mismatch is a
+            // panic in its differ, not a redraw. Clearing here drops the stale
+            // buffer, so the next draw diffs against an empty one.
+            event::Event::Resize(_, _) => self.resized = true,
+            event::Event::FocusGained | event::Event::FocusLost => {}
         }
         true
     }

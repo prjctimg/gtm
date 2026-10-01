@@ -1571,6 +1571,10 @@ pub(crate) struct DaemonInner {
     pub(crate) lastfm_error: tokio::sync::Mutex<Option<String>>,
     pub(crate) crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
     pub(crate) countdown_notified_for: tokio::sync::Mutex<Option<String>>,
+    /// Stream path the stall watchdog has already rebuilt once, so a stream
+    /// that stays quiet through its recovery is not reconnected on every
+    /// position tick. Cleared when a different track is playing.
+    pub(crate) stream_recovered_for: tokio::sync::Mutex<Option<String>>,
     /// Queue path whose artwork has already been warmed ahead of play, so
     /// the position tick asks once per track rather than every frame.
     pub(crate) cover_preloaded_for: tokio::sync::Mutex<Option<String>>,
@@ -1681,6 +1685,17 @@ const RETIRED_PROVIDER_SECRET_KEYS: &[&str] = &[
 /// all read it and issue nothing, so a retry costs the single `/v1/me` it takes
 /// to learn the window has reset.
 const RATE_LIMIT_RETRY: u64 = 25;
+
+/// How long a `spotify:` stream may deliver nothing before the session is torn
+/// down and the track replayed.
+///
+/// Deliberately far above the source's own stall budget
+/// (`stream.rs::STALL_TIMEOUT`): waiting is the right response to a network
+/// gap, and a gap that resolves on its own must not cost a reconnect. The
+/// failure this bounds is Spotify dropping the access-point connection, after
+/// which the player reports the loaded track forever while the channel is fed
+/// by nobody — that needs a fresh connect, not more patience.
+const STREAM_SILENCE_RECOVERY: Duration = Duration::from_secs(90);
 
 /// Whether a sync failure is Spotify refusing for quota rather than a transient
 /// fault worth retrying quickly.
@@ -2002,6 +2017,7 @@ impl Daemon {
             lastfm_error: tokio::sync::Mutex::new(None),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             countdown_notified_for: tokio::sync::Mutex::new(None),
+            stream_recovered_for: tokio::sync::Mutex::new(None),
             cover_preloaded_for: tokio::sync::Mutex::new(None),
             last_pos_broadcast: tokio::sync::Mutex::new(None),
             icy_title: Arc::new(std::sync::Mutex::new(None)),
@@ -3548,10 +3564,15 @@ impl Daemon {
         Ok(Some(first))
     }
 
-    /// Re-play a live `radio://` path after a dropped connection, with capped
-    /// backoff. Aborts when `play_session` changes (user stop/next/prev/play)
-    /// or the current track moved on, so retries never fight user input. Falls
-    /// back to `stop_playback` only after repeated failures.
+    /// Re-play a stream that stopped delivering, with capped backoff. Aborts
+    /// when `play_session` changes (user stop/next/prev/play) or the current
+    /// track moved on, so retries never fight user input. Falls back to
+    /// `stop_playback` only after repeated failures.
+    ///
+    /// Used for a dropped `radio://` connection and for a Spotify stream that
+    /// went silent. Both need the same thing — re-enter `Cmd::play` for the
+    /// same path — and the difference is only whether the session is rebuilt
+    /// first, since a fresh connect is what a healthy radio does not need.
     async fn retry_live_stream(inner: &Arc<DaemonInner>, path: &str, session: u64) {
         let mut delay_secs = 2u64;
         for _ in 0..8 {
@@ -3574,14 +3595,68 @@ impl Daemon {
             }
             match Cmd::play(inner, path, 0.0, false).await {
                 Ok(_) => return,
-                Err(e) => warn!("radio reconnect for {path} failed: {e}"),
+                Err(e) => warn!("stream reconnect for {path} failed: {e}"),
             }
             delay_secs = (delay_secs * 2).min(30);
         }
         if inner.play_session.load(Ordering::Acquire) == session {
-            warn!("radio reconnect for {path} gave up after retries");
+            warn!("stream reconnect for {path} gave up after retries");
             Self::stop_playback(inner).await;
         }
+    }
+
+    /// Rebuild the Spotify session when the loaded stream has gone quiet.
+    ///
+    /// A `spotify:` track keeps advancing its position — the mixer extrapolates
+    /// off the wall clock — so a stream that stopped delivering is
+    /// indistinguishable from healthy playback in the UI. Nothing else in the
+    /// daemon notices it either: `Finished` never fires, because the source is
+    /// still waiting rather than drained, and there was no reconnect path for
+    /// `spotify:` at all (only `radio://` had one). Waiting is right for a
+    /// momentary network gap, so this fires well past the source's own stall
+    /// budget and only then forces the session down and replays the track.
+    ///
+    /// Latched on the path so a stream that stays quiet after recovery is not
+    /// reconnected on every position tick.
+    async fn watch_stream_silence(inner: &Arc<DaemonInner>) {
+        let path = {
+            let state = inner.state.read().await;
+            match (
+                state.status == PlaybackStatus::Playing,
+                state.current_track.as_ref(),
+            ) {
+                (true, Some(t)) if t.path.starts_with("spotify:") => t.path.clone(),
+                _ => return,
+            }
+        };
+        let session = inner.play_session.load(Ordering::Acquire);
+        let (silence, packets) = {
+            let stream = inner.stream.lock().await;
+            match (stream.silence(), stream.packets()) {
+                (Some(s), p) => (s, p.unwrap_or_default()),
+                // Nothing loaded, so the watchdog has no stream to judge.
+                (None, _) => return,
+            }
+        };
+        if silence < STREAM_SILENCE_RECOVERY {
+            return;
+        }
+        {
+            let mut done = inner.stream_recovered_for.lock().await;
+            if done.as_deref() == Some(path.as_str()) {
+                return;
+            }
+            *done = Some(path.clone());
+        }
+        warn!(
+            "spotify stream {path} silent for {}s ({packets} packets); rebuilding the session",
+            silence.as_secs()
+        );
+        inner.stream.lock().await.rebuild();
+        let retry = Arc::clone(inner);
+        tokio::spawn(async move {
+            Self::retry_live_stream(&retry, &path, session).await;
+        });
     }
 
     async fn stop_playback(inner: &DaemonInner) {
@@ -4007,11 +4082,22 @@ impl Daemon {
                     state.current_track.as_ref().map(|t| t.path.clone()),
                     state.status == PlaybackStatus::Playing,
                 );
+                // A stream that stopped delivering keeps advancing its position,
+                // so the position tick is the only place this can be caught.
+                // Cheap when healthy: a lock and a duration subtraction.
+                let streaming = tracking.1
+                    && tracking
+                        .0
+                        .as_ref()
+                        .is_some_and(|p| p.starts_with("spotify:"));
                 drop(state);
                 if tracking.1
                     && let Some(key) = tracking.0
                 {
                     inner.scrobble.lock().await.tick(&key, pos);
+                }
+                if streaming {
+                    Self::watch_stream_silence(inner).await;
                 }
 
                 // Re-anchor client clocks at ~1 Hz so the TUI's extrapolated
