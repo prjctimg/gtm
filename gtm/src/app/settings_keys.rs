@@ -172,27 +172,28 @@ impl App {
                 6 => self.toggle_reactive_theme(tx),
                 7 => self.cycle_reactive_intensity(),
                 8 => self.pickers.open(PickerId::VisualizerPreset),
-                9 => self.pickers.open(PickerId::FooterPreset),
-                10 => sync_and_wait(
+                9 => self.cycle_daydream(),
+                10 => self.pickers.open(PickerId::FooterPreset),
+                11 => sync_and_wait(
                     self.client.clone(),
                     SyncKind::Covers,
                     "Covers",
                     self.ipc_tx.clone(),
                 ),
-                11 => sync_and_wait(
+                12 => sync_and_wait(
                     self.client.clone(),
                     SyncKind::Lyrics,
                     "Lyrics",
                     self.ipc_tx.clone(),
                 ),
-                12 => sync_and_wait(
+                13 => sync_and_wait(
                     self.client.clone(),
                     SyncKind::Metadata,
                     "Metadata",
                     self.ipc_tx.clone(),
                 ),
-                13 | 14 => {
-                    let (what, label) = if opt == 13 {
+                14 | 15 => {
+                    let (what, label) = if opt == 14 {
                         (CacheKind::Lyrics, "lyrics")
                     } else {
                         (CacheKind::Covers, "cover art")
@@ -216,7 +217,7 @@ impl App {
                         }
                     });
                 }
-                15 => self.open_settings_overlay(),
+                16 => self.open_settings_overlay(),
                 _ => {}
             },
             2 => match opt {
@@ -227,6 +228,22 @@ impl App {
             },
             _ => {}
         }
+    }
+
+    /// Step the idle time before the visualizer takes over.
+    ///
+    /// Cycles through a ladder rather than typing a number: the useful choices
+    /// are "soon", "after a while" and "never", and off has to be reachable
+    /// without editing the config file.
+    fn cycle_daydream(&mut self) {
+        const STEPS: [u64; 5] = [15, 30, 60, 180, 0];
+        let cur = self.daydream_secs;
+        let next = STEPS
+            .iter()
+            .position(|s| *s == cur)
+            .map_or(STEPS[0], |i| STEPS[(i + 1) % STEPS.len()]);
+        self.daydream_secs = next;
+        save_prefs(&self.current_prefs());
     }
 
     fn next_repeat(&self) -> RepeatMode {

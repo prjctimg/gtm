@@ -162,6 +162,11 @@ impl Pickers {
                     on_off(app.reactive_theme),
                     format!("{:.0}%", app.reactive_theme_intensity * 100.0),
                     app.visualizer.preset.name().to_string(),
+                    match app.daydream_secs {
+                        0 => "Off".to_string(),
+                        s if s < 60 => format!("{s}s"),
+                        s => format!("{}m", s / 60),
+                    },
                     app.footer_presets
                         .get(app.footer_preset)
                         .map(|p| p.name.as_ref())

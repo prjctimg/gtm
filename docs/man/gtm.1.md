@@ -40,7 +40,9 @@ centre pane lists its contents. Keys: **j**/**k** or **Up**/**Down**
 
 Settings is a floating picker opened with **Alt+,**, not a tab. The left pane
 selects a category, the right pane shows its options. Keys: **j**/**k**
-(navigate), **Enter** (toggle/select). The System category renders 17 rows.
+(navigate), **Enter** (toggle/select). The System category renders 17 rows,
+including **Daydream** — how long the TUI must be idle before the visualizer
+takes over (see *Daydreaming*).
 
 ### Lyrics view
 
@@ -51,7 +53,41 @@ playback position; enhanced-LRC sources light up per word. **Tab** moves focus
 into the lyrics pane, where **j**/**k**, **PageUp**/**PageDown**, **Home**/
 **End** scroll manually. **[** and **]** shift the lyric timing by ±0.1 s per
 press, clamped to ±120 s, so early/late sync can be corrected. Untimed lyrics
-are shown as untimestamped lines and never get a highlight.
+are shown as untimestamped lines and never get a highlight, and the pane says *not time
+synced*.
+
+## Daydreaming
+
+With no keypress, paste or click for **daydream_secs** (default 60) the TUI
+shows the audio visualizer full screen, over the library view. Any input ends
+it immediately. It is suppressed while **z** Zen is up, while a picker is open,
+and when the `visualizer` extension is disabled.
+
+Zen (**z**) and daydreaming are the same renderer: Zen on whichever of its
+three surfaces was last selected, daydreaming always on the visualizer. **Tab**
+and **Shift+Tab** cycle Zen's surfaces.
+
+The idle threshold is a System setting row (`daydream_secs`); pressing Enter
+cycles 15s, 30s, 1m, 3m and off. `0` disables it. There is no key toggle for
+the visualizer itself: it is either on a surface or not.
+
+## Discord presence
+
+Rich Presence is set by the **daemon**, not the client, and needs the Discord
+desktop application running on the same machine — the daemon connects to its
+local IPC socket.
+
+1. Create an application at <https://discord.com/developers/applications> and
+   copy its numeric **Application ID**.
+2. Paste it into **Alt+X** → Discord, or set `discord_app_id` in the
+   **daemon's** `config.toml` (`$XDG_CONFIG_HOME/gtm/config.toml`).
+
+The daemon re-reads that file every two seconds, so no restart is needed.
+While a track is playing, Discord shows its title as the activity detail and
+`artist · album` as the state, with the elapsed time as a progress bar.
+
+To turn it off, empty the `Alt+X` field and press Enter, or remove
+`discord_app_id` from the daemon's config.
 
 ## Global Keys
 
@@ -83,7 +119,7 @@ are shown as untimestamped lines and never get a highlight.
 | `Alt+q` | Queue |
 | `Alt+s` | Search Spotify (requires linking) |
 | `Alt+v` | Visualizer preset |
-| `Alt+x` | Setup walkthrough |
+| `Alt+x` | Setup walkthrough (Spotify, Last.fm, YouTube, Discord) |
 | `Alt+y` | Search YouTube |
 | `Alt+z` | Sleep timer |
 | `l` | Fetch lyrics for current track |

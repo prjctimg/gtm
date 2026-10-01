@@ -59,6 +59,7 @@ pub(crate) const SYSTEM_ROWS: SettingsRows = &[
     ("Reactive Theme", RowKind::Toggle),
     ("Reactive Intensity", RowKind::Cycle),
     ("Visualizer", RowKind::Chooser),
+    ("Daydream", RowKind::Cycle),
     ("Footer Preset", RowKind::Chooser),
     ("Sync Covers", RowKind::Action),
     ("Sync Lyrics", RowKind::Action),
@@ -101,13 +102,14 @@ pub(crate) fn row_help(category: usize, option: usize) -> &'static str {
         (1, 1) => " Press Enter to cycle theme mode (auto/dark/light).",
         (1, 6) => " Press Enter to toggle the reactive theme.",
         (1, 8) => " Press Enter to open the visualizer picker.",
-        (1, 9) => " Press Enter to open the footer preset picker.",
-        (1, 10) => " Download missing cover art from Deezer.",
-        (1, 11) => " Fetch and save lyrics for all tracks.",
-        (1, 12) => " Resolve and embed clean tags into files.",
-        (1, 13) => " Clear cached lyrics for all tracks.",
-        (1, 14) => " Clear the downloaded cover art cache.",
-        (1, 15) => " Press Enter to open notification settings.",
+        (1, 9) => " Show the visualizer after this long without a keypress (off = never).",
+        (1, 10) => " Press Enter to open the footer preset picker.",
+        (1, 11) => " Download missing cover art from Deezer.",
+        (1, 12) => " Fetch and save lyrics for all tracks.",
+        (1, 13) => " Resolve and embed clean tags into files.",
+        (1, 14) => " Clear cached lyrics for all tracks.",
+        (1, 15) => " Clear the downloaded cover art cache.",
+        (1, 16) => " Press Enter to open notification settings.",
         (2, 1) => " Authorize gtm with your Spotify account.",
         (2, 2) => " Remove the token and disconnect.",
         _ => "",
@@ -123,7 +125,7 @@ mod tests {
     #[test]
     fn row_counts_match_the_declared_lists() {
         assert_eq!(rows_for(0).len(), 6);
-        assert_eq!(rows_for(1).len(), 16);
+        assert_eq!(rows_for(1).len(), 17);
         // Status, Link Account, Unlink. The Spotify Next/Previous rows went
         // when the Connect transport moved to the command palette, and this
         // count was left at 5 -- so the test had been failing ever since,
