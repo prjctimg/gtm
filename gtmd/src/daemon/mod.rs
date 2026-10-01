@@ -797,7 +797,6 @@ impl Cmd {
             return Ok(DaemonRes::Ok);
         }
         *inner.crossfade_loaded_for.lock().await = None;
-        *inner.countdown_notified_for.lock().await = None;
         *inner.cover_preloaded_for.lock().await = None;
         let standby = {
             let state = inner.state.read().await;
@@ -830,7 +829,6 @@ impl Cmd {
         if let Some(path) = Daemon::promote_crossfade(inner).await {
             Daemon::report_promoted(inner, &path).await;
         }
-        *inner.countdown_notified_for.lock().await = None;
         let pos = inner.mixer.lock().await.current_position();
         if pos > RESTART_THRESHOLD_SECS {
             return Cmd::seek(inner, 0.0).await;
@@ -1570,7 +1568,6 @@ pub(crate) struct DaemonInner {
     /// the Setup picker can show the reason inline instead of hanging.
     pub(crate) lastfm_error: tokio::sync::Mutex<Option<String>>,
     pub(crate) crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
-    pub(crate) countdown_notified_for: tokio::sync::Mutex<Option<String>>,
     /// Stream path the stall watchdog has already rebuilt once, so a stream
     /// that stays quiet through its recovery is not reconnected on every
     /// position tick. Cleared when a different track is playing.
@@ -2016,7 +2013,6 @@ impl Daemon {
             oauth_lastfm_task: tokio::sync::Mutex::new(None),
             lastfm_error: tokio::sync::Mutex::new(None),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
-            countdown_notified_for: tokio::sync::Mutex::new(None),
             stream_recovered_for: tokio::sync::Mutex::new(None),
             cover_preloaded_for: tokio::sync::Mutex::new(None),
             last_pos_broadcast: tokio::sync::Mutex::new(None),
@@ -3669,7 +3665,6 @@ impl Daemon {
             let _ = mixer.stop();
         }
         *inner.crossfade_loaded_for.lock().await = None;
-        *inner.countdown_notified_for.lock().await = None;
         *inner.cover_preloaded_for.lock().await = None;
 
         // Scrobble current track if it was played long enough
@@ -3846,7 +3841,6 @@ impl Daemon {
         if inner.crossfade_loaded_for.lock().await.take().is_none() {
             return;
         }
-        *inner.countdown_notified_for.lock().await = None;
         *inner.cover_preloaded_for.lock().await = None;
 
         // Scrobble the track that just finished before advancing.
@@ -4138,26 +4132,6 @@ impl Daemon {
                                 debug!("preloaded the cover for {}", ahead.path);
                             }
                         });
-                    }
-                }
-
-                let cf_secs = crossfade
-                    .as_ref()
-                    .filter(|c| c.enabled)
-                    .map_or(0.0, |c| c.duration_secs as f64);
-                if dur > 0.0
-                    && (dur - pos) <= cf_secs + 3.0
-                    && let Some(track) = &next
-                {
-                    let mut notified = inner.countdown_notified_for.lock().await;
-                    if notified.as_deref() != Some(track.hash.as_str()) {
-                        *notified = Some(track.hash.clone());
-                        Self::push_event(
-                            inner,
-                            DaemonEvent::CrossfadeCountdown {
-                                track: track.clone(),
-                            },
-                        );
                     }
                 }
 

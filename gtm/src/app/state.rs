@@ -51,17 +51,6 @@ pub struct DownloadProgressView {
     pub updated_at: std::time::Instant,
 }
 
-pub struct UpNextNotif {
-    pub track: TrackInfo,
-    pub cover: Option<Vec<u8>>,
-    pub cover_stateful: Option<StatefulProtocol>,
-    pub started_at: std::time::Instant,
-    pub total_secs: f64,
-    /// In-flight cover request for `track`, so a stale reply is dropped and
-    /// a repeated request for the same track is not re-issued.
-    pub cover_fetch: FetchSlot<i64>,
-}
-
 /// Fuzzy subsequence match: every byte of `q` appears in order in `hay`.
 /// Used by every fuzzy-finder (library search, themes, command palette) so
 /// filtering behaviour is identical across pickers.
@@ -480,13 +469,13 @@ pub struct QueueView {
     pub move_index: Option<usize>,
     /// Target position in queue for move operation.
     pub move_target: usize,
-    /// Cover art for the queue picker "Up Next" strip: fetched for the
-    /// track after the current one, including locally-inserted (`id == 0`)
-    /// entries.
+    /// Cover art for the queue picker preview strip: fetched for the row under
+    /// the highlight, including locally-inserted (`id == 0`) entries, which is
+    /// why the guard is keyed on `path` rather than on a library id.
     pub preview_cover: Option<Vec<u8>>,
     pub preview_cover_stateful: Option<StatefulProtocol>,
-    pub preview_slot: FetchSlot<i64>,
-    pub preview_fail_until: Option<(i64, std::time::Instant)>,
+    pub preview_slot: FetchSlot<String>,
+    pub preview_fail_until: Option<(String, std::time::Instant)>,
 }
 
 /// Lyrics pane UI state, grouped under `App::lyrics`.

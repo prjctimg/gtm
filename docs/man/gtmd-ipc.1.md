@@ -423,7 +423,6 @@ the rest are state transitions.
 | `repeat_mode_changed` | `mode` |
 | `shuffle_changed` | `enabled` |
 | `crossfade_changed` | `enabled`, `duration_secs` |
-| `crossfade_countdown` | `track`<br>Emitted once when the next track is about to enter crossfade (5s before it begins). The client animates the countdown until the crossfade starts. |
 | `loudness_mode_changed` | `mode` |
 | `loudness_scan_progress` | `tracks_remaining`, `tracks_total` |
 | `loudness_scan_done` | `scanned`, `failed` |

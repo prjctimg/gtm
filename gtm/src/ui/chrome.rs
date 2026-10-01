@@ -33,144 +33,6 @@ pub(crate) fn wants_album_line(artist: &str, album: &str) -> bool {
 }
 
 impl Render {
-    pub(crate) fn upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let (display_title, artist, album, has_album, has_cover, source_label) = {
-            let u = match app.upnext.as_ref() {
-                Some(u) => u,
-                None => return,
-            };
-            let display_title = u.track.display_title();
-            let artist = if u.track.artist.is_empty() {
-                "Unknown".to_string()
-            } else {
-                u.track.artist.clone()
-            };
-            let album = u.track.album.clone();
-            let has_album = wants_album_line(&artist, &album);
-            let has_cover = u.cover.is_some();
-            // Provider comes from the shared classifier so the card, the footer
-            // source module and the daemon agree on what a path is.
-            let source = classify_remote_source(&u.track.path).map_or("Local", |(key, _)| key);
-            let source_label: String = if use_nerd_fonts() {
-                match provider_icon(source) {
-                    Some(g) => format!(" {g}"),
-                    None => " ♪".to_string(),
-                }
-            } else {
-                match source {
-                    "Spotify" => " ♫".to_string(),
-                    "YouTube" => " ▶".to_string(),
-                    _ => " ♪".to_string(),
-                }
-            };
-            (
-                display_title,
-                artist,
-                album,
-                has_album,
-                has_cover,
-                source_label,
-            )
-        };
-
-        // Opaque like every other floating surface, for the same reason: it
-        // lands on top of the library and the now-playing pane.
-        let bg = Block::default().style(Style::default().bg(app.notification_bg()));
-        f.render_widget(bg, area);
-
-        let border_color = app.theme.notification_border;
-        f.render_widget(
-            Block::default().style(Style::default().bg(border_color)),
-            Rect {
-                x: area.x,
-                y: area.y,
-                width: 1,
-                height: area.height,
-            },
-        );
-
-        let inner = area.inner(Margin {
-            horizontal: 2,
-            vertical: 1,
-        });
-
-        let cover_w = COVER_W.min(inner.width.saturating_sub(2));
-        let cover_h = COVER_H.min(inner.height);
-        if cover_w > 0 {
-            let cover_area = Rect {
-                x: inner.x,
-                y: inner.y,
-                width: cover_w,
-                height: cover_h,
-            };
-            if has_cover {
-                if let Some(u) = app.upnext.as_mut() {
-                    let (stateful, bytes): (Option<&mut StatefulProtocol>, Option<&[u8]>) =
-                        if u.cover_stateful.is_some() {
-                            (u.cover_stateful.as_mut(), None)
-                        } else {
-                            (None, u.cover.as_deref())
-                        };
-                    Render::cover(
-                        f,
-                        cover_area,
-                        stateful,
-                        bytes,
-                        app.theme.fg_dim,
-                        Some("\u{266b}"),
-                    );
-                }
-            } else {
-                Render::cover(
-                    f,
-                    cover_area,
-                    None,
-                    None,
-                    app.theme.fg_dim,
-                    Some("\u{266b}"),
-                );
-            }
-        }
-
-        let text_area = Rect {
-            x: inner.x + cover_w + 1,
-            y: inner.y,
-            width: inner.width.saturating_sub(cover_w + 1),
-            height: inner.height,
-        };
-        let text_w = text_area.width.saturating_sub(1) as usize;
-        let animated = scroll_text(&display_title, text_w.max(4), app.np_title_scroll, false);
-        let mut lines: Vec<Line> = vec![
-            Line::from(Span::styled(
-                "UP NEXT",
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                format!(" {}", animated),
-                Style::default()
-                    .fg(app.theme.fg_bright)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                format!(" {}", artist),
-                Style::default().fg(app.theme.fg),
-            )),
-        ];
-        if has_album {
-            lines.push(Line::from(Span::styled(
-                format!(" {}", album),
-                Style::default().fg(app.theme.fg),
-            )));
-        }
-        lines.push(Line::from(Span::styled(
-            format!(" {}", source_label.trim_start()),
-            Style::default().fg(app.theme.fg_dim),
-        )));
-        f.render_widget(Paragraph::new(lines), text_area);
-    }
-
     pub(crate) fn notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let now = std::time::Instant::now();
 
@@ -194,24 +56,6 @@ impl Render {
         // Cards anchor to the top-center of the screen and stack downward.
         let center_x = |w: u16| area.x + area.width.saturating_sub(w) / 2;
         let mut y_top = area.y + padding;
-
-        // The Up Next card sits at the very top; it carries cover art, so it is
-        // skipped while a picker is open to keep images from leaking over it.
-        if app.upnext.is_some() && !app.pickers.is_open() {
-            let card_w = 42u16;
-            let card_h = 7u16;
-            let card_x = center_x(card_w);
-            if y_top.saturating_add(card_h) <= area.bottom() {
-                let card_area = Rect {
-                    x: card_x,
-                    y: y_top,
-                    width: card_w,
-                    height: card_h,
-                };
-                Render::upnext_card(f, card_area, app);
-                y_top = y_top.saturating_add(card_h + gap);
-            }
-        }
 
         let mut regular: Vec<_> = app
             .notifications
@@ -240,11 +84,10 @@ impl Render {
             let leaving = now.saturating_duration_since(n.expires_at);
             // The card enters from off the right edge and leaves the same way.
             // It used to drop in from above the top of the screen, which read as
-            // a glitch: the card was cut in half by the terminal edge, appeared
-            // without its background for the frames it spent partly off-screen,
-            // and arrived on top of whatever was at the top-centre — the Up Next
-            // card. Coming from the side keeps the whole card visible for the
-            // whole animation and leaves the top edge alone.
+            // a glitch: the card was cut in half by the terminal edge and
+            // appeared without its background for the frames it spent partly
+            // off-screen. Coming from the side keeps the whole card visible for
+            // the whole animation and leaves the top edge alone.
             let travel = (area.right().saturating_sub(final_x)) as f32;
             let (y, x) = if leaving > std::time::Duration::ZERO {
                 let p = cubic_ease_in(

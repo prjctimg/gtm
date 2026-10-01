@@ -150,7 +150,11 @@ impl Pickers {
                 width: inner.width,
                 height: preview_h,
             };
-            Self::render_upnext_preview(f, preview_area, app, app.queue.cursor + 1);
+            // The strip describes the highlighted row, which is `sel` — not the
+            // entry after the playing cursor. Both used to be the cursor, so
+            // moving through the queue left the artwork on the track that was
+            // already playing while the title beside it named another.
+            Self::render_preview(f, preview_area, app, sel);
         }
     }
 
@@ -242,16 +246,16 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    pub(crate) fn render_upnext_preview(
+    pub(crate) fn render_preview(
         f: &mut ratatui::Frame,
         area: Rect,
         app: &mut App,
-        next_idx: usize,
+        idx: usize,
     ) {
-        app.update_upnext_cover();
+        app.update_preview_cover(idx);
         // Use the same transparent/filled background as the picker panel so the
-        // "Up Next" strip never shows a mismatched solid background over the
-        // rest of the (possibly transparent) queue picker.
+        // strip never shows a mismatched solid background over the rest of the
+        // (possibly transparent) queue picker.
         let section_bg = if app.transparent_pickers {
             ratatui::style::Color::Reset
         } else {
@@ -259,7 +263,7 @@ impl Pickers {
         };
         let block = Block::default()
             .borders(Borders::TOP)
-            .title(" Up Next ")
+            .title(" Preview ")
             .border_style(Style::default().fg(app.theme.accent))
             .style(Style::default().bg(section_bg));
         f.render_widget(block, area);
@@ -269,7 +273,7 @@ impl Pickers {
             width: area.width,
             height: area.height.saturating_sub(1),
         };
-        match app.queue.cache.get(next_idx) {
+        match app.queue.cache.get(idx) {
             Some(track) => {
                 let label = track.display_title();
                 let artist = if track.artist.is_empty() {

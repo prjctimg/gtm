@@ -359,8 +359,6 @@ pub struct App {
     pub artist_cover: Option<Vec<u8>>,
     pub artist_cover_stateful: Option<StatefulProtocol>,
     pub(crate) artist_slot: FetchSlot<String>,
-    /// Active "Up Next" crossfade-countdown notification.
-    pub upnext: Option<UpNextNotif>,
     // Monotonic generation counter for all cover fetches — disambiguates
     // stale responses and `id == 0` reuse across different tracks.
     pub(crate) next_cover_gen: u64,
@@ -386,8 +384,7 @@ pub(crate) enum IpcResult {
     RefreshDone(Box<DaemonState>, Option<Vec<u8>>, Option<i64>),
     CoverArt(Option<Vec<u8>>, Option<i64>, u64),
     PopupCoverArt(Option<Vec<u8>>, i64, u64),
-    UpNextCover(Option<Vec<u8>>, i64, u64),
-    QueuePreviewCover(Option<Vec<u8>>, i64, u64),
+    QueuePreviewCover(Option<Vec<u8>>, String, u64),
     PickerPreviewCover(Option<Vec<u8>>, i64, u64),
     MetadataCoverArt(Option<Vec<u8>>, i64, u64),
     ArtistCoverArt(Option<Vec<u8>>, String, u64),
@@ -1079,7 +1076,6 @@ impl App {
             artist_cover: None,
             artist_cover_stateful: None,
             artist_slot: FetchSlot::default(),
-            upnext: None,
             next_cover_gen: 1,
             lyrics: LyricsView {
                 current: None,

@@ -338,9 +338,6 @@ impl DaemonState {
             DaemonEvent::ScrobbleConfigChanged { enabled } => {
                 self.scrobble.enabled = *enabled;
             }
-            DaemonEvent::CrossfadeCountdown { .. } => {
-                // Client-side-only signal; no mirror state field.
-            }
             DaemonEvent::LoudnessScanProgress { .. } => {}
             DaemonEvent::LoudnessScanDone { .. } => {}
             DaemonEvent::SpectrumChanged { levels } => {

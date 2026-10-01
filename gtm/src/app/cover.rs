@@ -1,63 +1,6 @@
 use crate::app::*;
 
 impl App {
-    pub fn start_upnext(&mut self, track: TrackInfo) {
-        // Mirror the daemon's own countdown window rather than a hardcoded
-        // duration. It opens the card at `cf_secs + 3` seconds from the end,
-        // where `cf_secs` is 0 when crossfade is disabled, so with crossfade off
-        // the window is the 3 seconds alone. The card used to be built from a
-        // field initialised to 6 and never written again, so the countdown
-        // ignored the user's setting entirely: a 2s crossfade showed a 9s
-        // card and a 10s one hid the card 4s before the transition.
-        let cf_secs = self
-            .state
-            .crossfade
-            .as_ref()
-            .filter(|c| c.enabled)
-            .map_or(0.0, |c| c.duration_secs as f64);
-        let total_secs = cf_secs + 3.0;
-        let fetch_gen = if no_image_protocol() {
-            None
-        } else {
-            Some(self.next_cover_gen())
-        };
-        let fetch_id = if fetch_gen.is_some() {
-            Some(track.id)
-        } else {
-            None
-        };
-        self.upnext = Some(UpNextNotif {
-            track: track.clone(),
-            cover: None,
-            cover_stateful: None,
-            started_at: std::time::Instant::now(),
-            total_secs,
-            cover_fetch: FetchSlot {
-                id: fetch_id,
-                version: fetch_gen,
-            },
-        });
-        let Some(fetch_gen) = fetch_gen else {
-            return;
-        };
-        let tid = track.id;
-        // A provider track (Spotify, YouTube) has no row in the local library,
-        // so its `id` is not a library id and `art().cover(id)` looks up
-        // whatever local track happens to hold that number -- the wrong art,
-        // and for an up-next card the art of the track currently playing. The
-        // daemon needs the path to resolve provider covers.
-        let cover_path = track.cover_path.clone();
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover_for(tid, cover_path).await
-                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
-            {
-                let _ = ipc_tx.send(IpcResult::UpNextCover(Some(bytes), tid, fetch_gen));
-            }
-        });
-    }
-
     /// Kind of item the library track-info block is currently describing,
     /// derived from the active list and drill-down state.
     pub fn track_info_kind(&self) -> TrackInfoKind {
@@ -496,82 +439,50 @@ impl App {
         }
     }
 
-    pub(crate) fn upnext_cover_sync(&mut self) {
-        let Some(picker) = self.np_cover.picker.as_ref() else {
-            return;
-        };
-        if let Some(u) = self.upnext.as_mut() {
-            u.cover_stateful = match u.cover.as_ref() {
-                Some(bytes) => image::load_from_memory(bytes)
-                    .ok()
-                    .map(|img| picker.new_resize_protocol(img)),
-                None => None,
-            };
-        }
-    }
-
-    /// Fetch cover art for the queue picker "Up Next" strip, once per
-    /// track.  Locally-inserted tracks (`id == 0`) are fetched too; if the
-    /// daemon has no art the renderer falls back to a glyph.
-    pub fn update_upnext_cover(&mut self) {
+    /// Fetch cover art for the queue picker's preview strip, once per row.
+    ///
+    /// Keyed on the queue *row* the strip is describing, not on `queue.cursor`:
+    /// the cursor is what is playing, while the strip shows the row under the
+    /// highlight, so following the cursor meant the artwork belonged to a
+    /// different track than the title beside it. `path` is the key because
+    /// queued and provider entries share `id == 0`, so an id-keyed slot cannot
+    /// tell two adjacent rows apart.
+    pub fn update_preview_cover(&mut self, idx: usize) {
         if no_image_protocol() {
             return;
         }
-        let next_idx = self.queue.cursor + 1;
-        let Some(track) = self.queue.cache.get(next_idx) else {
+        let Some(track) = self.queue.cache.get(idx) else {
             self.queue.preview_slot.clear();
             self.queue.preview_cover = None;
             self.queue.preview_cover_stateful = None;
             return;
         };
         let tid = track.id;
-        let track_path = track.path.clone();
-        // Any cached cover bytes must belong to the track currently shown as
-        // up-next. A cursor jump, queue replacement, or thumbnail clear can
-        // reset the fetch guard without invalidating the bytes; dropping them
-        // here guarantees the preview can never show art for the previous
-        // track (rendered from a stale `cover_block` fallback).
-        if self.queue.preview_cover.is_some() && self.queue.preview_slot.id != Some(tid) {
+        let key = track.path.clone();
+        // Any cached bytes must belong to the row on screen. A cursor jump,
+        // queue replacement or thumbnail clear can reset the fetch guard
+        // without invalidating the bytes, and a stale `cover_block` fallback
+        // would then draw the previous row's art.
+        if self.queue.preview_cover.is_some() && self.queue.preview_slot.id.as_deref() != Some(&key)
+        {
             self.queue.preview_cover = None;
             self.queue.preview_cover_stateful = None;
         }
         // A failed lookup clears the gen guard so a later preview can retry;
-        // this throttle prevents the per-frame render from re-fetching a
-        // cover that isn't there, at most once per 30s per track.
-        if let Some((fail_tid, until)) = self.queue.preview_fail_until
-            && fail_tid == tid
+        // this throttle stops the per-frame render from re-fetching a cover
+        // that isn't there, at most once per 30s per row.
+        if let Some((ref fail_key, until)) = self.queue.preview_fail_until
+            && *fail_key == key
             && std::time::Instant::now() < until
         {
             return;
         }
-        // If the up-next notification refers to the very same track that the
-        // queue picker is showing, reuse its cover bytes so both surfaces are
-        // always in sync and the now-playing cover can never appear here.
-        let reuse = self
-            .upnext
-            .as_ref()
-            .filter(|u| {
-                u.track.id == tid
-                    && u.track.path == track_path
-                    && u.cover.is_some()
-                    && self.queue.preview_slot.id != Some(tid)
-            })
-            .and_then(|u| u.cover.clone());
-        if let Some(cover) = reuse {
-            self.queue.preview_cover = Some(cover);
-            self.sync_preview_cover();
-            // Keep the id so a retry reuses the cached bytes, but drop the
-            // generation so the next request is allowed through.
-            self.queue.preview_slot.version = None;
-            return;
-        }
-        // Generation-guarded dedup: allows `id == 0` tracks to refetch
-        // distinctly. Only skip when pending fetch_gen exists.
-        if self.queue.preview_slot.pending(&tid) {
+        // Generation-guarded dedup: only skip when a fetch is already in flight.
+        if self.queue.preview_slot.pending(&key) {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.queue.preview_slot.claim(tid, fetch_gen);
+        self.queue.preview_slot.claim(key.clone(), fetch_gen);
         self.queue.preview_cover = None;
         self.queue.preview_cover_stateful = None;
         let client = self.client.clone();
@@ -579,12 +490,12 @@ impl App {
         tokio::spawn(async move {
             // Report failure as `None` too, so the pending-gen guard is
             // released and a later save/queue change can retry the lookup.
-            let cover = if let Ok(Some(b64)) = client.art().cover_for(tid, Some(track_path)).await {
+            let cover = if let Ok(Some(b64)) = client.art().cover_for(tid, Some(key.clone())).await {
                 base64::engine::general_purpose::STANDARD.decode(&b64).ok()
             } else {
                 None
             };
-            let _ = ipc_tx.send(IpcResult::QueuePreviewCover(cover, tid, fetch_gen));
+            let _ = ipc_tx.send(IpcResult::QueuePreviewCover(cover, key, fetch_gen));
         });
     }
 

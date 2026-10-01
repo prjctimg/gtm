@@ -366,8 +366,6 @@ impl App {
             let mut had_lastfm_change = false;
             for ev in self.client.drain().await {
                 if let DaemonEvent::PlaybackStarted { .. } = &ev {
-                    // The crossfade has begun: drop the Up Next countdown.
-                    self.upnext = None;
                     // Was this change an automatic advance (not a manual
                     // Next/Prev)? Capture that before the flag is reset so the
                     // dust animation is only shown on genuine auto-advances.
@@ -378,18 +376,8 @@ impl App {
                 if matches!(ev, DaemonEvent::PlaybackStarted { .. }) {
                     had_track_change = true;
                 }
-                if matches!(ev, DaemonEvent::TrackEnded) {
-                    self.upnext = None;
-                }
                 if matches!(ev, DaemonEvent::SleepTimerExpired) {
                     had_sleep_expired = true;
-                }
-                if let DaemonEvent::CrossfadeCountdown { track } = &ev
-                    // Only surface the crossfade/Up Next card on a genuine
-                    // auto-advance; a manual Next/Prev shouldn't announce it.
-                    && !self.manual_track_advance
-                {
-                    self.start_upnext(track.clone());
                 }
                 // The visualizer is a configurable extension: when disabled
                 // the spectrum + waveform streams are zeroed on the client so
@@ -494,13 +482,6 @@ impl App {
             if had_track_change && self.reactive_theme && self.reactive_palette.is_some() {
                 self.reactive_palette = None;
                 self.apply_reactive();
-            }
-            // If the countdown elapsed without a PlaybackStarted (e.g. the
-            // track ended before the crossfade could fire), drop the card.
-            if let Some(u) = self.upnext.as_ref()
-                && u.started_at.elapsed().as_secs_f64() >= u.total_secs
-            {
-                self.upnext = None;
             }
             if events_received {
                 self.last_event_time = std::time::Instant::now();
@@ -1216,22 +1197,9 @@ impl App {
                             self.popup_cover_sync();
                         }
                     }
-                    IpcResult::UpNextCover(cover, track_id, fetch_gen) => {
+                    IpcResult::QueuePreviewCover(cover, key, fetch_gen) => {
                         if !no_image_protocol()
-                            && self.upnext.as_ref().is_some_and(|u| {
-                                u.cover_fetch.id == Some(track_id)
-                                    && u.track.id == track_id
-                                    && u.cover_fetch.matches(fetch_gen)
-                            })
-                            && let Some(u) = self.upnext.as_mut()
-                        {
-                            u.cover = cover;
-                            self.upnext_cover_sync();
-                        }
-                    }
-                    IpcResult::QueuePreviewCover(cover, track_id, fetch_gen) => {
-                        if !no_image_protocol()
-                            && self.queue.preview_slot.id == Some(track_id)
+                            && self.queue.preview_slot.id.as_deref() == Some(&key)
                             && self.queue.preview_slot.matches(fetch_gen)
                         {
                             self.queue.preview_cover = cover;
@@ -1247,7 +1215,7 @@ impl App {
                                 // preview retries, and throttle the refetch.
                                 self.queue.preview_slot.version = None;
                                 self.queue.preview_fail_until = Some((
-                                    track_id,
+                                    key,
                                     std::time::Instant::now() + Duration::from_secs(30),
                                 ));
                             }
@@ -1381,7 +1349,6 @@ impl App {
                         //.
                         self.cover_sync();
                         self.popup_cover_sync();
-                        self.upnext_cover_sync();
                         self.sync_preview_cover();
                         self.picker_preview_sync();
                         self.artist_cover_sync();

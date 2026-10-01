@@ -2493,34 +2493,6 @@ fn no_spotify_charts_provider() {
 /// its `id` is not a library id and collides with whatever local track holds
 /// that number. The cover lookup matched on `id` alone, so the up-next card
 /// rendered the currently playing track's artwork. Both ends are asserted
-/// here: the client sends the path, and the daemon prefers it.
-#[test]
-fn upnext_cover_is_resolved_by_path_not_id() {
-    let cover = include_str!("../src/app/cover.rs");
-    let daemon_cover = include_str!("../../gtmd/src/daemon/cover.rs");
-
-    // The client must pass the path; `art().cover(id)` alone is the bug.
-    let start = cover.find("pub fn start_upnext").expect("no start_upnext");
-    let block = &cover[start..start + 2600];
-    assert!(
-        block.contains("cover_for(tid, cover_path)"),
-        "start_upnext does not send the cover path"
-    );
-    assert!(
-        !block.contains("art().cover(tid)"),
-        "start_upnext still looks the cover up by id alone"
-    );
-
-    // The daemon must prefer a path match over an id match.
-    assert!(
-        daemon_cover.contains("let by_path = track_path.and_then(|p| {"),
-        "the known-cover lookup does not try the path first"
-    );
-    assert!(
-        daemon_cover.contains("None if track_id == 0 => None,"),
-        "a non-zero id is still consulted ahead of the path"
-    );
-}
 
 /// List rows must not print a bracketed `[stream]` where a duration goes.
 ///
@@ -2723,35 +2695,6 @@ fn crossfade_advances_exactly_once_at_full_volume() {
 /// The up-next card's countdown must follow the real crossfade setting.
 ///
 /// It was built from a field initialised to 6 and never written again, so the
-/// card's length ignored the user's crossfade duration entirely.
-#[test]
-fn upnext_countdown_follows_the_crossfade_setting() {
-    let cover = include_str!("../src/app/cover.rs");
-    let app = include_str!("../src/app/mod.rs");
-
-    assert!(
-        !app.contains("pub crossfade_duration: u8,"),
-        "the hardcoded crossfade duration field is back"
-    );
-    assert!(
-        !cover.contains("self.crossfade_duration as f64"),
-        "start_upnext reads the hardcoded duration again"
-    );
-    let start = cover.find("pub fn start_upnext").expect("no start_upnext");
-    let block = &cover[start..start + 900];
-    assert!(
-        block.contains(".filter(|c| c.enabled)"),
-        "the countdown ignores whether crossfade is enabled"
-    );
-    assert!(
-        block.contains("map_or(0.0, |c| c.duration_secs as f64)"),
-        "the countdown does not read the configured duration"
-    );
-    assert!(
-        block.contains("let total_secs = cf_secs + 3.0;"),
-        "the countdown window no longer matches the daemon's"
-    );
-}
 
 /// Four scrobbling and state-persistence defects.
 ///
@@ -3175,11 +3118,16 @@ fn lyrics_own_the_results_pane_only_while_focused() {
 /// one column it took five rows off a band that is five rows tall — while the
 /// "LYRICS" label above it named a pane the band had already titled. The
 /// artwork is the one thing the band cannot spare, so it comes here instead,
-/// at twice the size.
+/// The lyrics pane is lyrics and nothing else, in every layout.
+///
+/// It carried a cover image in one layout and a "LYRICS" label plus a left rule
+/// in another, neither of which told the listener anything: the track is named
+/// by the now-playing band in one column and by the neighbouring pane in three,
+/// and the artwork was the same bytes decoded and uploaded a second time for a
+/// surface whose whole job is to be read.
 #[test]
-fn lyrics_header_is_a_cover_only_on_one_column() {
+fn the_lyrics_pane_carries_no_chrome() {
     let chrome = include_str!("../src/ui/chrome.rs");
-    let squish = |s: &str| s.split_whitespace().collect::<String>();
 
     let pane = chrome
         .split("pub(crate) fn lyrics_pane(")
@@ -3189,35 +3137,29 @@ fn lyrics_header_is_a_cover_only_on_one_column() {
         .find("pub(crate) fn lyrics_body(")
         .expect("lyrics_pane is unterminated")];
 
-    // The fit, not the width it landed in, decides the label and the cover —
-    // they sit on opposite sides of it.
     assert!(
-        squish(pane).contains(&squish(
-            "let label = match fit { LyricsFit::Docked => \"LYRICS\", LyricsFit::Solo => \"\", };"
-        )),
-        "the LYRICS label is not docked-only any more"
+        !pane.contains("Render::cover"),
+        "the lyrics pane still draws a cover image"
     );
     assert!(
-        squish(pane).contains(&squish(
-            "let header_h = match fit { LyricsFit::Docked => 0, LyricsFit::Solo => 6u16.min(inner.height.saturating_sub(4)), };"
-        )),
-        "the cover is not one-column-only, or is no longer 6 rows"
+        !pane.contains("pane_header"),
+        "the lyrics pane still draws a header or a border"
     );
-    // No track header of any kind, and no terminal-width test to smuggle it back
-    // in: either the band or the pane beside it names the track.
     for gone in ["lyrics.title", "lyrics.artist", "app.terminal_cols"] {
         assert!(!pane.contains(gone), "the lyrics header still reads {gone}");
     }
 
-    // And both arms are reachable: the third pane is docked, the results pane
-    // is docked unless the whole screen is one column.
-    assert!(chrome.contains("Render::lyrics_pane(f, lyrics_area, app, LyricsFit::Docked);"));
-    assert!(chrome.contains("Render::lyrics_pane(f, lyrics, app, fit);"));
+    // One call site shape, so neither layout can reintroduce a fit-dependent
+    // header by way of the argument that used to select it.
+    assert_eq!(
+        chrome.matches("Render::lyrics_pane(f, lyrics_area, app)").count()
+            + chrome.matches("Render::lyrics_pane(f, lyrics, app)").count(),
+        2,
+        "the lyrics pane is no longer called without a layout argument"
+    );
     assert!(
-        squish(chrome).contains(&squish(
-            "let fit = if is_narrow { LyricsFit::Solo } else { LyricsFit::Docked };"
-        )),
-        "the results-pane lyrics no longer key off the one-column layout"
+        !chrome.contains("LyricsFit"),
+        "the per-layout fit argument is back"
     );
 }
 
@@ -3390,24 +3332,30 @@ fn now_playing_cover_fills_a_narrow_pane() {
 /// artwork inside was sized off the height the float was left with, so the box
 /// came out eight columns wider than the art it held and taller than its own
 /// contents. And the list was sized to the whole pane, so it scrolled rows
-/// underneath the card where they could be neither seen nor clicked.
+/// Narrow screens dock the track-info card under the list, and the list gives up
+/// the rows it takes.
+///
+/// It used to float over them, anchored to the bottom-right corner: a card
+/// narrower than the pane but taller than the space it left, so it covered rows
+/// that could be neither read nor clicked, while its height was a second
+/// independent estimate of a size its own contents already determined.
 #[test]
-fn narrow_floats_a_card_sized_around_its_own_art() {
+fn narrow_docks_the_card_and_the_list_yields_its_rows() {
     let chrome = include_str!("../src/ui/chrome.rs");
     let squish = |s: &str| s.split_whitespace().collect::<String>();
 
     assert!(
         squish(chrome).contains(&squish(
-            "let float_card = is_narrow && !lyrics_results_pane && app.show_preview && app.track_popup_visible;"
+            "let dock_card = is_narrow && !lyrics_results_pane && app.show_preview && app.track_popup_visible;"
         )),
-        "the floating card is not gated to narrow screens with the list on screen"
+        "the docked card is not gated to narrow screens with the list on screen"
     );
-    // Docked on wide screens only.
+    // Docked in the library column's own info block on wide screens still.
     assert!(
         squish(chrome).contains(&squish(
             "} else if !is_narrow { Render::info_in_pane(f, info_sep_area, left_info_area, app);"
         )),
-        "the card is docked again on narrow screens"
+        "the card is no longer docked on wide screens"
     );
 
     let lib = chrome
@@ -3417,46 +3365,39 @@ fn narrow_floats_a_card_sized_around_its_own_art() {
     let lib = &lib[..lib
         .find("pub(crate) fn footer(")
         .expect("library() is unterminated")];
-    // Over the rows below the now-playing band, and painted after them.
-    let float = lib
-        .find("Render::floating_card(f, results_area, app);")
-        .expect("the card never floats");
-    let rows = lib
-        .find("Render::evolving(f, right_inner, right_para, \"lib\"")
-        .expect("the list is gone");
-    assert!(
-        rows < float,
-        "the card is painted before the list rows, so the list draws over it"
-    );
 
-    // And it is a real float: cleared, bordered, and reusing the docked
-    // renderer so the two cannot drift apart.
-    assert!(chrome.contains(
-        "pub(crate) fn floating_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {"
-    ));
-    assert!(chrome.contains("f.render_widget(Clear, rect);"));
-    assert!(chrome.contains(".borders(Borders::ALL)"));
-    assert!(chrome.contains("Render::info_in_pane(f, Rect::new(0, 0, 0, 0), inner, app);"));
-
-    // The box is built from the artwork, in rows the band left over: the field
-    // block and the two border rows come off the top, then a cap, then a floor.
+    // Full width, at the bottom of the pane it is drawn into.
     assert!(
         squish(chrome).contains(&squish(
-            "let art = area.height.saturating_sub(INFO_FIELDS_H + 8).min(6).min(area.height / 4).max(2);"
+            "let rect = Rect { x: area.x, y: area.y + area.height.saturating_sub(h), width: area.width, height: h, };"
         )),
-        "the floating card is not sized from the artwork it holds"
+        "the card is not a full-width strip at the bottom of the pane"
     );
     assert!(
-        squish(chrome).contains(&squish("(art * 2 + 4).min(area.width.saturating_sub(1)),")),
-        "the floating card is not as wide as its artwork"
+        !chrome.contains("pub(crate) fn floating_card("),
+        "the floating card is back"
     );
-    // The list gives up the rows the card covers, on every category branch: a
-    // single budget they all read, rather than fifteen copies of `height - 3`.
+    assert!(
+        !lib.contains("f.render_widget(Clear,"),
+        "the card is still cleared as a float rather than filled as a pane"
+    );
+
+    // Height derived from the artwork, so the box and its contents cannot
+    // disagree the way the float's two estimates did.
     assert!(
         squish(chrome).contains(&squish(
-            "let window_rows = || results_area.height.saturating_sub(3 + float_h) as usize;"
+            "let art = area.height.saturating_sub(INFO_FIELDS_H + 4).min(DOCK_ART_H).min(area.height / 4).max(2);"
         )),
-        "the list is not sized around the floating card"
+        "the docked card is not sized from the artwork it holds"
+    );
+
+    // The list gives up the card's rows, on every category branch: one shared
+    // budget rather than fifteen copies of `height - 3`.
+    assert!(
+        squish(chrome).contains(&squish(
+            "let window_rows = || results_area.height.saturating_sub(3 + dock_h) as usize;"
+        )),
+        "the list is not sized around the docked card"
     );
     assert!(
         !lib.contains("let reserve = 3usize;"),
@@ -3472,9 +3413,17 @@ fn narrow_floats_a_card_sized_around_its_own_art() {
         "a category branch sets a viewport without the shared budget"
     );
 
-    // The card's own cover gate has to be the box it was handed: gating on the
-    // docked card's `COVER_W` threw the art away and left four lines of text
-    // marooned in a box built for a cover.
+    // And the mouse zones subtract it too. They used to stop at the pane's own
+    // rows, so every hit zone under the card's top edge belonged to a row the
+    // card was covering: scrollable to, unclickable.
+    assert!(
+        squish(lib).contains(&squish(
+            "let avail = right_inner.height.saturating_sub(2).saturating_sub(dock_h) as usize;"
+        )),
+        "the mouse hit zones still cover rows under the docked card"
+    );
+
+    // The card's own cover gate has to be the box it was handed.
     assert!(
         chrome.contains(
             "let can_cover = !no_image_protocol() && area.width >= 6 && area.height >= 8;"
