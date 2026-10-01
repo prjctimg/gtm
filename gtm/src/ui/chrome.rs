@@ -2564,7 +2564,7 @@ impl Render {
         if let Some(h) = hint_area {
             f.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    "no timing available — focus lyrics, then [ / ] to offset",
+                    "not time synced",
                     Style::default().fg(app.theme.fg_dim),
                 ))),
                 h,
