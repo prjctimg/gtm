@@ -49,7 +49,6 @@ impl DaemonState {
             radio_tracks: RadioTracklist::default(),
             radio_artist: None,
             sleep_timer: None,
-            low_power: false,
             audio: AudioSettings::default(),
             gapless: false,
             dynamic_mode: DynamicModeConfig::default(),

@@ -1343,43 +1343,6 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    /// Enter/leave low-power mode. Enabling pauses playback (mirroring the
-    /// sleep-timer expiry path) and cancels any armed sleep timer; disabling
-    /// simply clears the flag so the user can play again.
-    pub async fn set_low_power(inner: &DaemonInner, enabled: bool) -> Result<DaemonRes, CoreError> {
-        {
-            let mut state = inner.state.write().await;
-            if state.low_power == enabled {
-                return Ok(DaemonRes::Ok);
-            }
-            state.set_low_power(enabled)?;
-        }
-        inner.sleep_gen.fetch_add(1, Ordering::SeqCst);
-        inner.sleep_at_end.store(false, Ordering::SeqCst);
-        if enabled {
-            let was_playing = {
-                let state = inner.state.read().await;
-                state.status == PlaybackStatus::Playing
-            };
-            if was_playing {
-                Cmd::pause(inner).await?;
-            }
-        }
-        Daemon::push_event(inner, DaemonEvent::LowPowerChanged { enabled });
-        Daemon::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    /// Report the current low-power mode.
-    pub async fn get_low_power(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let state = inner.state.read().await;
-        let low_power = state.low_power;
-        drop(state);
-        Ok(DaemonRes::Value {
-            value: serde_json::json!({ "low_power": low_power }),
-        })
-    }
-
     pub async fn clear_cache(inner: &DaemonInner, what: CacheKind) -> Result<DaemonRes, CoreError> {
         let cache_dir = inner.config.cache_dir.clone();
         tokio::task::spawn_blocking(move || match what {
@@ -1773,7 +1736,6 @@ fn is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::Ping
             | DaemonReq::ListEqPresets
             | DaemonReq::GetVolume
-            | DaemonReq::GetLowPower
             | DaemonReq::ListAudioDevices
             | DaemonReq::GetFavourites
             | DaemonReq::GetCoverArt { .. }
@@ -1836,7 +1798,6 @@ fn request_is_playback(req: &DaemonReq) -> bool {
             | DaemonReq::SetLoudnessMode { .. }
             | DaemonReq::SetGapless { .. }
             | DaemonReq::SetDynamicMode { .. }
-            | DaemonReq::SetLowPower { .. }
             | DaemonReq::SetSleepTimer { .. }
             | DaemonReq::CancelSleepTimer
             | DaemonReq::SetAudioDevice { .. }
@@ -2338,9 +2299,6 @@ impl Daemon {
                 let mut last: Option<bool> = None;
                 loop {
                     interval.tick().await;
-                    if net_inner.state.read().await.low_power {
-                        continue;
-                    }
                     let online = network::probe_online().await;
                     if last != Some(online) {
                         last = Some(online);
@@ -3184,8 +3142,6 @@ impl Daemon {
                 stop_immediately,
             } => Cmd::set_sleep_timer(inner, *minutes, *stop_immediately).await,
             DaemonReq::CancelSleepTimer => Cmd::cancel_sleep_timer(inner).await,
-            DaemonReq::SetLowPower { enabled } => Cmd::set_low_power(inner, *enabled).await,
-            DaemonReq::GetLowPower => Cmd::get_low_power(inner).await,
             DaemonReq::ListAudioDevices => Cmd::list_audio_devices(inner).await,
             DaemonReq::SetAudioDevice { name } => Cmd::set_audio_device(inner, name.clone()).await,
             DaemonReq::ClearCache { what } => Cmd::clear_cache(inner, *what).await,

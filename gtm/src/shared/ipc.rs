@@ -485,12 +485,6 @@ pub enum DaemonReq {
         stop_immediately: bool,
     },
     CancelSleepTimer,
-    /// Enter / leave low-power mode (pauses playback, eases up on background work).
-    SetLowPower {
-        enabled: bool,
-    },
-    /// Read the current low-power mode.
-    GetLowPower,
     /// List available output device names.
     ListAudioDevices,
     /// Switch the active output device (`None` = system default).
@@ -681,8 +675,6 @@ impl DaemonReq {
             DaemonReq::LastfmUnlove => "lastfm_unlove",
             DaemonReq::SetSleepTimer { .. } => "set_sleep_timer",
             DaemonReq::CancelSleepTimer => "cancel_sleep_timer",
-            DaemonReq::SetLowPower { .. } => "set_low_power",
-            DaemonReq::GetLowPower => "get_low_power",
             DaemonReq::ListAudioDevices => "list_audio_devices",
             DaemonReq::SetAudioDevice { .. } => "set_audio_device",
             DaemonReq::ClearCache { .. } => "clear_cache",
@@ -758,7 +750,6 @@ impl DaemonReq {
             "lastfm_love" => DaemonReq::LastfmLove,
             "lastfm_unlove" => DaemonReq::LastfmUnlove,
             "cancel_sleep_timer" => DaemonReq::CancelSleepTimer,
-            "get_low_power" => DaemonReq::GetLowPower,
             "list_audio_devices" => DaemonReq::ListAudioDevices,
             "podcast_feeds" => DaemonReq::PodcastFeeds,
             "podcast_status" => DaemonReq::PodcastStatus,
@@ -1345,14 +1336,6 @@ impl DaemonReq {
                     stop_immediately: x.stop_immediately,
                 }
             }
-            "set_low_power" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    enabled: bool,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SetLowPower { enabled: x.enabled }
-            }
             "set_audio_device" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1699,8 +1682,6 @@ pub enum DaemonEvent {
     SleepTimerTick { remaining_secs: u32 },
     #[serde(rename = "sleep_timer_expired")]
     SleepTimerExpired,
-    #[serde(rename = "low_power_changed")]
-    LowPowerChanged { enabled: bool },
     #[serde(rename = "audio_device_changed")]
     AudioDeviceChanged { name: Option<String> },
     #[serde(rename = "eq_preset_changed")]

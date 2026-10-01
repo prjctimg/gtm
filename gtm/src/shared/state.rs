@@ -198,9 +198,6 @@ pub struct DaemonState {
     #[serde(default)]
     pub radio_history: Vec<TrackInfo>,
     pub sleep_timer: Option<u32>,
-    /// Low-power mode: pauses playback and suspends background work.
-    #[serde(default)]
-    pub low_power: bool,
     #[serde(flatten)]
     pub audio: AudioSettings,
     pub gapless: bool,

@@ -671,7 +671,6 @@ pub enum TuiCommand {
     Prev,
     Seek(f64),
     SetVolume(u8),
-    SetLowPower(bool),
     ToggleShuffle,
     CycleRepeat(RepeatMode),
     ToggleMute,

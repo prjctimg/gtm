@@ -90,7 +90,6 @@ pub enum FooterModule {
     System,
     EqPreset,
     SleepTimer,
-    LowPower,
     Mono,
     Device,
     Notification,
@@ -117,7 +116,6 @@ impl FooterModule {
             FooterModule::System => "System",
             FooterModule::EqPreset => "EqPreset",
             FooterModule::SleepTimer => "SleepTimer",
-            FooterModule::LowPower => "LowPower",
             FooterModule::Mono => "Mono",
             FooterModule::Device => "Device",
             FooterModule::Notification => "Notification",
@@ -145,7 +143,6 @@ impl FooterModule {
             "System" => FooterModule::System,
             "EqPreset" => FooterModule::EqPreset,
             "SleepTimer" => FooterModule::SleepTimer,
-            "LowPower" => FooterModule::LowPower,
             "Mono" => FooterModule::Mono,
             "Device" => FooterModule::Device,
             "Notification" => FooterModule::Notification,
@@ -181,7 +178,6 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Repeat,
                 FooterModule::Shuffle,
                 FooterModule::Volume,
-                FooterModule::LowPower,
                 FooterModule::Mono,
                 FooterModule::EqPreset,
                 FooterModule::KeyAction,
@@ -604,14 +600,6 @@ impl Footer {
         }
     }
 
-    fn low_power(app: &App) -> Option<String> {
-        if app.state.low_power {
-            Some("LowPower".into())
-        } else {
-            None
-        }
-    }
-
     fn mono(app: &App) -> Option<String> {
         if app.state.mono {
             Some("MONO".into())
@@ -805,7 +793,6 @@ fn module_color(m: FooterModule, theme: &AppTheme) -> Color {
         FooterModule::System => theme.accent,
         FooterModule::EqPreset => theme.secondary_accent,
         FooterModule::SleepTimer => theme.accent,
-        FooterModule::LowPower => theme.warning,
         FooterModule::Mono => theme.secondary_accent,
         FooterModule::Device => theme.secondary_accent,
         FooterModule::Notification => theme.fg_bright,
@@ -831,7 +818,6 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::System => Some(Footer::system(app)),
         FooterModule::EqPreset => Footer::eq_preset(app),
         FooterModule::SleepTimer => Footer::sleep_timer(app),
-        FooterModule::LowPower => Footer::low_power(app),
         FooterModule::Mono => Footer::mono(app),
         FooterModule::Device => Footer::device(app),
         FooterModule::Notification => Footer::footer_notification(app),

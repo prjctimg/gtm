@@ -188,8 +188,6 @@ DSP configuration. Every setter is acknowledged with no payload and reports the 
 | `crossfade` | `enabled` : bool, `duration_secs` : u8 | — | `crossfade_changed` |
 | `set_gapless` | `enabled` : bool | — | `gapless_changed` |
 | `set_dynamic_mode` | `enabled` : bool, `min_queue_remaining` : uint32, `max_history` : uint32 | — | `dynamic_mode_changed` |
-| `set_low_power` | `enabled` : bool | — | — |
-| `get_low_power` | — | `low_power` | — |
 | `set_pre_gain` | `pre_gain_db` : float | — | `pre_gain_changed` |
 | `set_loudness_mode` | `mode` : LoudnessMode | — | `loudness_mode_changed` |
 | `scan_loudness` | `track_ids` : Vec<i64>, `force` : bool | — | `loudness_scan_progress`, `loudness_scan_done` |
@@ -432,7 +430,6 @@ the rest are state transitions.
 | `scrobble_config_changed` | `enabled` |
 | `sleep_timer_tick` | `remaining_secs` |
 | `sleep_timer_expired` | — |
-| `low_power_changed` | `enabled` |
 | `audio_device_changed` | `name` |
 | `eq_preset_changed` | `preset` |
 | `eq_enabled_changed` | `enabled` |

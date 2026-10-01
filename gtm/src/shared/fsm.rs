@@ -102,14 +102,6 @@ impl DaemonState {
         Ok(())
     }
 
-    /// Enable or disable low-power mode.
-    pub fn set_low_power(&mut self, enabled: bool) -> Result<()> {
-        tripwire::check(FailPoint::StateTransition)?;
-        self.low_power = enabled;
-        self.commit();
-        Ok(())
-    }
-
     pub fn set_repeat_mode(&mut self, mode: RepeatMode) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
         self.repeat = mode;
@@ -312,7 +304,6 @@ impl DaemonState {
                 };
             }
             DaemonEvent::MonoChanged { enabled } => self.mono = *enabled,
-            DaemonEvent::LowPowerChanged { enabled } => self.low_power = *enabled,
             DaemonEvent::AudioDeviceChanged { name } => self.audio.audio_device = name.clone(),
             DaemonEvent::EqPresetChanged { preset } => {
                 self.audio.eq_preset = *preset;

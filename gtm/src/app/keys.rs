@@ -475,19 +475,6 @@ impl App {
                         self.send_high(TuiCommand::SetVolume(new_vol));
                         self.notify_volume(new_vol);
                     }
-                    Some(KeyboardAction::ToggleLowPower) => {
-                        self.set_last_action("Toggle Low-Power", &key);
-                        self.send_high(TuiCommand::SetLowPower(!self.state.low_power));
-                        let msg = if self.state.low_power {
-                            "Leaving low-power mode"
-                        } else {
-                            "Low-power mode (playback paused)"
-                        };
-                        self.footer_notification = Some((
-                            msg.to_string(),
-                            std::time::Instant::now() + std::time::Duration::from_secs(2),
-                        ));
-                    }
                     Some(KeyboardAction::ToggleZen) => {
                         self.set_last_action(
                             if self.zen {

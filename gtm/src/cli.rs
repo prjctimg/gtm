@@ -245,11 +245,6 @@ pub enum CliCommand {
     SleepTimer { minutes: u32 },
     /// Cancel the current sleep timer
     CancelSleepTimer,
-    /// Toggle low-power mode (pause playback, ease off background work)
-    LowPower {
-        #[arg(long, value_name = "on|off")]
-        set: Option<bool>,
-    },
     /// List available audio output devices
     AudioDevices,
     /// Switch audio output device ("default" restores the system default; switching stops playback)
@@ -1142,17 +1137,6 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "sleep timer cancelled".to_string())
                 .map_err(|e| e.to_string()),
-            CliCommand::LowPower { set } => match set {
-                Some(enabled) => client
-                    .set_low_power(*enabled)
-                    .await
-                    .map(|()| format!("low-power {}", if *enabled { "on" } else { "off" })),
-                None => client
-                    .low_power()
-                    .await
-                    .map(|on| format!("low-power {}", if on { "on" } else { "off" })),
-            }
-            .map_err(|e| e.to_string()),
             CliCommand::AudioDevices => {
                 let devices = client
                     .list_audio_devices()

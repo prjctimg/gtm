@@ -83,13 +83,6 @@ impl App {
                     }
                 });
             }
-            TuiCommand::SetLowPower(enabled) => {
-                tokio::spawn(async move {
-                    if let Err(e) = client.set_low_power(enabled).await {
-                        error_handler(e);
-                    }
-                });
-            }
             TuiCommand::ToggleShuffle => {
                 tokio::spawn(async move {
                     if let Err(e) = client.toggle_shuffle().await {

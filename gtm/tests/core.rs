@@ -200,8 +200,6 @@ fn req_cmd_name() {
         },
         DaemonReq::SetVolume { volume: 80 },
         DaemonReq::GetVolume,
-        DaemonReq::SetLowPower { enabled: true },
-        DaemonReq::GetLowPower,
         DaemonReq::ListAudioDevices,
         DaemonReq::SetAudioDevice {
             name: Some("Speakers".into()),
@@ -698,10 +696,6 @@ wire_event_roundtrip!(
 );
 wire_event_roundtrip!(event_track_ended, DaemonEvent::TrackEnded);
 wire_event_roundtrip!(event_volume, DaemonEvent::VolumeChanged { volume: 50 });
-wire_event_roundtrip!(
-    event_low_power,
-    DaemonEvent::LowPowerChanged { enabled: true }
-);
 wire_event_roundtrip!(
     event_device_changed,
     DaemonEvent::AudioDeviceChanged {

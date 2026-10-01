@@ -45,7 +45,6 @@ pub enum KeyboardAction {
     Stop,
     VolumeUp,
     VolumeDown,
-    ToggleLowPower,
     /// Fullscreen "Zen mode" showing one of the enlarged-cover + progress,
     /// lyrics, or visualizer surfaces at a time (`z`).
     ToggleZen,
@@ -578,7 +577,6 @@ impl KeyboardAction {
             "stop" => KeyboardAction::Stop,
             "volume_up" | "vol_up" => KeyboardAction::VolumeUp,
             "volume_down" | "vol_down" => KeyboardAction::VolumeDown,
-            "toggle_low_power" | "low_power" => KeyboardAction::ToggleLowPower,
             "toggle_zen" | "zen" => KeyboardAction::ToggleZen,
             "seek_forward" | "seek_fwd" => KeyboardAction::SeekForward,
             "seek_backward" | "seek_back" => KeyboardAction::SeekBackward,

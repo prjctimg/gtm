@@ -343,19 +343,6 @@ impl DaemonClient {
             .await
     }
 
-    /// Current low-power mode flag.
-    pub async fn low_power(&self) -> Result<bool> {
-        match self.send_raw(DaemonReq::GetLowPower).await? {
-            DaemonRes::Value { value } => Ok(value
-                .get("low_power")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)),
-            _ => Err(CoreError::Daemon(
-                "unexpected response to get_low_power".into(),
-            )),
-        }
-    }
-
     /// List available output device names.
     pub async fn list_audio_devices(&self) -> Result<Vec<String>> {
         match self.send_raw(DaemonReq::ListAudioDevices).await? {
@@ -479,10 +466,6 @@ impl DaemonClient {
 
     pub async fn cancel_sleep_timer(&self) -> Result<()> {
         self.send_ok(DaemonReq::CancelSleepTimer).await
-    }
-
-    pub async fn set_low_power(&self, enabled: bool) -> Result<()> {
-        self.send_ok(DaemonReq::SetLowPower { enabled }).await
     }
 
     pub async fn clear_cache(&self, what: CacheKind) -> Result<()> {
