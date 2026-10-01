@@ -3209,7 +3209,14 @@ impl Daemon {
                 });
                 let socket_path = inner.config.socket_path.clone();
                 let socket_pulse_path = inner.config.socket_pulse_path.clone();
+                let discord = inner.config.discord_id.clone();
                 tokio::spawn(async move {
+                    // Clear the presence before the process goes. Discord holds
+                    // the last activity it was sent, so without this the
+                    // profile keeps showing a track that stopped, indefinitely.
+                    if let Some(id) = discord {
+                        crate::discord::clear(&id).await;
+                    }
                     // Perform the blocking state save and file removal off the
                     // async thread so shutdown never stalls the event loop.
                     if let Some((saved, state_file)) = cleanup_state {
