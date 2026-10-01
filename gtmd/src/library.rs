@@ -109,7 +109,7 @@ impl Library {
         if !has_album_id {
             conn.execute_batch(
                 "ALTER TABLE tracks ADD COLUMN album_id TEXT;
-             CREATE INDEX IF NOT EXISTS idx_tracks_album_id ON tracks(album_id);",
+             CREATE INDEX IF NOT EXISTS tracks_album_idx ON tracks(album_id);",
             )
             .map_err(|e| format!("db migrate album_id: {e}"))?;
         }
@@ -125,8 +125,8 @@ impl Library {
             conn.execute_batch(
                 "ALTER TABLE tracks ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0;
                  ALTER TABLE tracks ADD COLUMN last_played TEXT;
-                 CREATE INDEX IF NOT EXISTS idx_tracks_play_count ON tracks(play_count);
-                 CREATE INDEX IF NOT EXISTS idx_tracks_last_played ON tracks(last_played);",
+                 CREATE INDEX IF NOT EXISTS tracks_play_idx ON tracks(play_count);
+                 CREATE INDEX IF NOT EXISTS tracks_played_idx ON tracks(last_played);",
             )
             .map_err(|e| format!("db migrate play metrics: {e}"))?;
         }

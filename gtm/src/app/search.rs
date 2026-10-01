@@ -133,7 +133,7 @@ impl App {
                 // must show the client-ID input first (Enter starts the flow).
                 if self.spotify.status.as_ref().is_none_or(|s| !s.linked) {
                     self.close_picker();
-                    self.open_spotify_link_form();
+                    self.open_spot_link();
                 }
             }
             PickerId::PodcastFeeds => {
@@ -254,11 +254,11 @@ impl App {
     /// [`App::browse_title`]. Passing `None` for it is correct for every
     /// category except Spotify.
     pub(crate) fn reset_library_view(&mut self, category: usize, detail: Option<String>) {
-        self.reset_library_view_titled(category, detail, None);
+        self.reset_library_titled(category, detail, None);
     }
 
     /// [`Self::reset_library_view`], with an explicit display name.
-    pub(crate) fn reset_library_view_titled(
+    pub(crate) fn reset_library_titled(
         &mut self,
         category: usize,
         detail: Option<String>,
@@ -298,7 +298,7 @@ impl App {
         // Spotify pane: self-heal an empty playlist cache with a single
         // background sync so playlists appear without visiting Settings.
         if self.library_category == 5 {
-            self.maybe_auto_sync_spotify();
+            self.auto_sync_spotify();
         }
         self.set_list_pos(0);
         // Build the card for the category just entered. Charts and Radio had no
@@ -712,7 +712,7 @@ impl App {
     /// targets straight to `queue().add()`, which reads a filesystem path — so
     /// a chart row carrying a `spotify:` uri went to the library route, and one
     /// carrying no uri at all went to the empty path. Neither is a queue entry.
-    pub(crate) fn add_to_queue_rows(&self, keys: Vec<String>) -> usize {
+    pub(crate) fn queue_rows(&self, keys: Vec<String>) -> usize {
         if self.library_category == 12 && self.charts.selected_chart.is_some() {
             let rows = self.selectable_rows();
             let picked: Vec<ChartTrack> = keys

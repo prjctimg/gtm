@@ -213,7 +213,7 @@ impl App {
                                 // pane so a shifted list can't queue the
                                 // wrong tracks (or none).
                                 let targets = self.selected_play_targets();
-                                let added = self.add_to_queue_rows(targets);
+                                let added = self.queue_rows(targets);
                                 self.clear_selection();
                                 self.multiselect_mode = false;
                                 self.fetch_queue().await;
@@ -1515,7 +1515,7 @@ impl App {
                                     // own provider.
                                     let mut added = 0;
                                     if let Some(target) = self.play_target_at(self.list_pos()) {
-                                        added += self.add_to_queue_rows(vec![target]);
+                                        added += self.queue_rows(vec![target]);
                                     }
                                     self.fetch_queue().await;
                                     self.footer_notification = Some((
@@ -3151,7 +3151,7 @@ impl App {
                                 // carries a refresh_token and playlists
                                 // auto-sync).
                                 self.close_picker();
-                                self.open_spotify_link_form();
+                                self.open_spot_link();
                             } else if self.spotify.search_results.is_empty() {
                                 self.notify_typed(
                                     "System",
@@ -3658,7 +3658,7 @@ impl App {
                                                     .into_iter()
                                                     .collect()
                                             };
-                                        let added = self.add_to_queue_rows(targets);
+                                        let added = self.queue_rows(targets);
                                         self.fetch_queue().await;
                                         self.notify_typed(
                                             "System",

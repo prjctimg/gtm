@@ -257,7 +257,7 @@ pub struct SpotifyView {
     /// The Web API app id the last link flow was started with, so the
     /// completion toast can name the app the account is now bound to. `None`
     /// means the flow went out with librespot's id.
-    pub oauth_sent_client_id: Option<String>,
+    pub oauth_sent_id: Option<String>,
     pub search_debounce: Option<std::time::Instant>,
     pub web_seq: u64,
     /// Cover art for the SpotifySearch picker preview window, fetched from the

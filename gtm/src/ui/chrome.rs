@@ -1163,11 +1163,10 @@ impl Render {
         let want_playlist_card = app.in_spotify_playlists() && app.spotify.list_cover.is_some();
         // The Spotify drill-down shows its own highlighted track here rather
         // than inline with the list rows, so the list panes stay pure text.
-        let want_spot_track_card = app.in_spotify_playlist() && app.spotify.row_cover.is_some();
+        let want_row_card = app.in_spotify_playlist() && app.spotify.row_cover.is_some();
         // A chart row renders through the same track card, so it is governed by
         // `want_track_card` and needs no condition of its own.
-        let has_card =
-            (want_track_card || want_playlist_card || want_spot_track_card) && !is_small_height;
+        let has_card = (want_track_card || want_playlist_card || want_row_card) && !is_small_height;
         // Clearance between the list and the card: the padding row plus the
         // gap that keeps the artwork from reading as a clipped list row.
         let card_gap = if has_card {
@@ -2163,11 +2162,11 @@ impl Render {
         // being drawn into a zero-width rect and was not on screen at all.
         // Gating on `pane_focus` makes the existing `cycle_library_focus` states
         // swap the two views instead of just moving the highlight.
-        if (want_playlist_card || want_spot_track_card)
+        if (want_playlist_card || want_row_card)
             && left_info_area.height > 0
             && (info_sep_area.height > 0 || left_info_area.height > 0)
         {
-            Render::spotify_card_in_pane(f, left_info_area, app);
+            Render::spot_card(f, left_info_area, app);
         } else if app.show_preview
             && app.track_popup_visible
             && left_info_area.height >= info_block_h()
@@ -2632,15 +2631,15 @@ impl Render {
     ///
     /// The cover is never drawn inline with the list rows — the list panes stay
     /// pure text, and the row budget keeps its whole height.
-    pub(crate) fn spotify_card_in_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    pub(crate) fn spot_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         if app.in_spotify_playlist() {
-            return Self::spotify_track_in_pane(f, area, app);
+            return Self::spot_row(f, area, app);
         }
         Self::playlist_in_pane(f, area, app);
     }
 
     /// The highlighted playlist's name, owner and track count under its cover.
-    fn spotify_track_in_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn spot_row(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         // Copied out before the mutable borrow of the decoder state below, so
         // the text does not have to be read across it.
         let Some(track) = app.selected_spotify_track().cloned() else {

@@ -633,9 +633,9 @@ fn play_link_authorizes_with_librespot() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mgr = SpotifyManager::new(dir.clone());
-    mgr.set_web_client_id("0123456789abcdef0123456789abcdef");
+    mgr.set_web_id("0123456789abcdef0123456789abcdef");
     assert!(
-        mgr.has_own_web_quota(),
+        mgr.own_web_quota(),
         "the web api must be on its own app for this to be the interesting case"
     );
     assert!(mgr.needs_play_link(), "no playback credential exists yet");

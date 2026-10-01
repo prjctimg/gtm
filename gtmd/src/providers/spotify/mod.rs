@@ -310,7 +310,7 @@ impl SpotifyManager {
     }
 
     /// Whether the Web API has its own app id, i.e. its quota is its own.
-    pub fn has_own_web_quota(&self) -> bool {
+    pub fn own_web_quota(&self) -> bool {
         self.web_client_id() != LIBRESPOT_CLIENT_ID
     }
 
@@ -321,7 +321,7 @@ impl SpotifyManager {
     /// to the app that issued it, so swapping the id out from under one would
     /// make its next refresh fail. The caller is expected to run the OAuth flow
     /// immediately after this.
-    pub fn set_web_client_id(&self, id: &str) {
+    pub fn set_web_id(&self, id: &str) {
         self.save_client_id(id);
     }
 
@@ -1039,7 +1039,7 @@ impl SpotifyManager {
                     // Which app the Web API calls bill against. A `429` here is
                     // a shared-quota symptom, and the id is the only thing that
                     // distinguishes "contended" from "your own app is spent".
-                    if self.has_own_web_quota() {
+                    if self.own_web_quota() {
                         "own"
                     } else {
                         "shared (librespot)"
@@ -1134,13 +1134,13 @@ mod tests {
         // sets nothing behaves exactly as it did before the split.
         assert_eq!(mgr.web_client_id(), super::LIBRESPOT_CLIENT_ID);
         assert_eq!(mgr.token_client_id(), super::LIBRESPOT_CLIENT_ID);
-        assert!(!mgr.has_own_web_quota());
+        assert!(!mgr.own_web_quota());
 
         // The Connect leg is fixed and ignores the file entirely.
-        mgr.set_web_client_id("0123456789abcdef0123456789abcdef");
+        mgr.set_web_id("0123456789abcdef0123456789abcdef");
         assert_eq!(mgr.client_id(), super::LIBRESPOT_CLIENT_ID);
         assert_eq!(mgr.web_client_id(), "0123456789abcdef0123456789abcdef");
-        assert!(mgr.has_own_web_quota());
+        assert!(mgr.own_web_quota());
         // The issuer is remembered, so a later refresh is presented to the app
         // that actually minted the token.
         assert_eq!(mgr.token_client_id(), "0123456789abcdef0123456789abcdef");
@@ -1164,7 +1164,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut mgr = super::SpotifyManager::new(dir.clone());
-        mgr.set_web_client_id("0123456789abcdef0123456789abcdef");
+        mgr.set_web_id("0123456789abcdef0123456789abcdef");
 
         // The web leg linked, streaming scope and all. `needs_relink` is
         // therefore false, so the pre-split signal says everything is fine.
@@ -1247,7 +1247,7 @@ mod tests {
         let web = r#"{"access_token":"shared","expires_in":3600,"scope":"streaming"}"#;
         let mut mgr = super::SpotifyManager::new(dir.clone());
         // No id file: both legs fall back to librespot's app.
-        assert!(!mgr.has_own_web_quota());
+        assert!(!mgr.own_web_quota());
         mgr.set_token(web).await.expect("link");
         assert!(mgr.linked());
         assert!(
@@ -1273,9 +1273,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let web = r#"{"access_token":"mine","expires_in":3600,"scope":"streaming"}"#;
         let mut mgr = super::SpotifyManager::new(dir.clone());
-        mgr.set_web_client_id("0123456789abcdef0123456789abcdef");
+        mgr.set_web_id("0123456789abcdef0123456789abcdef");
         mgr.set_token(web).await.expect("link");
-        assert!(mgr.has_own_web_quota());
+        assert!(mgr.own_web_quota());
         assert!(
             mgr.needs_play_link(),
             "login5 refuses a token the session's app did not mint"
@@ -1301,7 +1301,7 @@ mod tests {
             let mut mgr = super::SpotifyManager::new(dir.clone());
             // The user's own app, so the web token is not a Connect credential
             // and a second one is genuinely required.
-            mgr.set_web_client_id("0123456789abcdef0123456789abcdef");
+            mgr.set_web_id("0123456789abcdef0123456789abcdef");
             mgr.set_token(web).await.expect("web link");
             assert!(mgr.needs_play_link());
             mgr.link_play(play).expect("playback link");

@@ -82,7 +82,7 @@ pub const LIBRARY_CATEGORIES: &[&str] = &[
 /// Sanitize a TOML `left_pane_lists` value: keep only canonical category
 /// names, drop duplicates, preserve user order. Empty (or fully unknown)
 /// input falls back to the full default set so the pane always renders.
-pub fn sanitize_left_pane_lists(names: &[String]) -> Vec<String> {
+pub fn clean_left_pane(names: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for n in names {
         if LIBRARY_CATEGORIES.contains(&n.as_str()) && !out.iter().any(|e| e == n) {
@@ -90,7 +90,7 @@ pub fn sanitize_left_pane_lists(names: &[String]) -> Vec<String> {
         }
     }
     if out.is_empty() {
-        default_left_pane_lists()
+        left_pane_defaults()
     } else {
         out
     }
@@ -919,7 +919,7 @@ impl App {
                 oauth_client_id: String::new(),
                 oauth_field: 0,
                 oauth_form_error: None,
-                oauth_sent_client_id: None,
+                oauth_sent_id: None,
                 search_debounce: None,
                 search_loading: false,
                 web_seq: 0,
@@ -1097,7 +1097,7 @@ impl App {
             health_report: None,
             hide_help_bar: true,
             hide_footer: false,
-            left_pane_lists: default_left_pane_lists(),
+            left_pane_lists: left_pane_defaults(),
             show_preview: true,
             pending_suspend: false,
             setup: SetupView::default(),

@@ -15,7 +15,7 @@ use crate::daemon::{Daemon, DaemonInner};
 /// parameter: an episode resolved this way is not a Spotify track and does not
 /// belong in `cache/spotify/`.
 #[cfg(feature = "youtube")]
-pub(crate) async fn spotify_yt_fallback_in(
+pub(crate) async fn yt_fallback(
     inner: &DaemonInner,
     subdir: &str,
     cache_key: &str,
@@ -49,7 +49,7 @@ pub(crate) async fn spotify_yt_fallback(
     cache_key: &str,
     query: &str,
 ) -> Result<String, String> {
-    spotify_yt_fallback_in(inner, "spotify", cache_key, query).await
+    yt_fallback(inner, "spotify", cache_key, query).await
 }
 
 #[cfg(not(feature = "youtube"))]

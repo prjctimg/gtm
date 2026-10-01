@@ -53,7 +53,7 @@ pub(crate) fn default_icon_style() -> String {
     "mdi".to_string()
 }
 
-pub(crate) fn default_left_pane_lists() -> Vec<String> {
+pub(crate) fn left_pane_defaults() -> Vec<String> {
     LIBRARY_CATEGORIES.iter().map(|s| s.to_string()).collect()
 }
 
@@ -97,7 +97,7 @@ pub struct Prefs {
     pub(crate) footer_key_action: FooterKeyAction,
     #[serde(default = "default_cover_provider")]
     pub(crate) cover_provider: String,
-    #[serde(default = "default_cover_cache_mb")]
+    #[serde(default = "cover_cache_mb")]
     pub(crate) cover_cache_mb: u64,
     /// Discord application id for Rich Presence, written by the `Alt+X` form.
     /// `None` disables presence.
@@ -114,7 +114,7 @@ pub struct Prefs {
     /// keep working. Unknown names are ignored; an empty list falls back to the
     /// full default set so the picker can never be bricked from TOML. Indices
     /// into `LIBRARY_CATEGORIES` stay stable — this only filters/orders them.
-    #[serde(default = "default_left_pane_lists")]
+    #[serde(default = "left_pane_defaults")]
     pub(crate) left_pane_lists: Vec<String>,
     /// Master switch for the left-pane track preview card, which is now all the
     /// left pane holds.
@@ -126,7 +126,7 @@ pub(crate) fn default_cover_provider() -> String {
     "auto".into()
 }
 
-pub(crate) fn default_cover_cache_mb() -> u64 {
+pub(crate) fn cover_cache_mb() -> u64 {
     512
 }
 
@@ -278,12 +278,12 @@ impl Default for Prefs {
             notification_modes: default_notification_modes(),
             footer_key_action: FooterKeyAction::default(),
             cover_provider: default_cover_provider(),
-            cover_cache_mb: default_cover_cache_mb(),
+            cover_cache_mb: cover_cache_mb(),
             discord_id: None,
             auto_fetch_lyrics: default_fetch_lyrics(),
             icon_style: default_icon_style(),
             hide_footer: false,
-            left_pane_lists: default_left_pane_lists(),
+            left_pane_lists: left_pane_defaults(),
             show_preview: true,
         }
     }

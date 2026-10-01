@@ -111,7 +111,7 @@ fn stale_left_pane_lists_keep_known_categories() {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    let out = sanitize_left_pane_lists(&names);
+    let out = clean_left_pane(&names);
     assert_eq!(
         out.len(),
         13,

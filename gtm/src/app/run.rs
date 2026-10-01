@@ -25,7 +25,7 @@ impl App {
         match service.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
             Some("spotify") => {
                 self.setup.selection = 0;
-                self.open_spotify_link_form();
+                self.open_spot_link();
             }
             Some("lastfm" | "last.fm") => {
                 self.setup.selection = 1;
@@ -57,7 +57,7 @@ impl App {
     /// already supplied one does not retype it on every re-link — the id
     /// persists on disk anyway, and this only avoids a pointless retype when
     /// the form is reopened in the same session.
-    pub fn open_spotify_link_form(&mut self) {
+    pub fn open_spot_link(&mut self) {
         self.spotify.oauth_port = "8990".to_string();
         self.spotify.oauth_field = 0;
         self.spotify.oauth_form_error = None;
@@ -144,7 +144,7 @@ impl App {
 
         // Left-pane lists + preview toggle (sanitized: unknown names dropped,
         // empty falls back to the full set; active category clamped in).
-        self.left_pane_lists = sanitize_left_pane_lists(&prefs.left_pane_lists);
+        self.left_pane_lists = clean_left_pane(&prefs.left_pane_lists);
         self.show_preview = prefs.show_preview;
         if !self
             .visible_library_indices()
@@ -589,7 +589,7 @@ impl App {
                         // sync already finished. The app is named because it
                         // decides which rate limit the sync is spending, and
                         // nothing on screen said so before.
-                        let app_desc = match self.spotify.oauth_sent_client_id.as_deref() {
+                        let app_desc = match self.spotify.oauth_sent_id.as_deref() {
                             Some(id) if !id.trim().is_empty() => {
                                 format!("via your own app ({})", mask_credential(id.trim()))
                             }
@@ -605,7 +605,7 @@ impl App {
                         // The id is persisted daemon-side; the form's copy is a
                         // credential that has no further use, so do not keep it
                         // in pane state for the rest of the session.
-                        self.spotify.oauth_sent_client_id = None;
+                        self.spotify.oauth_sent_id = None;
                         self.spotify.oauth_client_id.clear();
                     } else if self.spotify.oauth_pending && !status.linked {
                         // The OAuth browser flow failed (e.g. no network): stop

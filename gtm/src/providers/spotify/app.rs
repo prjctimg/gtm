@@ -100,7 +100,7 @@ impl App {
         // app the account ended up bound to. Nothing downstream reported it
         // before, so a link that silently fell back to the shared app was
         // indistinguishable from a successful one.
-        self.spotify.oauth_sent_client_id = client_id.clone();
+        self.spotify.oauth_sent_id = client_id.clone();
         tokio::spawn(async move {
             match c.spotify().oauth_start_with(port, client_id).await {
                 Ok(url) => {
@@ -128,7 +128,7 @@ impl App {
     /// the track's album-image URL, so scrolling the playlist loads cover art.
     /// Generation-guarded by URL via `spotify_popup_slot` (stale replies from
     /// earlier rows are dropped).
-    pub(crate) fn fetch_spotify_popup_cover(&mut self) {
+    pub(crate) fn fetch_spot_cover(&mut self) {
         let Some(track) = self.selected_spotify_track().cloned() else {
             self.clear_popup_cover();
             return;
@@ -283,7 +283,7 @@ impl App {
     /// re-triggering on every pane visit (accounts can legitimately have zero
     /// playlists); the daemon additionally auto-syncs at startup with
     /// retry-forever backoff, so this is a second net, not the primary.
-    pub(crate) fn maybe_auto_sync_spotify(&mut self) {
+    pub(crate) fn auto_sync_spotify(&mut self) {
         let linked = self.spotify.status.as_ref().is_some_and(|s| s.linked);
         if linked && !self.spotify.synced_once && self.spotify.playlists.is_empty() {
             self.trigger_spotify_sync(false);
@@ -384,7 +384,7 @@ impl App {
     /// ahead of the cursor so fast scrolling warms the daemon's image cache
     /// (covers are keyed by URL, not by a local library id). Fires in the
     /// background and never blocks the UI or surfaces errors.
-    pub(crate) fn preload_upcoming_spotify_covers(&mut self) {
+    pub(crate) fn preload_spot_covers(&mut self) {
         if !self.in_spotify_playlist() {
             return;
         }

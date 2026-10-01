@@ -3152,8 +3152,12 @@ fn the_lyrics_pane_carries_no_chrome() {
     // One call site shape, so neither layout can reintroduce a fit-dependent
     // header by way of the argument that used to select it.
     assert_eq!(
-        chrome.matches("Render::lyrics_pane(f, lyrics_area, app)").count()
-            + chrome.matches("Render::lyrics_pane(f, lyrics, app)").count(),
+        chrome
+            .matches("Render::lyrics_pane(f, lyrics_area, app)")
+            .count()
+            + chrome
+                .matches("Render::lyrics_pane(f, lyrics, app)")
+                .count(),
         2,
         "the lyrics pane is no longer called without a layout argument"
     );

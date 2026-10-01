@@ -246,12 +246,7 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    pub(crate) fn render_preview(
-        f: &mut ratatui::Frame,
-        area: Rect,
-        app: &mut App,
-        idx: usize,
-    ) {
+    pub(crate) fn render_preview(f: &mut ratatui::Frame, area: Rect, app: &mut App, idx: usize) {
         app.update_preview_cover(idx);
         // Use the same transparent/filled background as the picker panel so the
         // strip never shows a mismatched solid background over the rest of the

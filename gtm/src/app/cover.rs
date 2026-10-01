@@ -114,7 +114,7 @@ impl App {
             // album-image URL (no local library id), fetched on every cursor
             // move so scrolling the list loads cover art.
             self.popup_track_id = None;
-            self.fetch_spotify_popup_cover();
+            self.fetch_spot_cover();
             return;
         }
 
@@ -390,7 +390,7 @@ impl App {
     /// the background and never blocks the UI or surfaces errors. Also warms
     /// Spotify drill-down album covers via their image URLs.
     pub fn preload_row_covers(&mut self) {
-        self.preload_upcoming_spotify_covers();
+        self.preload_spot_covers();
         // A chart's rows are provider URLs with no library id, so `track_id_at`
         // finds nothing for them and the loop below would warm nothing.
         if self.library_category == 12 {
@@ -490,7 +490,8 @@ impl App {
         tokio::spawn(async move {
             // Report failure as `None` too, so the pending-gen guard is
             // released and a later save/queue change can retry the lookup.
-            let cover = if let Ok(Some(b64)) = client.art().cover_for(tid, Some(key.clone())).await {
+            let cover = if let Ok(Some(b64)) = client.art().cover_for(tid, Some(key.clone())).await
+            {
                 base64::engine::general_purpose::STANDARD.decode(&b64).ok()
             } else {
                 None

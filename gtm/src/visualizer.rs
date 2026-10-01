@@ -182,7 +182,7 @@ fn heat_color(heat: f32, theme: &AppTheme) -> Color {
 // ─── Band helpers ───────────────────────────────────────────────────────────
 
 /// Map an Hz edge onto the log-spaced index space of the analyzer's bins.
-fn freq_to_bin_pos(freq: f64, bins: usize) -> f64 {
+fn bin_pos(freq: f64, bins: usize) -> f64 {
     if bins == 0 {
         return 0.0;
     }
@@ -376,7 +376,7 @@ impl AudioVisualizer {
         if is_playing && !audio_levels.is_empty() {
             self.resting = false;
             self.bands_prev.copy_from_slice(&self.bands);
-            let edges = band_edges_hz_to_bins(audio_levels.len());
+            let edges = edges_to_bins(audio_levels.len());
             for (b, slot) in self.bands.iter_mut().enumerate() {
                 let level = average_bins_linear(audio_levels, edges[b], edges[b + 1]);
                 let prev = self.bands_prev[b];
@@ -456,8 +456,8 @@ impl AudioVisualizer {
         let mut acc = [0.0f32; 2];
         let mut n = [0usize; 2];
         // `as_chunks`, clippy's suggested fix for constant-size chunks, is
-        // nightly-only; keep the stable chunks_exact form.
-        #[allow(clippy::chunks_exact_to_as_chunks)]
+        // nightly-only; keep the stable `chunks_exact` form.
+        #[allow(clippy::as_chunks)]
         for pair in self.wave_samples.chunks_exact(2) {
             acc[0] += pair[0] * pair[0];
             acc[1] += pair[1] * pair[1];
@@ -570,7 +570,7 @@ impl AudioVisualizer {
             let band = if self.resting {
                 0.0
             } else {
-                sample_band_linear_f64(&self.bands, t)
+                band_at_f64(&self.bands, t)
             };
             let sparkle = (self.next_rng() % 100) as f64 / 100.0 * 0.18;
             let base = 0.30 + 0.70 * band + sparkle;
@@ -1169,7 +1169,7 @@ fn sample_band_linear(bands: &[f32], pos: f64) -> f32 {
 }
 
 /// Linearly sample `[f32; N]` band values at fractional position `t`.
-fn sample_band_linear_f64(bands: &[f32], t: f64) -> f64 {
+fn band_at_f64(bands: &[f32], t: f64) -> f64 {
     let n = bands.len();
     if n == 0 {
         return 0.0;
@@ -1188,10 +1188,10 @@ fn sample_band_linear_f64(bands: &[f32], t: f64) -> f64 {
 }
 
 /// Band edges (Hz) → fractional bin positions for the current bin count.
-fn band_edges_hz_to_bins(bins: usize) -> Vec<f64> {
+fn edges_to_bins(bins: usize) -> Vec<f64> {
     LEGACY_EDGES_HZ
         .iter()
-        .map(|&hz| freq_to_bin_pos(hz, bins))
+        .map(|&hz| bin_pos(hz, bins))
         .collect()
 }
 
@@ -1290,7 +1290,7 @@ mod tests {
     #[test]
     fn band_edges_map_onto_bins() {
         // 10 bands → 11 edges over a 64-bin spectrum.
-        let edges = band_edges_hz_to_bins(64);
+        let edges = edges_to_bins(64);
         assert_eq!(edges.len(), BAND_COUNT + 1);
         assert!(edges.windows(2).all(|w| w[0] <= w[1]));
         assert_eq!(edges[0], 0.0); // 20 Hz clamps below the 30 Hz floor

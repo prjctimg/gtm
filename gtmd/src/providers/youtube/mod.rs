@@ -61,7 +61,7 @@ pub struct YoutubeManager {
     /// Browser cookies source forwarded to yt-dlp as `--cookies-from-browser`
     /// (e.g. `chrome`, `firefox`, `brave`). Takes precedence over `cookie_file`.
     /// When neither is configured, a browser is auto-detected from its standard
-    /// cookie location (see [`detect_browser_cookie_source`]).
+    /// cookie location (see [`cookie_source`]).
     cookie_source: Option<String>,
     /// JS interpreter forwarded to yt-dlp as `--js-runtime`.
     js_runtime: Option<String>,
@@ -202,7 +202,7 @@ fn profile_has_cookies(root: &Path) -> bool {
 /// per-OS location. Returns the browser name yt-dlp accepts for
 /// `--cookies-from-browser` (e.g. `chrome`, `brave`, `firefox`, `edge`).
 #[cfg(target_os = "linux")]
-fn detect_browser_cookie_source() -> Option<&'static str> {
+fn cookie_source() -> Option<&'static str> {
     let home = dirs::home_dir()?;
     let base = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
     for (name, rel) in LINUX_BROWSER_COOKIES {
@@ -214,7 +214,7 @@ fn detect_browser_cookie_source() -> Option<&'static str> {
 }
 
 #[cfg(target_os = "macos")]
-fn detect_browser_cookie_source() -> Option<&'static str> {
+fn cookie_source() -> Option<&'static str> {
     let home = dirs::home_dir()?;
     let base = dirs::config_dir().unwrap_or_else(|| home.join("Library/Application Support"));
     for (name, rel) in MACOS_BROWSER_COOKIES {
@@ -231,7 +231,7 @@ fn detect_browser_cookie_source() -> Option<&'static str> {
 }
 
 #[cfg(target_os = "windows")]
-fn detect_browser_cookie_source() -> Option<&'static str> {
+fn cookie_source() -> Option<&'static str> {
     let base = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
     for (name, rel) in WINDOWS_BROWSER_COOKIES {
         if base.join(rel).exists() {
@@ -247,7 +247,7 @@ fn detect_browser_cookie_source() -> Option<&'static str> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn detect_browser_cookie_source() -> Option<&'static str> {
+fn cookie_source() -> Option<&'static str> {
     None
 }
 
@@ -367,7 +367,7 @@ impl YoutubeManager {
         } else if let Some(path) = &self.cookie_file {
             args.push("--cookies".into());
             args.push(path.as_os_str().into());
-        } else if let Some(browser) = detect_browser_cookie_source() {
+        } else if let Some(browser) = cookie_source() {
             args.push("--cookies-from-browser".into());
             args.push(browser.into());
         }

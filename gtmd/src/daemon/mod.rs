@@ -1263,7 +1263,7 @@ impl Cmd {
             .wrapping_add(1);
         // Re-arming supersedes any pending stop-at-track-end from the previous
         // timer.
-        inner.sleep_stop_at_track_end.store(false, Ordering::SeqCst);
+        inner.sleep_at_end.store(false, Ordering::SeqCst);
         let event_tx = inner.event_tx.clone();
         let state = inner.state.clone();
 
@@ -1300,13 +1300,13 @@ impl Cmd {
                 (
                     s.current_track
                         .as_ref()
-                        .map(|t| Daemon::path_is_live_stream(&t.path))
+                        .map(|t| Daemon::is_live_stream(&t.path))
                         .unwrap_or(true),
                     s.status,
                 )
             };
             if !stop_immediately && !endless && status == PlaybackStatus::Playing {
-                inner.sleep_stop_at_track_end.store(true, Ordering::SeqCst);
+                inner.sleep_at_end.store(true, Ordering::SeqCst);
                 {
                     let mut s = state.write().await;
                     s.sleep_timer = None;
@@ -1324,7 +1324,7 @@ impl Cmd {
             // Expiry must actually silence the output, not just flip the
             // status flag: stop the mixer and any Web (Spotify) stream, then
             // report the state change.
-            Daemon::sleep_timer_expiry_stop(&inner).await;
+            Daemon::sleep_expiry_stop(&inner).await;
         });
 
         Ok(DaemonRes::Ok)
@@ -1334,7 +1334,7 @@ impl Cmd {
         // Bump the generation so the armed countdown (if any) backs out on its
         // next tick instead of stopping playback underneath us.
         inner.sleep_gen.fetch_add(1, Ordering::SeqCst);
-        inner.sleep_stop_at_track_end.store(false, Ordering::SeqCst);
+        inner.sleep_at_end.store(false, Ordering::SeqCst);
         let mut state = inner.state.write().await;
         state.sleep_timer = None;
         state.version += 1;
@@ -1353,7 +1353,7 @@ impl Cmd {
             state.set_low_power(enabled)?;
         }
         inner.sleep_gen.fetch_add(1, Ordering::SeqCst);
-        inner.sleep_stop_at_track_end.store(false, Ordering::SeqCst);
+        inner.sleep_at_end.store(false, Ordering::SeqCst);
         if enabled {
             let was_playing = {
                 let state = inner.state.read().await;
@@ -1594,7 +1594,7 @@ pub(crate) struct DaemonInner {
     /// naturally (`AudioEvent::Finished`), at which point the daemon stops and
     /// reports `SleepTimerExpired` instead of auto-advancing. Cleared whenever
     /// the user re-arms/cancels the timer or manually starts new playback.
-    pub(crate) sleep_stop_at_track_end: Arc<AtomicBool>,
+    pub(crate) sleep_at_end: Arc<AtomicBool>,
     /// Monotonic counter bumped on every play/stop path. Crossfade tasks
     /// capture it at spawn time and abort if it has changed, preventing a
     /// stale auto-advance from overwriting a user-initiated playback switch.
@@ -1741,7 +1741,7 @@ pub(crate) fn is_rate_limit(err: &str) -> bool {
 /// sit in the OS keyring (or the config-dir file fallback) indefinitely. This
 /// also covers secrets written by older builds before the removal, which no
 /// config migration can reach.
-fn purge_retired_provider_secrets() {
+fn purge_retired_secrets() {
     for key in RETIRED_PROVIDER_SECRET_KEYS {
         delete_secret(key);
     }
@@ -2018,7 +2018,7 @@ impl Daemon {
             last_pos_broadcast: tokio::sync::Mutex::new(None),
             icy_title: Arc::new(std::sync::Mutex::new(None)),
             sleep_gen: Arc::new(AtomicU64::new(0)),
-            sleep_stop_at_track_end: Arc::new(AtomicBool::new(false)),
+            sleep_at_end: Arc::new(AtomicBool::new(false)),
             play_session: Arc::new(AtomicU64::new(0)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             active_clients: AtomicUsize::new(0),
@@ -2353,7 +2353,7 @@ impl Daemon {
             });
         }
 
-        purge_retired_provider_secrets();
+        purge_retired_secrets();
 
         let provider_inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
@@ -3338,7 +3338,7 @@ impl Daemon {
     /// entry has no duration, so previewing one as the next track pointed the
     /// crossfade and the cover preload at a stream that never ends.
     fn next_track(state: &DaemonState) -> Option<TrackInfo> {
-        let finite = |t: &TrackInfo| t.duration > 0.0 && !Self::path_is_live_stream(&t.path);
+        let finite = |t: &TrackInfo| t.duration > 0.0 && !Self::is_live_stream(&t.path);
         let cur_is_queued = state
             .current_track
             .as_ref()
@@ -3659,7 +3659,7 @@ impl Daemon {
         inner.play_session.fetch_add(1, Ordering::Release);
         // A pending stop-at-track-end sleep timer no longer applies once the
         // user has explicitly stopped playback.
-        inner.sleep_stop_at_track_end.store(false, Ordering::SeqCst);
+        inner.sleep_at_end.store(false, Ordering::SeqCst);
         {
             let mut mixer = inner.mixer.lock().await;
             let _ = mixer.stop();
@@ -3689,7 +3689,7 @@ impl Daemon {
     /// (Spotify/yt-dlp) stream, reset the transport, and report the state
     /// change. Used by the immediate expiry path and by the deferred
     /// stop-at-track-end path once the current finite track finishes.
-    async fn sleep_timer_expiry_stop(inner: &DaemonInner) {
+    async fn sleep_expiry_stop(inner: &DaemonInner) {
         {
             let mut mixer = inner.mixer.lock().await;
             let _ = mixer.stop();
@@ -3709,7 +3709,7 @@ impl Daemon {
     /// Mirrors the client's `is_live_stream`: `radio://` stations and bare
     /// `http(s)://` stream URLs (LoadStream) have no defined track end, so a
     /// deferred (stop-at-end-of-track) sleep timer must not wait for one.
-    fn path_is_live_stream(path: &str) -> bool {
+    fn is_live_stream(path: &str) -> bool {
         if path.starts_with("radio://") {
             return true;
         }
@@ -4033,10 +4033,10 @@ impl Daemon {
                 // current finite track is within the crossfade window: promotion
                 // would revive playback via the standby source, defeating the
                 // deferral. Stop instead — the track's natural end is imminent.
-                if inner.sleep_stop_at_track_end.load(Ordering::SeqCst)
+                if inner.sleep_at_end.load(Ordering::SeqCst)
                     && inner.crossfade_loaded_for.lock().await.is_some()
                 {
-                    Daemon::sleep_timer_expiry_stop(inner).await;
+                    Daemon::sleep_expiry_stop(inner).await;
                     return;
                 }
                 if inner.crossfade_loaded_for.lock().await.is_some()
@@ -4140,7 +4140,7 @@ impl Daemon {
                     && dur > 0.0
                     && (dur - pos) <= cf.duration_secs as f64 + 0.15
                     && let Some(track) = &next
-                    && !inner.sleep_stop_at_track_end.load(Ordering::SeqCst)
+                    && !inner.sleep_at_end.load(Ordering::SeqCst)
                 {
                     let _ = Self::try_start_crossfade(inner, track).await;
                 }
@@ -4178,8 +4178,8 @@ impl Daemon {
                 }
                 // Deferred sleep timer: the current finite track just ended
                 // naturally, so stop instead of advancing to the next track.
-                if inner.sleep_stop_at_track_end.swap(false, Ordering::SeqCst) {
-                    Self::sleep_timer_expiry_stop(inner).await;
+                if inner.sleep_at_end.swap(false, Ordering::SeqCst) {
+                    Self::sleep_expiry_stop(inner).await;
                     return;
                 }
                 let was_crossfading = inner.crossfade_loaded_for.lock().await.is_some();

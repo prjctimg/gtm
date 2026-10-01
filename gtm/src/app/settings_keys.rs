@@ -159,7 +159,7 @@ impl App {
             1 => match opt {
                 0 => self.pickers.open(PickerId::ThemePicker),
                 1 => self.cycle_theme_mode(),
-                2 => self.open_audio_device_picker(),
+                2 => self.open_audio_picker(),
                 3 => {
                     self.transparent_bg = !self.transparent_bg;
                     save_prefs(&self.current_prefs());

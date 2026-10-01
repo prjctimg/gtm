@@ -275,7 +275,7 @@ impl App {
     /// Open the OS output-device picker and fetch the device list. The list
     /// arrives asynchronously, so the picker renders "System default" alone
     /// until the daemon answers.
-    pub(crate) fn open_audio_device_picker(&mut self) {
+    pub(crate) fn open_audio_picker(&mut self) {
         self.audio_devices.clear();
         // Preselect the row that matches the saved device so Enter is a no-op
         // rather than an accidental switch to "System default".

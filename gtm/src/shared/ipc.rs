@@ -618,7 +618,7 @@ impl DaemonReq {
             DaemonReq::GetArtistCoverArt { .. } => "artist_cover_art",
             DaemonReq::SetCoverProvider { .. } => "set_cover_provider",
             DaemonReq::SetCoverCache { .. } => "set_cover_cache",
-            DaemonReq::GetCoverCacheStat => "get_cover_cache_stat",
+            DaemonReq::GetCoverCacheStat => "cover_cache_stat",
             DaemonReq::GetLyrics { .. } => "get_lyrics",
             DaemonReq::LyricsSearch { .. } => "lyrics_search",
             DaemonReq::SpotifySetToken { .. } => "spotify_set_token",
@@ -713,7 +713,7 @@ impl DaemonReq {
             "yt_search_cancel" => DaemonReq::YtSearchCancel,
             "yt_download_poll" => DaemonReq::YtDownloadPoll,
             "yt_playlist_poll" => DaemonReq::YtFetchPlaylistPoll,
-            "get_cover_cache_stat" => DaemonReq::GetCoverCacheStat,
+            "cover_cache_stat" => DaemonReq::GetCoverCacheStat,
             "spotify_cancel_oauth" => DaemonReq::SpotifyCancelOauth,
             "spotify_clear" => DaemonReq::SpotifyClear,
             "spotify_status" => DaemonReq::SpotifyStatus,
@@ -2265,7 +2265,7 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "get_cover_cache_stat" => {
+            "cover_cache_stat" => {
                 #[derive(serde::Deserialize)]
                 struct Stat {
                     disk_bytes: u64,

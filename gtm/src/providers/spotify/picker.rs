@@ -23,7 +23,7 @@ pub(crate) fn spotify_waiting_lines(app: &App) -> Vec<Line<'static>> {
         // step is not obvious: the browser opens a second tab, against gtm's
         // own app, because Spotify will not let one app's token stand in for
         // another. Without a line here the extra tab reads as an intruder.
-        if app.spotify.oauth_sent_client_id.is_some() {
+        if app.spotify.oauth_sent_id.is_some() {
             lines.push(Line::from(Span::styled(
                 "A second tab then opens for playback — approve it too.",
                 Style::default().fg(app.theme.fg_dim),

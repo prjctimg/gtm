@@ -171,7 +171,7 @@ impl Spotify {
         let resolved = {
             let mgr = inner.spotify.lock().await;
             if let Some(id) = client_id.map(str::trim).filter(|s| !s.is_empty()) {
-                mgr.set_web_client_id(id);
+                mgr.set_web_id(id);
             }
             mgr.web_client_id()
         };
@@ -336,7 +336,7 @@ impl Spotify {
         let url = flow.authorize_url();
         info!(
             "spotify playback link: authorizing with gtm's app (the web api uses {}), port {port}",
-            if inner.spotify.lock().await.has_own_web_quota() {
+            if inner.spotify.lock().await.own_web_quota() {
                 "your own app"
             } else {
                 "the same app"
