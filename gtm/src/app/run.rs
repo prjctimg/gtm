@@ -1198,6 +1198,9 @@ impl App {
                             self.popup_cover_sync();
                         }
                     }
+                    IpcResult::ClipboardPaste(field, text) => {
+                        self.apply_paste(field, &text);
+                    }
                     IpcResult::QueuePreviewCover(cover, key, fetch_gen) => {
                         if !no_image_protocol()
                             && self.queue.preview_slot.id.as_deref() == Some(&key)

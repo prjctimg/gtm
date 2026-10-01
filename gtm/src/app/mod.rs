@@ -396,6 +396,9 @@ pub(crate) enum IpcResult {
     CoverArt(Option<Vec<u8>>, Option<i64>, u64),
     PopupCoverArt(Option<Vec<u8>>, i64, u64),
     QueuePreviewCover(Option<Vec<u8>>, String, u64),
+    /// Text read from the system clipboard for a form field, named because the
+    /// form may have closed while the paste tool was running.
+    ClipboardPaste(ClipField, String),
     PickerPreviewCover(Option<Vec<u8>>, i64, u64),
     MetadataCoverArt(Option<Vec<u8>>, i64, u64),
     ArtistCoverArt(Option<Vec<u8>>, String, u64),
@@ -539,6 +542,44 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
             .map_err(|e| format!("write to `{tool}`: {e}"))?;
     } // stdin dropped -> EOF; wl-copy/xclip detach and serve the selection.
     Ok(())
+}
+
+/// Read the system clipboard, using the same CLI ladder as
+/// [`copy_to_clipboard`] and for the same reason: it is one platform tool per
+/// desktop, and a crate would be a dependency for two shell-outs.
+///
+/// Blocking where the copy is not: these tools exit once they have served the
+/// request rather than detaching, so the caller runs this off the UI thread.
+/// X11 needs `xclip -selection clipboard` — its default selection is PRIMARY,
+/// which is the middle-click buffer, not the one every paste reads.
+pub(crate) async fn paste_from_clipboard() -> Result<String, String> {
+    let (tool, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("pbpaste", &[])
+    } else if cfg!(target_os = "windows") {
+        ("powershell", &["-NoProfile", "-Command", "Get-Clipboard"])
+    } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        ("wl-paste", &["--no-newline"])
+    } else if std::env::var_os("DISPLAY").is_some() {
+        ("xclip", &["-selection", "clipboard", "-o"])
+    } else {
+        ("wl-paste", &["--no-newline"])
+    };
+    let tool = tool.to_string();
+    let name = tool.clone();
+    let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+    let out =
+        tokio::task::spawn_blocking(move || std::process::Command::new(tool).args(&args).output())
+            .await
+            .map_err(|e| format!("clipboard task failed: {e}"))?
+            .map_err(|e| format!("`{name}` unavailable: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "`{}` failed: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Open the OAuth URL in a browser. When no opener works the authorize URL is
@@ -1479,6 +1520,69 @@ impl App {
         self.pickers.close_top();
     }
 
+    /// Value of `field`, or `None` when it is not currently focusable.
+    pub(crate) fn field_value(&self, field: &ClipField) -> Option<String> {
+        Some(match field {
+            ClipField::LastfmKey => self.setup.lastfm_api_key.clone(),
+            ClipField::DiscordId => self.setup.discord_input.clone(),
+            ClipField::YoutubeCookie => self.setup.youtube_cookie_input.clone(),
+            ClipField::PodcastUrl => self.pickers.top()?.query.clone(),
+            ClipField::StreamUrl => self.pickers.top()?.query.clone(),
+            ClipField::SleepMinutes => self.sleep_timer.input_buf.clone(),
+            ClipField::LastfmSecret => self.setup.lastfm_api_secret.clone(),
+        })
+    }
+
+    /// The form field `Ctrl+V` and `Ctrl+X` apply to, if a form is open.
+    ///
+    /// Only the forms with a typed credential or a pasted URL qualify. A
+    /// search box is not one: its query is already editable and a paste into it
+    /// arrives as a bracketed-paste event, which is the terminal's own path and
+    /// needs no clipboard tool.
+    pub(crate) fn clipboard_field(&self) -> Option<(ClipField, String)> {
+        let id = self.pickers.top()?.id;
+        let field = match id {
+            PickerId::LastfmAuth => match self.setup.lastfm_focus {
+                0 => ClipField::LastfmKey,
+                _ => ClipField::LastfmSecret,
+            },
+            PickerId::DiscordSetup => ClipField::DiscordId,
+            PickerId::YoutubeSetup => ClipField::YoutubeCookie,
+            PickerId::PodcastSubscribe => ClipField::PodcastUrl,
+            PickerId::LoadStream => ClipField::StreamUrl,
+            PickerId::SleepTimer => ClipField::SleepMinutes,
+            _ => return None,
+        };
+        Some((field.clone(), self.field_value(&field)?))
+    }
+
+    /// Append pasted text to a field, keeping each form's own rule about what a
+    /// valid character is.
+    fn apply_paste(&mut self, field: ClipField, text: &str) {
+        match field {
+            ClipField::LastfmKey => self.setup.lastfm_api_key.push_str(text),
+            ClipField::LastfmSecret => self.setup.lastfm_api_secret.push_str(text),
+            ClipField::DiscordId => {
+                // A Discord application id is digits, so a paste carrying
+                // anything else is rejected rather than stored: the form would
+                // otherwise accept it a character at a time and only complain
+                // on Enter, by which point the id looks plausible.
+                if text.chars().all(|c| c.is_ascii_digit()) {
+                    self.setup.discord_input.push_str(text);
+                }
+            }
+            // A cookie file path or a feed URL is one line, so a multi-line
+            // paste is flattened rather than silently truncated mid-path.
+            ClipField::YoutubeCookie => self.setup.youtube_cookie_input.push_str(text.trim()),
+            ClipField::PodcastUrl | ClipField::StreamUrl => {
+                if let Some(top) = self.pickers.top_mut() {
+                    top.query.push_str(text.trim());
+                }
+            }
+            ClipField::SleepMinutes => self.sleep_timer.input_buf.push_str(text.trim()),
+        }
+    }
+
     /// Add the tracks highlighted in the post-create multi-select picker to the
     /// pending playlist, then close the picker.
     fn commit_playlist_selection(&mut self) {
@@ -1547,6 +1651,24 @@ impl App {
                 }
                 PickerId::PlaylistSelect if self.playlist_creating => {
                     top.query.push_str(text);
+                }
+                // A bracketed paste from the terminal reaches the form fields
+                // directly, which is the path that works without any clipboard
+                // tool at all — and the reason Ctrl+V below is a convenience
+                // rather than the only way in.
+                PickerId::LastfmAuth => {
+                    let f = match self.setup.lastfm_focus {
+                        0 => ClipField::LastfmKey,
+                        _ => ClipField::LastfmSecret,
+                    };
+                    self.apply_paste(f, text);
+                }
+                PickerId::DiscordSetup => self.apply_paste(ClipField::DiscordId, text),
+                PickerId::YoutubeSetup => self.apply_paste(ClipField::YoutubeCookie, text),
+                PickerId::PodcastSubscribe | PickerId::LoadStream => {
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.query.push_str(text.trim());
+                    }
                 }
                 PickerId::YTSearch
                 | PickerId::SearchLibrary

@@ -559,3 +559,18 @@ pub enum LyricsKind {
     /// whatever is playing.
     Transcript,
 }
+
+/// A text field a clipboard paste or copy is aimed at.
+///
+/// Which field is focusable differs per form, so the paste result names one of
+/// these rather than reaching into a form the user has since closed.
+#[derive(Clone, Debug)]
+pub(crate) enum ClipField {
+    LastfmKey,
+    LastfmSecret,
+    DiscordId,
+    YoutubeCookie,
+    PodcastUrl,
+    StreamUrl,
+    SleepMinutes,
+}

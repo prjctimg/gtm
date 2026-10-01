@@ -2385,6 +2385,62 @@ impl App {
             return;
         }
 
+        // Clipboard in a form field, on Ctrl+V / Ctrl+X.
+        //
+        // Matched before the bare `Char` arms below, which have no modifier
+        // guard: crossterm decodes Ctrl+V as `Char('v')` on a normal terminal,
+        // so an unguarded arm types a literal v where a paste was asked for.
+        // The paste runs off the UI thread because these tools block, and the
+        // result comes back through the event stream rather than mutating the
+        // field from a spawned task.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('v') | KeyCode::Char('x'))
+        {
+            let copy = matches!(key.code, KeyCode::Char('x'));
+            if let Some((field, value)) = self.clipboard_field() {
+                match copy {
+                    true => match copy_to_clipboard(&value) {
+                        Ok(()) => self.notify_typed(
+                            "System",
+                            "Copied to clipboard",
+                            NotificationKind::Success,
+                            true,
+                            NotifType::System,
+                        ),
+                        Err(e) => self.notify_typed(
+                            "System",
+                            format!("Copy failed: {e}"),
+                            NotificationKind::Error,
+                            true,
+                            NotifType::System,
+                        ),
+                    },
+                    false => {
+                        let ipc_tx = self.ipc_tx.clone();
+                        self.notify_typed(
+                            "System",
+                            "Pasting…",
+                            NotificationKind::Info,
+                            true,
+                            NotifType::System,
+                        );
+                        let _ = self.cmd_tx.try_send(TuiCommand::fire(move || async move {
+                            match paste_from_clipboard().await {
+                                Ok(text) => {
+                                    let _ = ipc_tx.send(IpcResult::ClipboardPaste(field, text));
+                                }
+                                Err(e) => {
+                                    let _ =
+                                        ipc_tx.send(IpcResult::Error(format!("Paste failed: {e}")));
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
+            return;
+        }
+
         // ─── Last.fm setup form ───
         if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::LastfmAuth)) {
             match key.code {

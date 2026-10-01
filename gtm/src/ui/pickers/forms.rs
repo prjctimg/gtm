@@ -90,7 +90,7 @@ impl Pickers {
         let block = Self::picker_panel(
             app,
             "Last.fm Setup",
-            Some(" Enter: authorize   Tab: field   Esc: close"),
+            Some(" Enter: authorize   Tab: field   Ctrl+V/X: clipboard   Esc: close"),
         );
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -151,7 +151,11 @@ impl Pickers {
             )));
             if app.setup.lastfm_pending {
                 lines.push(Line::from(Span::styled(
-                    "Waiting for the callback… (or press p to paste a token)",
+                    // There is no `p` key: the flow needs no token pasted into
+                    // it. The daemon holds the callback listener and reports
+                    // completion as a status event, so all that is left to do
+                    // here is finish in the browser.
+                    "Waiting for the callback…",
                     Style::default().fg(app.theme.fg_dim),
                 )));
             }
