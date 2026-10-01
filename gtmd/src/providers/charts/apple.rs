@@ -112,6 +112,10 @@ impl ChartProvider for AppleCharts {
 
     async fn list_charts(&self) -> Result<Vec<ChartPlaylist>, ChartError> {
         let mut charts = Vec::new();
+        // A chart is a ranking, not a release, so there is no artwork for it:
+        // the feed carries none and a row with an image beside a title from a
+        // different release would misattribute it. The tracks inside carry their
+        // own, which is where a cover belongs.
         for (cc, name) in COUNTRIES {
             charts.push(ChartPlaylist {
                 source_id: "apple".into(),
@@ -209,6 +213,8 @@ impl ChartProvider for AppleCharts {
                     .and_then(|c| c.name.as_ref())
                     .map(|n| n.label.clone())
             });
+            // The feed carries no artwork; only the batched lookup does, so a
+            // track whose id came back unmatched has none to show.
             let cover = detail
                 .and_then(|d| d.artwork_url100.clone())
                 .map(|u| upgrade_artwork(&u));

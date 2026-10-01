@@ -2485,14 +2485,17 @@ fn no_spotify_charts_provider() {
         !registry.contains("mod spotify;"),
         "the spotify chart module is still declared"
     );
-}
 
-/// The up-next card must resolve its cover by path, not by track id.
-///
-/// A provider track (Spotify, YouTube) has no row in the local library, so
-/// its `id` is not a library id and collides with whatever local track holds
-/// that number. The cover lookup matched on `id` alone, so the up-next card
-/// rendered the currently playing track's artwork. Both ends are asserted
+    // Two free sources, both registered with no account linked.
+    assert!(
+        registry.contains("mod deezer;"),
+        "the deezer chart provider is not declared"
+    );
+    assert!(
+        registry.contains("Box::new(deezer::DeezerCharts::new())"),
+        "the deezer chart provider is never registered, so its charts are unreachable"
+    );
+}
 
 /// List rows must not print a bracketed `[stream]` where a duration goes.
 ///
