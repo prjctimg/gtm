@@ -55,7 +55,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   Alt+A       About"),
     ("", "   Alt+E       Equalizer"),
     ("", "   Alt+Z       Sleep Timer"),
-    ("", "   Alt+X       Discord Rich Presence"),
+    ("", "   Alt+X       Setup Services (incl. Discord presence)"),
     ("", "   l           Fetch Lyrics"),
     ("", "   i           Track Info (what the daemon knows)"),
     ("topic", "── Queue ──"),
@@ -71,7 +71,6 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   q           Quit"),
     ("", "   Q / Ctrl+Q  Quit Daemon"),
     ("", "   Alt+H       Health Check"),
-    ("", "   Alt+X       Setup Services"),
     ("", "   Alt+,       Settings"),
 ];
 

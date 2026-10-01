@@ -2047,7 +2047,7 @@ impl Daemon {
         }
 
         // Started whenever an id is present, and it re-reads the file each
-        // poll, so `Alt+X` takes effect without a restart.
+        // poll, so the Setup form takes effect without a restart.
         if discord_id.is_some() {
             tokio::spawn(crate::discord::serve(
                 Arc::clone(&inner),

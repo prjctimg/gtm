@@ -43,7 +43,7 @@ pub(crate) fn provider_icon(name: &str) -> Option<&'static str> {
         "Mixcloud" => Some("\u{f289}"),   // nf-fa-mixcloud
         "Twitch" => Some("\u{f1e8}"),     // nf-fa-twitch
         "Last.fm" => Some("\u{f001}"),    // nf-md-music (no brand glyph in font)
-        "Discord" => Some("\u{f075e}"),   // nf-md-discord
+        "Discord" => Some("\u{f066f}"),   // nf-md-discord (U+F075E is volume-minus)
         "Local" => Some("\u{f0a0}"),      // nf-fa-hdd
         _ => None,
     }
@@ -84,6 +84,11 @@ pub(crate) fn service_icon_glyph(icon_style: &str, service: &str) -> &'static st
         "Spotify" => "\u{1f3a7}",
         "Last.fm" => "\u{1f3b5}",
         "YouTube" => "\u{25b6}\u{fe0f}", // same ▶️ as command palette's emoji YouTube Search
+        // Emoji has no Discord glyph in the fonts this targets, and an empty
+        // cell looked like a broken row: the chooser's own label column was
+        // padded, so the Discord service rendered as a blank before its name.
+        // A speech bubble is the closest thing in the emoji range.
+        "Discord" => "\u{1f4ac}",
         _ => "",
     }
 }

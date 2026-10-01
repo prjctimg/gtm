@@ -140,7 +140,7 @@ fn set_activity(activity: Option<&Activity>) -> serde_json::Value {
 pub(crate) async fn serve(inner: std::sync::Arc<DaemonInner>, config_dir: std::path::PathBuf) {
     let mut sock: Option<UnixStream> = None;
     let mut last: Option<Activity> = None;
-    // Re-read every poll rather than capturing the id once. The `Alt+X` form
+    // Re-read every poll rather than capturing the id once. The Setup form
     // writes config.toml and the user should not have to restart the daemon
     // for it to take effect; the file read is a few hundred bytes.
     let mut app_id: Option<String> = None;

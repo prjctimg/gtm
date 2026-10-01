@@ -59,7 +59,9 @@ pub enum PickerId {
     SpotifyDest,
     /// Everything the daemon knows about the track on air (`i`).
     TrackInfo,
-    /// Discord Rich Presence application id (`Alt+X`).
+    /// Discord Rich Presence application id. Reached by picking
+    /// `discord` in the `Alt+X` Setup chooser, which is one binding for all
+    /// four services.
     DiscordSetup,
 }
 

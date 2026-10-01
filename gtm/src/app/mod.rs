@@ -223,7 +223,7 @@ pub struct App {
     pub cover_provider: String,
     /// On-disk cover cache budget in MiB, pushed to the daemon on change.
     pub cover_cache_mb: u64,
-    /// Discord application id for Rich Presence; `Alt+X` edits it.
+    /// Discord application id for Rich Presence; the Setup chooser edits it.
     pub discord_id: Option<String>,
     /// Last reported cover cache disk usage in bytes.
     pub cover_cache_bytes: u64,

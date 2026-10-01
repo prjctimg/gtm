@@ -2992,10 +2992,22 @@ fn discord_is_a_setup_service_and_alt_x_is_not_duplicated() {
     assert!(run.contains("Some(\"discord\") => {"));
     assert!(run.contains("self.pickers.open(PickerId::DiscordSetup);"));
 
-    // A real brand glyph, not a stand-in.
+    // A real brand glyph, not a stand-in, and the right one: U+F075E was
+    // labelled `nf-md-discord` while being MDI's volume-minus, so the row drew
+    // a speaker with a dash through it. The Discord glyph is U+F066F.
     assert!(
-        icons.contains(r#""Discord" => Some("\u{f075e}")"#),
-        "the Discord brand glyph is missing"
+        icons.contains(r#""Discord" => Some("\u{f066f}")"#),
+        "the Discord brand glyph is missing or is the wrong codepoint"
+    );
+    assert!(
+        !icons.contains(r#""Discord" => Some("\u{f075e}")"#),
+        "the Discord glyph is still volume-minus"
+    );
+    // And the emoji style has an arm for it, so the row is not a blank cell
+    // before its label.
+    assert!(
+        icons.contains("\"Discord\" => \"\\u{1f4ac}\""),
+        "the emoji icon style leaves the Discord row without a glyph"
     );
 }
 

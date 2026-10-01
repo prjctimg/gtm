@@ -103,7 +103,7 @@ pub struct Prefs {
     pub(crate) cover_provider: String,
     #[serde(default = "cover_cache_mb")]
     pub(crate) cover_cache_mb: u64,
-    /// Discord application id for Rich Presence, written by the `Alt+X` form.
+    /// Discord application id for Rich Presence, written by the Setup form.
     /// `None` disables presence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) discord_id: Option<String>,

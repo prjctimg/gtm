@@ -230,7 +230,7 @@ impl Pickers {
 }
 
 impl Pickers {
-    /// Discord Rich Presence application id (`Alt+X`).
+    /// Discord Rich Presence application id.
     ///
     /// An empty value clears the id, which is how presence is turned off --
     /// there is no separate on/off switch, because an id is the whole setting.
