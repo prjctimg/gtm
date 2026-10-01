@@ -260,7 +260,6 @@ fn resample_bands_linear(bands: &[f32], total_cols: usize) -> Vec<f32> {
 // ─── Visualizer ─────────────────────────────────────────────────────────────
 
 pub struct AudioVisualizer {
-    pub enabled: bool,
     pub preset: VisualizerPreset,
     // Column bar model (one level per terminal column)
     bars: Vec<f32>,
@@ -296,7 +295,6 @@ pub struct AudioVisualizer {
 impl AudioVisualizer {
     pub fn new() -> Self {
         Self {
-            enabled: false,
             preset: VisualizerPreset::default(),
             bars: vec![0.0; 32],
             target_cols: vec![0.0; 32],
@@ -323,16 +321,8 @@ impl AudioVisualizer {
         }
     }
 
-    pub fn toggle(&mut self) {
-        self.enabled = !self.enabled;
-    }
-
     pub fn cycle_preset(&mut self) {
         self.preset = self.preset.next();
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
     }
 
     /// Advance the band/bar model one frame. `width`/`height` come from the
@@ -348,7 +338,7 @@ impl AudioVisualizer {
         wave_samples: &[f32],
         wave_stereo: bool,
     ) {
-        if !self.enabled || width == 0 {
+        if width == 0 {
             return;
         }
         let now = Instant::now();
@@ -587,7 +577,7 @@ impl AudioVisualizer {
     }
 
     pub fn render(&self, area: Rect, theme: &AppTheme) -> Option<Lines<'_>> {
-        if !self.enabled || area.width < 4 || area.height < 3 {
+        if area.width < 4 || area.height < 3 {
             return None;
         }
 
@@ -1313,7 +1303,6 @@ mod tests {
     #[test]
     fn decaying_bands_reach_rest() {
         let mut v = AudioVisualizer::new();
-        v.enabled = true;
         v.bands = [0.9; BAND_COUNT];
         v.resting = false;
         v.backdate_tick();
@@ -1328,7 +1317,6 @@ mod tests {
     #[test]
     fn bars_follow_audio_levels() {
         let mut v = AudioVisualizer::new();
-        v.enabled = true;
         let levels: Vec<f32> = vec![0.8; 64];
         v.backdate_tick();
         for _ in 0..30 {

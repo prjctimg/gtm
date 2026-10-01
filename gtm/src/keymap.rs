@@ -94,7 +94,6 @@ pub enum KeyboardAction {
     QuitDaemon,
     ToggleHelp,
     HideHelpBar,
-    ToggleVisualizer,
     ToggleTheme,
     CycleSort,
     CheckHealth,
@@ -412,11 +411,6 @@ pub fn default_keybindings() -> Keybindings {
             b!(KeyCode::Char('G'), KeyboardAction::JumpToEnd, NORMAL),
             b!(KeyCode::Char('e'), KeyboardAction::EditMetadata, NORMAL),
             b!(
-                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
-                KeyboardAction::ToggleVisualizer,
-                NORMAL
-            ),
-            b!(
                 KeyEvent::new(KeyCode::Char('T'), KeyModifiers::ALT),
                 KeyboardAction::ToggleTheme,
                 NORMAL
@@ -609,7 +603,6 @@ impl KeyboardAction {
             "quit_daemon" | "quit_all" => KeyboardAction::QuitDaemon,
             "toggle_help" | "help" => KeyboardAction::ToggleHelp,
             "hide_help_bar" => KeyboardAction::HideHelpBar,
-            "toggle_visualizer" | "visualizer" | "vis" => KeyboardAction::ToggleVisualizer,
             "toggle_theme" | "theme" => KeyboardAction::ToggleTheme,
             "cycle_sort" | "sort" => KeyboardAction::CycleSort,
             "check_health" | "health" => KeyboardAction::CheckHealth,

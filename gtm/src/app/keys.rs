@@ -760,28 +760,6 @@ impl App {
                             );
                         }
                     }
-                    Some(KeyboardAction::ToggleVisualizer) => {
-                        if self.extensions.is_disabled(ExtensionId::Visualizer) {
-                            self.footer_notification = Some((
-                                format!(
-                                    "{} disabled — enable in [extensions]",
-                                    ExtensionId::Visualizer.label()
-                                ),
-                                std::time::Instant::now() + std::time::Duration::from_secs(2),
-                            ));
-                        } else {
-                            self.visualizer.toggle();
-                            let state = if self.visualizer.is_enabled() {
-                                "ON"
-                            } else {
-                                "OFF"
-                            };
-                            self.footer_notification = Some((
-                                format!("Visualizer: {}", state),
-                                std::time::Instant::now() + std::time::Duration::from_secs(2),
-                            ));
-                        }
-                    }
                     Some(KeyboardAction::ToggleTheme) => {
                         self.toggle_theme();
                     }
@@ -3538,30 +3516,6 @@ impl App {
                                     self.pickers.open(PickerId::ProgressStyle);
                                 } else if action == "visualizer preset" {
                                     self.open_visualizer_picker();
-                                } else if action == "visualizer" {
-                                    if self.extensions.is_disabled(ExtensionId::Visualizer) {
-                                        self.notify(
-                                            format!(
-                                                "{} is an optional extension (disabled)",
-                                                ExtensionId::Visualizer.label()
-                                            ),
-                                            NotificationKind::Info,
-                                        );
-                                    } else {
-                                        self.visualizer.toggle();
-                                        let state = if self.visualizer.is_enabled() {
-                                            "ON"
-                                        } else {
-                                            "OFF"
-                                        };
-                                        self.notify_typed(
-                                            "System",
-                                            format!("Visualizer: {}", state),
-                                            NotificationKind::Info,
-                                            true,
-                                            NotifType::Playback,
-                                        );
-                                    }
                                 } else if action == "stop" {
                                     self.send_high(TuiCommand::Stop);
                                 } else if action == "seek forward" {

@@ -229,8 +229,18 @@ impl Render {
 
     /// Zen mode: render exactly one fullscreen surface at a time — the
     /// now-playing surface, the lyrics, or the visualizer.
+    ///
+    /// Daydreaming borrows this path and always lands on the visualizer, which
+    /// is the surface it exists to show: nobody is watching a track list during
+    /// a preview, and showing the now-playing artwork would be indistinguishable
+    /// from Zen having opened by accident.
     pub(crate) fn zen(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        match app.zen_surface {
+        let surface = if app.daydreaming {
+            ZenSurface::Visualizer
+        } else {
+            app.zen_surface
+        };
+        match surface {
             ZenSurface::NowPlaying => Render::zen_now_playing(f, area, app),
             ZenSurface::Lyrics => Render::zen_lyrics(f, area, app),
             ZenSurface::Visualizer => Render::zen_visualizer(f, area, app),
@@ -501,16 +511,12 @@ impl Render {
     }
 
     /// Zen surface 3: the audio visualizer stretched across the full screen.
+    ///
+    /// Reached only by cycling Zen's surfaces, so there is no toggle to consult
+    /// here: asking for the surface is the whole of the request. The
+    /// `[extensions] visualizer` kill switch is honoured by the caller, which
+    /// declines to pay for the frames when it is off.
     pub(crate) fn zen_visualizer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        if !app.visualizer.is_enabled() {
-            let msg = Paragraph::new(Line::from(Span::styled(
-                "Visualizer disabled \u{2014} press Ctrl+V to enable",
-                Style::default().fg(app.theme.fg_dim),
-            )))
-            .alignment(Alignment::Center);
-            f.render_widget(msg, area);
-            return;
-        }
         let inner = Rect {
             x: area.x + 1,
             y: area.y + 1,
@@ -3040,7 +3046,12 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     // footer. A picker still draws over it: zen is a surface, not a modal, and
     // a picker opened by an event (a link flow finishing, a track landing) was
     // otherwise invisible while still swallowing every keystroke.
-    let zen = app.zen && !app.pickers.is_open();
+    // Daydreaming shares Zen's route — the visualizer, full screen — because
+    // that is what it is: a preview shown when nobody is driving. It is not
+    // Zen, so it never changes `app.zen` and so cannot be cycled away from; the
+    // next keypress ends it. Both yield to an open picker, which is a view the
+    // user asked for.
+    let zen = (app.zen || app.daydreaming) && !app.pickers.is_open();
     // The surface fill comes first and covers every mode. It used to sit below
     // the Zen branch, which returned before reaching it — and ratatui does not
     // clear between frames, it diffs. So Zen painted on top of whatever the

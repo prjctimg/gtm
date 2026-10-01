@@ -252,11 +252,6 @@ impl CommandPalette {
                 hint: "progress style",
             },
             Command {
-                icon: "\u{f0570} Visualizer: Toggle",
-                keys: "Ctrl+V",
-                hint: "visualizer",
-            },
-            Command {
                 icon: "\u{f0570} Visualizer Preset",
                 keys: "Alt+V",
                 hint: "visualizer preset",
@@ -537,11 +532,6 @@ impl CommandPalette {
                 hint: "progress style",
             },
             Command {
-                icon: "\u{1f3b6} Visualizer: Toggle",
-                keys: "Ctrl+V",
-                hint: "visualizer",
-            },
-            Command {
                 icon: "\u{1f3b6} Visualizer Preset",
                 keys: "Alt+V",
                 hint: "visualizer preset",
@@ -588,6 +578,6 @@ impl CommandPalette {
 pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("Playback", 14),
     ("Library & Queue", 20),
-    ("View & Overlays", 11),
+    ("View & Overlays", 10),
     ("System", 10),
 ];

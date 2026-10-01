@@ -153,6 +153,17 @@ pub struct App {
     /// Set by a terminal resize, cleared by the frame that draws at the new
     /// size. The next draw has to start from an empty buffer.
     pub(crate) resized: bool,
+    /// When the user last pressed a key, pasted, or clicked. The idle clock
+    /// behind daydreaming; daemon traffic deliberately does not touch it.
+    pub(crate) last_input: std::time::Instant,
+    /// True while the TUI has been idle long enough to daydream, i.e. to show
+    /// the visualizer over the library view.
+    pub daydreaming: bool,
+    /// Seconds of inactivity before daydreaming starts. A preview is the wrong
+    /// answer to "what is playing": it covers the library and the now-playing
+    /// pane, both of which name the track, and it has no controls. A minute is
+    /// long enough to be an absence rather than a pause.
+    pub(crate) daydream_secs: u64,
     pub input_mode: InputMode,
     pub search_query: String,
     /// Per-category selection index, keyed by `library_category`, so every
@@ -870,6 +881,9 @@ impl App {
             scanner_hold: 0,
             cursor_blink: true,
             resized: false,
+            last_input: std::time::Instant::now(),
+            daydreaming: false,
+            daydream_secs: DEFAULT_DAYDREAM_SECS,
             input_mode: InputMode::Normal,
             search_query: String::new(),
             scroll_offset: [0; LIBRARY_CATEGORIES.len()],
@@ -1364,9 +1378,17 @@ impl App {
     }
 
     /// Handle a single terminal event. Returns false when the app should quit.
+    ///
+    /// Every user action passes through here, which is what makes it the one
+    /// place the idle clock can be stamped: three separate arms would each have
+    /// to remember, and the first one added later would be the one that broke
+    /// daydreaming. Daemon events deliberately do not count — playback advances
+    /// on its own, and a client that never stops receiving them would never
+    /// go idle.
     async fn handle_terminal_event(&mut self, event: event::Event) -> bool {
         match event {
             event::Event::Key(key) => {
+                self.last_input = std::time::Instant::now();
                 if key.kind == KeyEventKind::Press
                     && (!self.handle_key(key).await || self.pending_quit)
                 {
@@ -1374,18 +1396,22 @@ impl App {
                 }
             }
             event::Event::Paste(text) => {
+                self.last_input = std::time::Instant::now();
                 self.handle_paste(&text).await;
             }
             event::Event::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::ScrollUp => {
+                    self.last_input = std::time::Instant::now();
                     let key = event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
                     self.handle_key(key).await;
                 }
                 MouseEventKind::ScrollDown => {
+                    self.last_input = std::time::Instant::now();
                     let key = event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
                     self.handle_key(key).await;
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
+                    self.last_input = std::time::Instant::now();
                     self.handle_click(mouse.column, mouse.row).await;
                 }
                 _ => {}

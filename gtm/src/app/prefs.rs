@@ -79,6 +79,10 @@ pub struct Prefs {
     pub(crate) progress_style: ProgressStyle,
     #[serde(default)]
     pub(crate) visualizer_preset: VisualizerPreset,
+    /// Seconds of keyboard, paste or mouse inactivity before the visualizer
+    /// takes over the library view. Zero disables daydreaming.
+    #[serde(default = "default_daydream_secs")]
+    pub(crate) daydream_secs: u64,
     #[serde(default)]
     pub(crate) extensions: ExtensionsConfig,
     #[serde(default = "default_time_format")]
@@ -128,6 +132,14 @@ pub(crate) fn default_cover_provider() -> String {
 
 pub(crate) fn cover_cache_mb() -> u64 {
     512
+}
+
+/// Seconds of inactivity before the visualizer takes over. Long enough to be an
+/// absence rather than a pause.
+pub(crate) const DEFAULT_DAYDREAM_SECS: u64 = 60;
+
+pub(crate) fn default_daydream_secs() -> u64 {
+    DEFAULT_DAYDREAM_SECS
 }
 
 /// Keystroke settle time before a provider search fires. Short enough to feel
@@ -270,6 +282,7 @@ impl Default for Prefs {
             footer_preset_name: default_preset_name(),
             progress_style: ProgressStyle::default(),
             visualizer_preset: VisualizerPreset::default(),
+            daydream_secs: DEFAULT_DAYDREAM_SECS,
             extensions: ExtensionsConfig::default(),
             time_format: default_time_format(),
             theme_mode: default_theme_mode(),

@@ -3219,11 +3219,21 @@ fn now_playing_starts_at_the_results_column() {
 ///
 /// It drew into a third of the band, which is the same rows the cover and the
 /// progress were on, and the frame loop spun at 60fps for it whether or not it
-/// was on screen.
+/// The visualizer has no on/off switch: Zen or daydreaming decides whether it
+/// is on screen, and the extension config is the only thing that turns it off.
+///
+/// A toggle was wrong on its own terms. The visualizer is a fullscreen surface,
+/// so "off" was never the interesting state — it was a way to reach a mode the
+/// key that enters Zen already reaches. Worse, off was the default, so a fresh
+/// install showed the feature the configuration file documents as enabled and
+/// the key that is not in the man page turned it on.
 #[test]
-fn the_visualizer_is_zen_only() {
+fn the_visualizer_has_no_toggle() {
     let chrome = include_str!("../src/ui/chrome.rs");
     let run = include_str!("../src/app/run.rs");
+    let keys = include_str!("../src/app/keys.rs");
+    let map = include_str!("../src/keymap.rs");
+    let viz = include_str!("../src/visualizer.rs");
 
     let lib = chrome
         .split("pub(crate) fn library(")
@@ -3241,11 +3251,31 @@ fn the_visualizer_is_zen_only() {
         !chrome.contains("show_vis"),
         "the band still reserves rows for it"
     );
-    // Zen is where it lives now.
+    // No action, no binding, no palette entry, no enabled flag to consult.
+    assert!(!map.contains("ToggleVisualizer"), "the action is back");
+    assert!(!keys.contains("ToggleVisualizer"), "a dispatch arm is back");
+    assert!(!viz.contains("pub enabled"), "the enabled flag is back");
+    assert!(!viz.contains("pub fn toggle("), "toggle() is back");
+    assert!(
+        !chrome.contains("press Ctrl+V to enable"),
+        "the Zen surface still tells the user to press the removed key"
+    );
+
+    // What replaced it: the frame loop pays for the frames only when a surface
+    // that draws it is up, and it consults the extension switch rather than a
+    // second one.
     assert!(chrome.contains("pub(crate) fn zen_visualizer("));
     assert!(
-        run.contains("|| (self.zen && self.visualizer.is_enabled())"),
-        "the frame loop still redraws every frame for a visualizer nobody can see"
+        run.contains("&& (self.daydreaming"),
+        "daydreaming does not keep the frame loop awake"
+    );
+    assert!(
+        run.contains("self.zen_surface == ZenSurface::Visualizer"),
+        "Zen no longer decides to animate for the visualizer"
+    );
+    assert!(
+        run.contains("!self.extensions.is_disabled(ExtensionId::Visualizer)"),
+        "the animation no longer respects the extension switch"
     );
 }
 

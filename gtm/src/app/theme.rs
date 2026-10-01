@@ -35,6 +35,7 @@ impl App {
                 .unwrap_or_else(default_preset_name),
             progress_style: self.progress_style,
             visualizer_preset: self.visualizer.preset,
+            daydream_secs: self.daydream_secs,
             extensions: self.extensions.clone(),
             time_format: self.footer_time_format.clone(),
             theme_mode: self.theme_mode.clone(),

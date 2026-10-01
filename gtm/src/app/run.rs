@@ -118,6 +118,7 @@ impl App {
 
         // Visualizer preset
         self.visualizer.preset = prefs.visualizer_preset;
+        self.daydream_secs = prefs.daydream_secs;
 
         // Footer time format
         self.footer_time_format = if prefs.time_format.is_empty() {
@@ -1688,11 +1689,16 @@ impl App {
             }
 
             let playing = self.state.status == PlaybackStatus::Playing;
+            // The visualizer animates continuously, idle wave included, so the
+            // surfaces that draw it are worth a frame every tick even while the
+            // position is unchanged. It is not always on: Zen only when its
+            // surface is selected, and daydreaming only once the TUI has gone
+            // quiet. The `[extensions]` switch zeroes the streams outright.
+            let animating = !self.extensions.is_disabled(ExtensionId::Visualizer)
+                && (self.daydreaming || (self.zen && self.zen_surface == ZenSurface::Visualizer));
             let mut force_render = pos_changed
                 || (playing && frame_count.is_multiple_of(2))
-                // Visualizer animates continuously (idle wave included), but only
-                // Zen draws it now, so only Zen pays for the frames.
-                || (self.zen && self.visualizer.is_enabled())
+                || animating
                 || !self.notifications.is_empty()
                 || frame_count.is_multiple_of(10)
                 || self.cover_art_dirty
@@ -1704,6 +1710,18 @@ impl App {
             self.metadata.cover_dirty = false;
             self.last_display_position = self.display_position;
             self.data_dirty = false;
+
+            // Daydreaming: after this long with no key, paste or click, the
+            // visualizer takes over the library view. Suppressed while a picker
+            // is open or Zen is up — those are deliberate views of the user's
+            // own choosing, and something they are actively looking at, and
+            // daydreaming must not overwrite either. Cleared the instant
+            // anything is touched again, so it never lingers behind a keypress.
+            let idle = self.last_input.elapsed();
+            self.daydreaming = idle >= Duration::from_secs(self.daydream_secs)
+                && !self.zen
+                && !self.pickers.is_open()
+                && self.extensions.is_enabled(ExtensionId::Visualizer);
 
             // A resize forces a frame even when nothing else is dirty: the
             // layout is all size-derived, so a pane that did not redraw would

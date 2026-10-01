@@ -49,7 +49,6 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("topic", "── View ──"),
     ("", "   ?           Toggle Help"),
     ("", "   Ctrl+H      Hide Help Bar"),
-    ("", "   Ctrl+V      Visualizer Toggle"),
     ("", "   Alt+V       Visualizer Preset"),
     ("", "   Alt+P       Progress Style"),
     ("", "   Alt+C       Theme Picker"),
