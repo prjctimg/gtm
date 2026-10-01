@@ -70,6 +70,7 @@ use crate::youtube::{YoutubeManager, download_into};
 type ClientId = u64;
 type ReplyTx = mpsc::UnboundedSender<(u64, DaemonRes)>;
 
+pub mod browse;
 pub mod charts;
 pub mod cover;
 pub mod favourites;
@@ -89,6 +90,7 @@ pub mod yt;
 
 #[cfg(test)]
 mod tests;
+pub(crate) use browse::*;
 pub(crate) use charts::*;
 pub(crate) use cover::*;
 pub(crate) use favourites::*;
@@ -1787,6 +1789,7 @@ fn is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::SpotifyMatch { .. }
             | DaemonReq::LastfmStatus
             | DaemonReq::PodcastFeeds
+            | DaemonReq::PodcastSearch { .. }
             | DaemonReq::PodcastEpisodes { .. }
             | DaemonReq::PodcastStatus
             | DaemonReq::RadioSearch { .. }
@@ -3115,6 +3118,9 @@ impl Daemon {
                 source_id,
                 chart_id,
             } => Charts::tracks(inner, source_id.clone(), chart_id.clone()).await,
+            DaemonReq::BrowseSearch { term } => Browse_::search(term).await,
+            DaemonReq::BrowseArtist { artist_id } => Browse_::artist(*artist_id).await,
+            DaemonReq::BrowseAlbum { album_id } => Browse_::album(*album_id).await,
             DaemonReq::LastfmSetConfig {
                 enabled,
                 api_key,
@@ -3144,6 +3150,9 @@ impl Daemon {
             DaemonReq::PodcastAddFeed { url } => Podcast::add_feed(inner, url).await,
             DaemonReq::PodcastRemoveFeed { feed_id } => Podcast::remove_feed(inner, feed_id).await,
             DaemonReq::PodcastFeeds => Podcast::feeds(inner).await,
+            DaemonReq::PodcastSearch { term, country } => {
+                Podcast::discover(inner, term, country).await
+            }
             DaemonReq::PodcastEpisodes { feed_id } => Podcast::episodes(inner, feed_id).await,
             DaemonReq::PodcastRefresh { feed_id } => {
                 Podcast::refresh(inner, feed_id.as_deref()).await

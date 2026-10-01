@@ -2633,6 +2633,32 @@ impl App {
             match key.code {
                 KeyCode::Enter => {
                     let sel = self.pickers.top().map_or(0, |o| o.selected);
+                    // While a search is showing, Enter subscribes; the
+                    // subscriptions behind it are reached with Esc.
+                    if let Some(hit) = self.podcast.results.get(sel).cloned() {
+                        let c = self.client.clone();
+                        let ipc_tx = self.ipc_tx.clone();
+                        let _ = tx.try_send(TuiCommand::fire(move || async move {
+                            match c.podcast().add_feed(&hit.url).await {
+                                Ok(feeds) => {
+                                    let _ = ipc_tx.send(IpcResult::PodcastFeeds(feeds));
+                                    let _ = ipc_tx.send(IpcResult::Notification(
+                                        "Podcast".into(),
+                                        format!("Subscribed to {}", hit.title),
+                                        NotificationKind::Success,
+                                        NotifType::Podcast,
+                                    ));
+                                }
+                                Err(e) => {
+                                    let _ = ipc_tx.send(IpcResult::Error(format!(
+                                        "{}\u{2014}{e}",
+                                        hit.title
+                                    )));
+                                }
+                            }
+                        }));
+                        return;
+                    }
                     if let Some(feed) = self.podcast.feeds.get(sel).cloned() {
                         self.podcast.episodes.clear();
                         self.podcast.episodes_feed_id = Some(feed.id.clone());
@@ -2640,29 +2666,65 @@ impl App {
                         self.fetch_podcast_episodes(feed.id);
                     }
                 }
-                KeyCode::Char('a') => {
-                    self.podcast.subscribe_url.clear();
-                    self.pickers.open(PickerId::PodcastSubscribe);
+                KeyCode::Esc if !self.podcast.results.is_empty() || self.podcast.searching => {
+                    // Back to the subscriptions without closing the picker.
+                    self.podcast.results.clear();
+                    self.podcast.searching = false;
+                    self.podcast.search_deadline = None;
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.selected = 0;
+                        top.viewport_offset = 0;
+                        top.query.clear();
+                    }
+                    return;
                 }
-                KeyCode::Char('r') => {
-                    let c = self.client.clone();
-                    let _ = tx.try_send(TuiCommand::fire(move || async move {
-                        let _ = c.podcast().refresh(None).await;
-                    }));
-                    self.podcast.feeds.clear();
-                    self.podcast.feeds_pending = true;
-                    let c = self.client.clone();
-                    let ipc_tx = self.ipc_tx.clone();
-                    let _ = tx.try_send(TuiCommand::fire(move || async move {
-                        match c.podcast().feeds().await {
-                            Ok(f) => {
-                                let _ = ipc_tx.send(IpcResult::PodcastFeeds(f));
+                KeyCode::Char('/') => {
+                    // Opening the search box: everything typed from here is a
+                    // query, and the debounce fires it once typing settles.
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.query.clear();
+                    }
+                    self.podcast.results.clear();
+                    self.podcast.searching = false;
+                    return;
+                }
+                KeyCode::Char(c) => {
+                    // `a` and `r` stay keys, not query characters: they act on
+                    // the subscription list, which is what is on screen until a
+                    // search has results. Once it does, the row they would act on
+                    // is gone, so the keystroke belongs to the query.
+                    if self.podcast.results.is_empty() {
+                        match c {
+                            'a' => {
+                                self.podcast.subscribe_url.clear();
+                                self.pickers.open(PickerId::PodcastSubscribe);
                             }
-                            Err(e) => {
-                                self_err(&ipc_tx, format!("podcast feeds failed: {e}"));
+                            'r' => {
+                                self.refresh_podcast_feeds(&tx);
                             }
+                            _ => return,
                         }
-                    }));
+                        return;
+                    }
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.query.push(c);
+                        top.selected = 0;
+                        top.viewport_offset = 0;
+                    }
+                    self.arm_podcast_search();
+                    return;
+                }
+                KeyCode::Backspace => {
+                    if self.podcast.results.is_empty() {
+                        return;
+                    }
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.query.pop();
+                        top.selected = 0;
+                        top.viewport_offset = 0;
+                    }
+                    self.arm_podcast_search();
+                    return;
                 }
                 KeyCode::Up | KeyCode::Down => {
                     self.move_picker_selection(key.code == KeyCode::Down);

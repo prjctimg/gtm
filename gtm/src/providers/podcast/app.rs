@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::app::self_err;
 use crate::app::*;
 
@@ -18,6 +20,77 @@ impl App {
             }
         });
         self.podcast.episodes_feed_id = Some(feed_id);
+    }
+
+    /// Search the public podcast directory.
+    ///
+    /// Separate from the subscription list on purpose: these are results to
+    /// browse, and subscribing is a second step the user takes on the row they
+    /// want. The daemon caches by query, so repeating a search is free.
+    pub fn search_podcasts(&mut self, term: String) {
+        let term = term.trim().to_string();
+        if term.is_empty() {
+            return;
+        }
+        // A new term invalidates the old rows immediately: leaving yesterday's
+        // results on screen under the new query is the one thing that would read
+        // as a search that found them.
+        self.podcast.results.clear();
+        self.podcast.searching = true;
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match c.podcast().discover(&term, "us").await {
+                Ok(results) => {
+                    let _ = ipc_tx.send(IpcResult::PodcastSearch(results));
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::PodcastSearch(Vec::new()));
+                    self_err(&ipc_tx, format!("podcast search failed: {e}"));
+                }
+            }
+        });
+    }
+
+    /// Re-fetch every subscribed feed and reload the list.
+    ///
+    /// The refresh and the reload are two requests because the daemon answers
+    /// the refresh with nothing: it returns a count, and the list has to be
+    /// asked for again separately.
+    pub fn refresh_podcast_feeds(&mut self, tx: &tokio::sync::mpsc::Sender<TuiCommand>) {
+        let c = self.client.clone();
+        let _ = tx.try_send(TuiCommand::fire(move || async move {
+            let _ = c.podcast().refresh(None).await;
+        }));
+        self.podcast.feeds.clear();
+        self.podcast.feeds_pending = true;
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        let _ = tx.try_send(TuiCommand::fire(move || async move {
+            match c.podcast().feeds().await {
+                Ok(f) => {
+                    let _ = ipc_tx.send(IpcResult::PodcastFeeds(f));
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("podcast feeds failed: {e}"));
+                }
+            }
+        }));
+    }
+
+    /// The rows the podcast picker is showing.
+    ///
+    /// A search replaces the subscriptions while it has results, which is the
+    /// same switch [`render_podcast_feeds`](crate::ui::pickers::podcast::render_podcast_feeds)
+    /// makes — the row count has to be the count of what is on screen or the
+    /// cursor and the scroller address rows that are not there.
+    /// Arm the directory search for after the debounce, and clear the rows the
+    /// old query produced — a result list left under an edited query is the one
+    /// state that reads as "the search found these".
+    pub fn arm_podcast_search(&mut self) {
+        self.podcast.results.clear();
+        self.podcast.search_deadline =
+            Some(std::time::Instant::now() + Duration::from_millis(SEARCH_DEBOUNCE_MS));
     }
 
     /// Load the subscribed feed list, and the directory status alongside it.

@@ -18,7 +18,9 @@ pub(crate) use crate::shared::custom::CustomRadioStation;
 pub(crate) use crate::shared::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
 pub(crate) use crate::shared::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
 pub(crate) use crate::shared::log::log;
-pub(crate) use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
+pub(crate) use crate::shared::podcast::{
+    PodcastEpisode, PodcastFeed, PodcastResult, PodcastStatus,
+};
 pub(crate) use crate::shared::radio::{RadioCountry, RadioStation, RadioTag, RadioTrack};
 pub(crate) use crate::shared::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
 pub(crate) use crate::shared::spotify::{
@@ -78,6 +80,7 @@ pub const LIBRARY_CATEGORIES: &[&str] = &[
     "Folders",
     "Top Charts",
     "Podcasts",
+    "Browse",
 ];
 /// Sanitize a TOML `left_pane_lists` value: keep only canonical category
 /// names, drop duplicates, preserve user order. Empty (or fully unknown)
@@ -201,6 +204,10 @@ pub struct App {
     pub recently_played_cache: Vec<TrackInfo>,
     pub recently_added_cache: Vec<TrackInfo>,
     pub playlist_tracks_cache: Vec<TrackInfo>,
+    /// Every track in every Spotify playlist, deduplicated — what the
+    /// "All Tracks" list shows. Rebuilt when a playlist sync lands; see
+    /// `App::playlist_union`.
+    pub playlist_tracks: Vec<TrackInfo>,
     pub spotify: SpotifyView,
     pub charts: ChartsView,
     pub setup: SetupView,
@@ -476,6 +483,7 @@ pub(crate) enum IpcResult {
     ReactivePalette(Option<ReactivePalette>, u64),
     PodcastStatus(Option<PodcastStatus>),
     PodcastFeeds(Vec<PodcastFeed>),
+    PodcastSearch(Vec<PodcastResult>),
     PodcastEpisodes(Vec<PodcastEpisode>),
     RadioSearch(Vec<RadioStation>),
     RadioTop(Vec<RadioStation>),
@@ -959,6 +967,7 @@ impl App {
             recently_played_cache: Vec::new(),
             recently_added_cache: Vec::new(),
             playlist_tracks_cache: Vec::new(),
+            playlist_tracks: Vec::new(),
             spotify: SpotifyView {
                 status: None,
                 playlists: Vec::new(),

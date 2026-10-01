@@ -4,10 +4,12 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use crate::shared::chart::{ChartPlaylist, ChartSource, ChartTrack};
+use crate::shared::chart::{
+    AlbumPage, ArtistPage, BrowseHit, ChartPlaylist, ChartSource, ChartTrack,
+};
 use crate::shared::global::{DaemonState, EqPreset, LoudnessMode, RepeatMode, YTFilter};
 use crate::shared::playlist::PlaylistFormatKind;
-use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
+use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastResult, PodcastStatus};
 use crate::shared::radio::{RadioCountry, RadioStation, RadioTag, RadioTracklist};
 use crate::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::shared::track::{LrcData, Playlist, StreamInfo, TrackInfo, YTSearchResult};
@@ -38,6 +40,13 @@ fn default_oauth_port() -> u16 {
 /// letting the current track finish.
 fn default_true() -> bool {
     true
+}
+
+/// Serde default: which storefront a podcast search runs against. The Apple
+/// search API needs an explicit country, and `us` is the one every storefront
+/// indexes and every result is published in.
+pub(crate) fn default_storefront() -> String {
+    "us".to_string()
 }
 
 /// `/queue` sub-commands. Internally tagged via `action`, wire encoding is
@@ -499,6 +508,12 @@ pub enum DaemonReq {
         feed_id: String,
     },
     PodcastFeeds,
+    /// Search the public podcast directory. Answers with feed urls rather than
+    /// subscriptions: `PodcastAddFeed` is what turns a result into one.
+    PodcastSearch {
+        term: String,
+        country: String,
+    },
     PodcastEpisodes {
         feed_id: String,
     },
@@ -558,6 +573,18 @@ pub enum DaemonReq {
     ChartsTracks {
         source_id: String,
         chart_id: String,
+    },
+    /// Search for songs, releases and people.
+    BrowseSearch {
+        term: String,
+    },
+    /// One artist: their top tracks and their releases.
+    BrowseArtist {
+        artist_id: u64,
+    },
+    /// One album and its full tracklist.
+    BrowseAlbum {
+        album_id: u64,
     },
     GetStatus,
     /// Like `GetStatus` but omits the full `default_list` (the whole library)
@@ -662,6 +689,7 @@ impl DaemonReq {
             DaemonReq::PodcastAddFeed { .. } => "podcast_add_feed",
             DaemonReq::PodcastRemoveFeed { .. } => "podcast_remove_feed",
             DaemonReq::PodcastFeeds => "podcast_feeds",
+            DaemonReq::PodcastSearch { .. } => "podcast_search",
             DaemonReq::PodcastEpisodes { .. } => "podcast_episodes",
             DaemonReq::PodcastRefresh { .. } => "podcast_refresh",
             DaemonReq::PodcastStatus => "podcast_status",
@@ -678,6 +706,9 @@ impl DaemonReq {
             DaemonReq::ChartsSources => "charts_sources",
             DaemonReq::ChartsList { .. } => "charts_list",
             DaemonReq::ChartsTracks { .. } => "charts_tracks",
+            DaemonReq::BrowseSearch { .. } => "browse_search",
+            DaemonReq::BrowseArtist { .. } => "browse_artist",
+            DaemonReq::BrowseAlbum { .. } => "browse_album",
             DaemonReq::GetStatus => "get_status",
             DaemonReq::GetStatusLite => "get_status_lite",
             DaemonReq::CheckHealth => "check_health",
@@ -1354,6 +1385,19 @@ impl DaemonReq {
                 let x: Params = p(params)?;
                 DaemonReq::PodcastRemoveFeed { feed_id: x.feed_id }
             }
+            "podcast_search" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    term: String,
+                    #[serde(default)]
+                    country: Option<String>,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::PodcastSearch {
+                    term: x.term,
+                    country: x.country.unwrap_or_else(default_storefront),
+                }
+            }
             "podcast_episodes" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1496,6 +1540,34 @@ impl DaemonReq {
                 DaemonReq::ChartsTracks {
                     source_id: x.source_id,
                     chart_id: x.chart_id,
+                }
+            }
+            "browse_search" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    term: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::BrowseSearch { term: x.term }
+            }
+            "browse_artist" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    artist_id: u64,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::BrowseArtist {
+                    artist_id: x.artist_id,
+                }
+            }
+            "browse_album" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    album_id: u64,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::BrowseAlbum {
+                    album_id: x.album_id,
                 }
             }
             other => return Err(format!("unknown command: {other}")),
@@ -1738,6 +1810,11 @@ pub enum DaemonRes {
     PodcastFeedsRes {
         feeds: Vec<PodcastFeed>,
     },
+    /// Directory results for a podcast search. Not subscriptions: each carries
+    /// the feed url that `PodcastAddFeed` takes.
+    PodcastSearchRes {
+        results: Vec<PodcastResult>,
+    },
     PodcastEpisodesRes {
         feed_id: String,
         feed_title: String,
@@ -1773,6 +1850,16 @@ pub enum DaemonRes {
     },
     ChartsTracksRes {
         tracks: Vec<ChartTrack>,
+    },
+    /// Songs, releases and people matching a search.
+    BrowseSearchRes {
+        hits: Vec<BrowseHit>,
+    },
+    BrowseArtistRes {
+        page: Box<ArtistPage>,
+    },
+    BrowseAlbumRes {
+        page: Box<AlbumPage>,
     },
     ChartsLoaded {
         charts: Vec<ChartPlaylist>,
@@ -1868,6 +1955,9 @@ impl DaemonRes {
             DaemonRes::SpotifyImageRes { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::SpotifyMatchRes { uri } => Some(serde_json::json!({ "uri": uri })),
             DaemonRes::PodcastFeedsRes { feeds } => Some(serde_json::json!({ "feeds": feeds })),
+            DaemonRes::PodcastSearchRes { results } => {
+                Some(serde_json::json!({ "results": results }))
+            }
             DaemonRes::PodcastEpisodesRes {
                 feed_id,
                 feed_title,
@@ -1900,6 +1990,9 @@ impl DaemonRes {
             }
             DaemonRes::ChartsListRes { charts } => Some(serde_json::json!({ "charts": charts })),
             DaemonRes::ChartsTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
+            DaemonRes::BrowseSearchRes { hits } => Some(serde_json::json!({ "hits": hits })),
+            DaemonRes::BrowseArtistRes { page } => Some(serde_json::json!({ "page": page })),
+            DaemonRes::BrowseAlbumRes { page } => Some(serde_json::json!({ "page": page })),
             DaemonRes::ChartsLoaded { charts } => Some(serde_json::json!({ "charts": charts })),
             DaemonRes::ChartTracksLoaded { tracks } => {
                 Some(serde_json::json!({ "tracks": tracks }))
@@ -2046,6 +2139,7 @@ impl DaemonRes {
             DaemonRes::SpotifyImageRes { data } => field!("data", &data),
             DaemonRes::SpotifyMatchRes { uri } => field!("uri", &uri),
             DaemonRes::PodcastFeedsRes { feeds } => field!("feeds", &feeds),
+            DaemonRes::PodcastSearchRes { results } => field!("results", &results),
             DaemonRes::PodcastEpisodesRes {
                 feed_id,
                 feed_title,
@@ -2072,6 +2166,9 @@ impl DaemonRes {
             DaemonRes::ChartsSourcesRes { sources } => field!("sources", &sources),
             DaemonRes::ChartsListRes { charts } => field!("charts", &charts),
             DaemonRes::ChartsTracksRes { tracks } => field!("tracks", &tracks),
+            DaemonRes::BrowseSearchRes { hits } => field!("hits", &hits),
+            DaemonRes::BrowseArtistRes { page } => field!("page", &page),
+            DaemonRes::BrowseAlbumRes { page } => field!("page", &page),
             DaemonRes::ChartsLoaded { charts } => field!("charts", &charts),
             DaemonRes::ChartTracksLoaded { tracks } => field!("tracks", &tracks),
             DaemonRes::CoverArt { data } => field!("data", &data),
@@ -2331,6 +2428,12 @@ impl DaemonRes {
             // A refresh with no `feed_id` answers `Value { refreshed }` rather
             // than feeds, so the fallback below is load-bearing here: the absent
             // `feeds` key fails the parse and the count survives.
+            "podcast_search" => {
+                match serde_json::from_value::<Vec<PodcastResult>>(field(&data, "results")) {
+                    Ok(results) => DaemonRes::PodcastSearchRes { results },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
             "podcast_feeds" | "podcast_add_feed" | "podcast_refresh" => {
                 match serde_json::from_value::<Vec<PodcastFeed>>(field(&data, "feeds")) {
                     Ok(feeds) => DaemonRes::PodcastFeedsRes { feeds },
@@ -2355,6 +2458,24 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
+            "browse_search" => {
+                match serde_json::from_value::<Vec<BrowseHit>>(field(&data, "hits")) {
+                    Ok(hits) => DaemonRes::BrowseSearchRes { hits },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "browse_artist" => match serde_json::from_value::<ArtistPage>(field(&data, "page")) {
+                Ok(page) => DaemonRes::BrowseArtistRes {
+                    page: Box::new(page),
+                },
+                Err(_) => DaemonRes::Value { value: data },
+            },
+            "browse_album" => match serde_json::from_value::<AlbumPage>(field(&data, "page")) {
+                Ok(page) => DaemonRes::BrowseAlbumRes {
+                    page: Box::new(page),
+                },
+                Err(_) => DaemonRes::Value { value: data },
+            },
             "podcast_episodes" => {
                 let feed_id = field_str(&data, "feed_id").to_string();
                 let feed_title = field_str(&data, "feed_title").to_string();

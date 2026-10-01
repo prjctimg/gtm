@@ -641,6 +641,7 @@ fn sample_feed() -> PodcastFeed {
         url: "https://example.com/feed.xml".into(),
         description: String::new(),
         episodes: 12,
+        image_url: Some("https://example.com/art.jpg".into()),
     }
 }
 
@@ -3545,9 +3546,16 @@ fn charts_and_radio_rows_all_describe_themselves() {
     // under it: the card shows a single row's art, so without this every step
     // of a scroll is a blank card.
     assert!(cover.contains("pub fn preload_chart_covers(&self) {"));
+    // Warmed from every cursor move, keyed on the loaded rows rather than on a
+    // category index: the chart list is three levels deep and only the last has
+    // rows, so a category test either fired on the wrong level or not at all.
     assert!(
-        cover
-            .contains("if self.library_category == 12 {\n            self.preload_chart_covers();")
+        cover.contains("self.preload_chart_covers();\n        let pos = self.list_pos();"),
+        "the chart warm is no longer part of every cursor move's preload"
+    );
+    assert!(
+        !cover.contains("if self.library_category == 12 {"),
+        "the chart warm is gated on a category index again"
     );
 
     // Arriving at a list builds the card. Charts load asynchronously, so the

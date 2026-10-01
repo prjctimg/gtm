@@ -25,6 +25,23 @@ impl Podcast {
         Ok(DaemonRes::PodcastFeedsRes { feeds })
     }
 
+    /// Search the public directory. Results carry the feed url rather than an
+    /// id, so subscribing is a second call with the url the row holds.
+    pub async fn discover(
+        inner: &DaemonInner,
+        term: &str,
+        country: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let results = inner
+            .podcast
+            .lock()
+            .await
+            .discover(term, country)
+            .await
+            .map_err(CoreError::Daemon)?;
+        Ok(DaemonRes::PodcastSearchRes { results })
+    }
+
     pub async fn episodes(inner: &DaemonInner, feed_id: &str) -> Result<DaemonRes, CoreError> {
         let podcast = inner.podcast.lock().await;
         match podcast.episodes(feed_id) {

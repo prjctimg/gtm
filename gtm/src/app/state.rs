@@ -360,6 +360,14 @@ pub struct PodcastView {
     pub episodes_feed_id: Option<String>,
     /// Draft feed URL for the PodcastSubscribe form.
     pub subscribe_url: String,
+    /// Public-directory results for the picker's search box.
+    pub results: Vec<PodcastResult>,
+    /// A search is in flight, so the picker can say so rather than showing an
+    /// empty list that reads as "nothing matched".
+    pub searching: bool,
+    /// When the picker's query should be sent to the directory. Settled rather
+    /// than immediate: a third-party query should not fire per keystroke.
+    pub search_deadline: Option<std::time::Instant>,
 }
 
 /// Which list the unified Radio picker is showing.

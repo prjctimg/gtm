@@ -22,10 +22,11 @@ pub(crate) const LIBRARY_ICONS_NERD: &[&str] = &[
     "\u{f07b}",
     "\u{f0535}", // Top Charts: nf-md-trending_up (official MDI)
     "\u{f0994}", // Podcasts: nf-md-podcast (same glyph as provider_icon)
+    "\u{f1276}", // Browse: nf-md-magnify_scan (music search: artist and album pages)
 ];
 
 pub(crate) const LIBRARY_ICONS_ASCII: &[&str] = &[
-    "♫", "♥", "▤", "♪", "≡", "☊", "◉", "▥", "◆", "♫", "◎", "▽", "#", "◉",
+    "♫", "♥", "▤", "♪", "≡", "☊", "◉", "▥", "◆", "♫", "◎", "▽", "#", "◉", "⌕",
 ];
 
 pub(crate) fn use_nerd_fonts() -> bool {

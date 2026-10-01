@@ -244,13 +244,17 @@ impl App {
     /// The card shows one row's cover at a time, so without this every step of
     /// the scroll is a blank card until its request comes back — the list moves
     /// faster than the network. The daemon's image cache absorbs the repeats, so
-    /// the fetch the card then makes is a hit. Mirrors the local-library warm in
-    /// for the local library, which has ids rather than URLs.
+    /// the fetch the card then makes is a hit. Mirrors the local-library warm
+    /// above, which has ids rather than URLs.
+    ///
+    /// Keyed on the row count rather than on the category index, because the
+    /// chart list is reached through three levels (source, chart, tracks) and
+    /// only the last has rows to warm.
     pub fn preload_chart_covers(&self) {
         if no_image_protocol() || self.charts.chart_tracks.is_empty() {
             return;
         }
-        let sel = self.list_pos();
+        let sel = self.list_pos().min(self.charts.chart_tracks.len() - 1);
         let from = sel.saturating_sub(1);
         let to = (sel + 3).min(self.charts.chart_tracks.len());
         let urls: Vec<String> = self.charts.chart_tracks[from..to]
@@ -384,18 +388,21 @@ impl App {
         });
     }
 
-    /// Preload the cover art for the tracks a short scroll ahead of the cursor
-    /// so fast scrolling (e.g. holding an arrow key) warms the daemon's
-    /// disk/LRU cache and the on-selection fetch becomes a cache hit. Fires in
-    /// the background and never blocks the UI or surfaces errors. Also warms
-    /// Spotify drill-down album covers via their image URLs.
+    /// Preload the cover art for the rows a short scroll ahead of the cursor, so
+    /// fast scrolling (e.g. holding an arrow key) warms the daemon's disk/LRU
+    /// cache and the on-selection fetch becomes a cache hit. Fires in the
+    /// background and never blocks the UI or surfaces errors.
+    ///
+    /// Called on every cursor move in every category, and each one starts from
+    /// what the current list actually holds rather than assuming a shape: a
+    /// chart's rows are CDN URLs with no library id, and Spotify drill-down rows
+    /// are album images. Both are named by URL, so they go out as image
+    /// requests; only a local row has an id to look up.
     pub fn preload_row_covers(&mut self) {
         self.preload_spot_covers();
-        // A chart's rows are provider URLs with no library id, so `track_id_at`
-        // finds nothing for them and the loop below would warm nothing.
-        if self.library_category == 12 {
-            self.preload_chart_covers();
-        }
+        // Chart rows have no library id, so `track_id_at` finds nothing for
+        // them and the loop below would warm nothing.
+        self.preload_chart_covers();
         let pos = self.list_pos();
         let mut ids = Vec::new();
         for off in 1..=3 {

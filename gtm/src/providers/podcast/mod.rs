@@ -33,6 +33,32 @@ pub struct PodcastFeed {
     /// Number of episodes in the last successful fetch.
     #[serde(default)]
     pub episodes: usize,
+    /// Show artwork, from the feed's `<itunes:image>` or Atom `<logo>`.
+    ///
+    /// Carried from the directory listing as well as from the feed itself: a
+    /// discovered podcast has to show a picture before anyone subscribes to it,
+    /// and the directory's copy is the only one available at that point.
+    #[serde(default)]
+    pub image_url: Option<String>,
+}
+
+/// A podcast found in the public directory, before it is subscribed to.
+///
+/// Carries the feed url rather than an id: subscribing re-fetches the feed and
+/// mints its id then, so there is nothing to address a discovery result by.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PodcastResult {
+    pub title: String,
+    pub author: String,
+    pub url: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub image_url: Option<String>,
+    #[serde(default)]
+    pub episodes: usize,
+    /// Storefront the result came from, for the region label on the row.
+    pub country: String,
 }
 
 /// A single podcast episode.
@@ -52,6 +78,9 @@ pub struct PodcastEpisode {
     pub published: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Show artwork for this episode, from the feed or its channel.
+    #[serde(default)]
+    pub image_url: Option<String>,
     /// Transcripts the feed publishes for this episode, in feed order.
     ///
     /// A feed can carry more than one and more than one kind: a hosted `.vtt`,

@@ -14,7 +14,9 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use tracing::{info, warn};
 
-use gtm::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus, PodcastTranscript};
+use gtm::shared::podcast::{
+    PodcastEpisode, PodcastFeed, PodcastResult, PodcastStatus, PodcastTranscript,
+};
 use gtm::shared::track::LrcData;
 
 pub mod vtt;
@@ -31,6 +33,10 @@ struct SubscribedFeed {
     url: String,
     #[serde(default)]
     title: String,
+    /// Artwork learned when the feed was subscribed, so the subscription list
+    /// shows a picture without re-parsing the feed on every open.
+    #[serde(default)]
+    image_url: Option<String>,
 }
 
 /// Owns podcast subscriptions and the parsed episode cache. Feed URLs are
@@ -43,6 +49,12 @@ pub struct PodcastManager {
     feeds: Vec<SubscribedFeed>,
     episodes: HashMap<String, Vec<PodcastEpisode>>,
     error: Option<String>,
+    /// Directory results, most recent first, kept only to supply artwork to
+    /// `add_feed`: the feeds themselves carry none often enough that
+    /// subscribing straight from a search result would lose the picture.
+    discovery: Vec<PodcastResult>,
+    /// Last search per query, so re-entering the picker is free.
+    discovery_cache: HashMap<String, Vec<PodcastResult>>,
 }
 
 impl PodcastManager {
@@ -62,6 +74,8 @@ impl PodcastManager {
             feeds: Vec::new(),
             episodes: HashMap::new(),
             error: None,
+            discovery: Vec::new(),
+            discovery_cache: HashMap::new(),
         }
     }
 
@@ -94,16 +108,23 @@ impl PodcastManager {
     }
 
     /// Fetch and subscribe to a feed URL.
+    ///
+    /// Artwork already known for this feed — from a directory listing, usually —
+    /// is kept: the feed itself often has none, and subscribing should not throw
+    /// away the only picture the user will ever see for it.
     pub async fn add_feed(&mut self, url: &str) -> Result<PodcastFeed, String> {
         let parsed = fetch_and_parse(&self.client, url).await?;
         let id = feed_id(url);
+        let art = parsed.image.clone().or_else(|| self.art_for(url));
         if let Some(existing) = self.feeds.iter().position(|f| f.id == id) {
             self.feeds[existing].title = parsed.title.clone();
+            self.feeds[existing].image_url = art.clone();
         } else {
             self.feeds.push(SubscribedFeed {
                 id: id.clone(),
                 url: url.to_string(),
                 title: parsed.title.clone(),
+                image_url: art.clone(),
             });
         }
         self.episodes.insert(id.clone(), parsed.episodes.clone());
@@ -115,7 +136,16 @@ impl PodcastManager {
             url: url.to_string(),
             description: parsed.description,
             episodes: parsed.episodes.len(),
+            image_url: art,
         })
+    }
+
+    /// Artwork already known for a feed url, from the discovery cache.
+    fn art_for(&self, url: &str) -> Option<String> {
+        self.discovery
+            .iter()
+            .find(|r| r.url == url)
+            .and_then(|r| r.image_url.clone())
     }
 
     pub fn remove_feed(&mut self, id: &str) -> Result<(), String> {
@@ -139,8 +169,87 @@ impl PodcastManager {
                 url: f.url.clone(),
                 description: String::new(),
                 episodes: self.episodes.get(&f.id).map(|e| e.len()).unwrap_or(0),
+                image_url: f.image_url.clone(),
             })
             .collect()
+    }
+
+    /// Search the public podcast directory.
+    ///
+    /// Backed by the iTunes Search API, which is the one podcast directory that
+    /// needs no account and no API key: it answers with each show's real
+    /// `feedUrl`, artwork and episode count. Results are cached by query so
+    /// re-entering the picker with the same term costs nothing, and cached
+    /// results are what `add_feed` falls back to for artwork.
+    pub async fn discover(
+        &mut self,
+        term: &str,
+        country: &str,
+    ) -> Result<Vec<PodcastResult>, String> {
+        let term = term.trim();
+        if term.is_empty() {
+            return Err("type something to search for".into());
+        }
+        let key = format!(
+            "{}|{}",
+            country.to_ascii_lowercase(),
+            term.to_ascii_lowercase()
+        );
+        if let Some(hit) = self.discovery_cache.get(&key) {
+            return Ok(hit.clone());
+        }
+        let url = format!(
+            "https://itunes.apple.com/search?term={}&entity=podcast&country={}&limit=50",
+            urlencoding::encode(term),
+            urlencoding::encode(country)
+        );
+        let body: ItunesSearch = reqwest::Client::new()
+            .get(&url)
+            .timeout(FETCH_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| format!("podcast search: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("podcast search: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("podcast search: {e}"))?;
+        let results: Vec<PodcastResult> = body
+            .results
+            .into_iter()
+            .filter_map(|r| {
+                // A show with no feed url cannot be subscribed to or streamed, so it
+                // is not a result — the directory indexes plenty of those.
+                let url = r.feed_url.filter(|u| !u.trim().is_empty())?;
+                Some(PodcastResult {
+                    title: r.collection_name,
+                    author: r.artist_name,
+                    url,
+                    description: String::new(),
+                    image_url: r
+                        .artwork_url600
+                        .or(r.artwork_url100)
+                        .map(|u| upgrade_art(&u)),
+                    episodes: r.track_count.unwrap_or_default() as usize,
+                    country: country.to_string(),
+                })
+            })
+            .collect();
+        if results.is_empty() {
+            return Err(format!("no podcasts matched {term:?}"));
+        }
+        // Remember every result's art, not just the ones on screen, so
+        // subscribing to any of them finds a picture.
+        for r in &results {
+            self.discovery.retain(|d| d.url != r.url);
+            self.discovery.push(r.clone());
+        }
+        // Bounded like the rest of the caches; oldest out first.
+        while self.discovery.len() > 200 {
+            self.discovery.remove(0);
+        }
+        self.discovery_cache.insert(key, results.clone());
+        Ok(results)
     }
 
     /// Episodes of a feed. Returns the cached list; `refresh_feed` re-fetches.
@@ -169,11 +278,12 @@ impl PodcastManager {
             .cloned()
             .ok_or_else(|| "unknown podcast feed".to_string())?;
         let parsed = fetch_and_parse(&self.client, &feed.url).await?;
-        self.feeds
-            .iter_mut()
-            .find(|f| f.id == feed_id)
-            .unwrap()
-            .title = parsed.title.clone();
+        // Keep the stored picture if the feed's own is still absent: feeds
+        // commonly publish artwork only through the directory that indexed them.
+        let art = parsed.image.clone().or(feed.image_url.clone());
+        let slot = self.feeds.iter_mut().find(|f| f.id == feed_id).unwrap();
+        slot.title = parsed.title.clone();
+        slot.image_url = art.clone();
         self.episodes
             .insert(feed_id.to_string(), parsed.episodes.clone());
         self.error = None;
@@ -184,6 +294,7 @@ impl PodcastManager {
             url: feed.url,
             description: parsed.description,
             episodes: parsed.episodes.len(),
+            image_url: art,
         })
     }
 
@@ -314,7 +425,41 @@ fn sensible_id(url: &str) -> String {
 struct ParsedFeed {
     title: String,
     description: String,
+    /// Channel artwork, from `<itunes:image href>` or Atom `<logo>`/`<icon>`.
+    /// Not read before: podcasts had no artwork anywhere, in the feed list or
+    /// the episode card.
+    image: Option<String>,
     episodes: Vec<PodcastEpisode>,
+}
+
+/// The iTunes Search API's podcast result, under its wire names.
+#[derive(serde::Deserialize)]
+struct ItunesSearch {
+    #[serde(default, rename = "results")]
+    results: Vec<ItunesPodcast>,
+}
+
+#[derive(serde::Deserialize)]
+struct ItunesPodcast {
+    #[serde(rename = "collectionName")]
+    collection_name: String,
+    #[serde(default, rename = "artistName")]
+    artist_name: String,
+    #[serde(default, rename = "feedUrl")]
+    feed_url: Option<String>,
+    #[serde(rename = "artworkUrl600")]
+    artwork_url600: Option<String>,
+    #[serde(rename = "artworkUrl100")]
+    artwork_url100: Option<String>,
+    #[serde(rename = "trackCount")]
+    track_count: Option<u64>,
+}
+
+/// The directory publishes a 100px thumbnail; the player wants more than that,
+/// and the 600px form is the same image at a different size in the same path.
+fn upgrade_art(url: &str) -> String {
+    url.replace("/100x100bb.jpg", "/600x600bb.jpg")
+        .replace("/100x100bb.png", "/600x600bb.png")
 }
 
 async fn fetch_and_parse(client: &reqwest::Client, url: &str) -> Result<ParsedFeed, String> {
@@ -346,6 +491,7 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
 
     let mut title = String::new();
     let mut description = String::new();
+    let mut image: Option<String> = None;
     let mut is_atom = false;
     let mut in_channel = false;
 
@@ -376,6 +522,20 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                     && p.url.is_empty()
                 {
                     p.url = url;
+                }
+                // Channel artwork. `<itunes:image href>` is an empty element
+                // carrying only its attribute, so it has to be read here rather
+                // than as text; Atom's `<logo>` and `<icon>` do the same job and
+                // also carry the href in an attribute. A per-episode image wins
+                // over the channel's, since it is the more specific answer.
+                if (name == "image" || name == "logo" || name == "icon")
+                    && let Some(href) = attr_str(&e, "href").or_else(|| attr_str(&e, "url"))
+                    && !href.trim().is_empty()
+                {
+                    match ep.as_mut() {
+                        Some(p) => p.image.get_or_insert(href),
+                        None => image.get_or_insert(href),
+                    };
                 }
                 // `<media:content url=... type="audio/mpeg">` is how a growing
                 // number of feeds carry the audio, in place of an RSS
@@ -599,6 +759,7 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
         title
     };
     let feed_id = feed_id(feed_url);
+    let art = image.clone();
     let episodes: Vec<PodcastEpisode> = episodes
         .into_iter()
         .map(|e| PodcastEpisode {
@@ -614,12 +775,16 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
             } else {
                 Some(e.description)
             },
+            // An episode that carries its own art keeps it; most do not, and
+            // the channel's is a better answer than none.
+            image_url: e.image.or_else(|| art.clone()),
             transcripts: e.transcripts,
         })
         .collect();
     Ok(ParsedFeed {
         title,
         description,
+        image,
         episodes,
     })
 }
@@ -632,6 +797,8 @@ struct ParsedEpisode {
     duration_secs: Option<u64>,
     published: Option<String>,
     description: String,
+    /// Artwork this entry names for itself, from `<image href>` inside it.
+    image: Option<String>,
     transcripts: Vec<PodcastTranscript>,
 }
 
@@ -756,6 +923,57 @@ mod tests {
         assert_eq!(t[0].kind.as_deref(), Some("text/vtt"));
         assert_eq!(t[0].rel.as_deref(), Some("captions"));
         assert!(t[0].text.is_none());
+    }
+
+    /// Channel artwork, in both the shapes feeds publish it.
+    ///
+    /// `<itunes:image href>` is an empty element that carries only its
+    /// attribute, and Atom's `<logo>`/`<icon>` do the same. Neither was read, so
+    /// podcasts had no artwork anywhere: not in the subscription list, and not
+    /// on an episode card.
+    #[test]
+    fn art_field_is_read_when_published() {
+        let rss = feed(
+            r#"<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+<channel><title>Show</title>
+<itunes:image href="https://cdn.example.com/cover.jpg"/>
+<item>
+  <title>Ep 1</title>
+  <enclosure url="https://cdn.example.com/1.mp3" type="audio/mpeg"/>
+</item>
+</channel></rss>"#,
+        );
+        assert_eq!(
+            rss.image.as_deref(),
+            Some("https://cdn.example.com/cover.jpg")
+        );
+        // The channel's art is the episode's default.
+        assert_eq!(
+            rss.episodes[0].image_url.as_deref(),
+            Some("https://cdn.example.com/cover.jpg"),
+            "an episode with no art of its own should inherit the channel's"
+        );
+
+        let atom = feed(
+            r#"<feed xmlns="http://www.w3.org/2005/Atom">
+<title>Show</title>
+<logo>https://cdn.example.com/logo.png</logo>
+<entry>
+  <title>Ep 1</title>
+  <link rel="enclosure" href="https://cdn.example.com/1.mp3" type="audio/mpeg"/>
+  <image href="https://cdn.example.com/ep1.png"/>
+</entry>
+</feed>"#,
+        );
+        assert_eq!(
+            atom.image.as_deref(),
+            Some("https://cdn.example.com/logo.png")
+        );
+        assert_eq!(
+            atom.episodes[0].image_url.as_deref(),
+            Some("https://cdn.example.com/ep1.png"),
+            "a per-episode image must win over the channel's"
+        );
     }
 
     /// The other shape: the element is open and its CDATA *is* the transcript.

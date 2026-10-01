@@ -9,16 +9,52 @@ use crate::ui::pickers::queue::ScrollList;
 use crate::ui::*;
 
 impl Pickers {
+    /// The subscribed feed list, and — when one is showing — the directory
+    /// search that found it.
+    ///
+    /// The two are the same list rather than two pickers: they answer the same
+    /// question ("what can I listen to"), a search result is one Enter away from
+    /// a subscription, and stacking them behind each other meant the empty state
+    /// of a fresh install was a dead end with a URL box as its only exit.
     pub(crate) fn render_podcast_feeds(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        // A search replaces the subscriptions for as long as it has results:
+        // showing both at once under one cursor would mean one set of keys doing
+        // two different things depending on what scrolled into view.
+        let searching = !app.podcast.results.is_empty() || app.podcast.searching;
         let mut rows = Vec::new();
-        for feed in &app.podcast.feeds {
-            rows.push(format!(
-                "\u{1f4e1} {} \u{2003}[{} episodes]",
-                feed.title, feed.episodes
-            ));
+        if searching {
+            for r in &app.podcast.results {
+                let subscribed = app.podcast.feeds.iter().any(|f| f.url == r.url);
+                let mark = if subscribed { "\u{2005}" } else { "+" };
+                let eps = if r.episodes > 0 {
+                    format!("\u{2003}[{} episodes]", r.episodes)
+                } else {
+                    String::new()
+                };
+                let who = if r.author.is_empty() {
+                    String::new()
+                } else {
+                    format!(" \u{2014} {}", r.author)
+                };
+                rows.push(format!("\u{1f4e1} {mark} {}{who}{eps}", r.title));
+            }
+        } else {
+            for feed in &app.podcast.feeds {
+                rows.push(format!(
+                    "\u{1f4e1} {} \u{2003}[{} episodes]",
+                    feed.title, feed.episodes
+                ));
+            }
         }
         let mut prepend = Vec::new();
-        if let Some(st) = app.podcast.status.as_ref() {
+        if searching {
+            if let Some(top) = app.pickers.top() {
+                prepend.push(Line::from(Span::styled(
+                    format!(" search: {}", top.query),
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+            }
+        } else if let Some(st) = app.podcast.status.as_ref() {
             prepend.push(Line::from(Span::styled(
                 format!(" {} feeds, {} episodes", st.feeds, st.episodes),
                 Style::default().fg(app.theme.fg_dim),
@@ -29,12 +65,22 @@ impl Pickers {
             area,
             app,
             ScrollList {
-                title: " Podcasts ",
-                hint: "",
-                empty_msg: if app.podcast.feeds_pending {
+                title: if searching {
+                    " Podcasts \u{2014} search "
+                } else {
+                    " Podcasts "
+                },
+                hint: if searching {
+                    "enter subscribe \u{b7} esc back to subscriptions"
+                } else {
+                    "/ search \u{b7} a add by URL"
+                },
+                empty_msg: if searching {
+                    " no results \u{2014} esc to go back"
+                } else if app.podcast.feeds_pending {
                     " loading feeds\u{2026}"
                 } else {
-                    "no subscriptions \u{2014} press a to add a feed URL"
+                    "no subscriptions \u{2014} press / to search, a to add by URL"
                 },
             },
             prepend,

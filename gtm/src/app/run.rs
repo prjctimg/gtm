@@ -907,6 +907,13 @@ impl App {
                         self.podcast.feeds = feeds;
                         self.podcast.feeds_pending = false;
                     }
+                    IpcResult::PodcastSearch(results) => {
+                        self.podcast.results = results;
+                        self.podcast.searching = false;
+                        // The pane's row count and its scroller both read this,
+                        // so a late reply cannot leave the cursor past the end.
+                        self.data_dirty = true;
+                    }
                     IpcResult::PodcastEpisodes(eps) => {
                         self.podcast.episodes = eps;
                     }
@@ -1450,7 +1457,14 @@ impl App {
                     }
                     IpcResult::CoverCacheStat(bytes) => self.cover_cache_bytes = bytes,
                     IpcResult::AudioDevices(devices) => self.audio_devices = devices,
-                    IpcResult::SpotifyPlaylists(p) => self.spotify.playlists = p,
+                    IpcResult::SpotifyPlaylists(p) => {
+                        self.spotify.playlists = p;
+                        // "All Tracks" is a view over the playlists, so it has
+                        // to be rebuilt whenever they change or the list goes on
+                        // showing the previous sync's tracks.
+                        self.rebuild_playlist_union();
+                        self.data_dirty = true;
+                    }
                     IpcResult::SpotifySyncFinished(ok) => {
                         if ok {
                             self.spotify.synced_once = true;
@@ -1538,6 +1552,23 @@ impl App {
                     && !top.query.is_empty()
                 {
                     self.search_spotify();
+                }
+            }
+
+            // Podcast directory search: same debounce, same reason. A directory
+            // query goes over the network to a third party, so it waits for the
+            // typing to settle rather than firing per keystroke.
+            if let Some(deadline) = self.podcast.search_deadline
+                && now >= deadline
+            {
+                self.podcast.search_deadline = None;
+                if let Some(top) = self.pickers.top()
+                    && top.id == PickerId::PodcastFeeds
+                {
+                    let q = top.query.trim().to_string();
+                    if !q.is_empty() {
+                        self.search_podcasts(q);
+                    }
                 }
             }
 

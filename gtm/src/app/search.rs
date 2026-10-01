@@ -228,7 +228,8 @@ impl App {
     /// unmapped counts as zero, which the picker renders as no count at all.
     pub fn library_count(&self, cat: &str) -> usize {
         match cat {
-            "All Tracks" => self.tracks_cache.len(),
+            // Every track in every Spotify playlist, not the local library.
+            "All Tracks" => self.playlist_union().len(),
             "Liked" => self.tracks_cache.iter().filter(|t| t.favourite).count(),
             "Albums" => self.unique_albums().len(),
             "Artists" => self.unique_artists().len(),
@@ -308,9 +309,67 @@ impl App {
         self.update_track_popup();
     }
 
+    /// Every track in every Spotify playlist, deduplicated, as library rows.
+    ///
+    /// This is what "All Tracks" lists. It used to be the local library — every
+    /// track in the `tracks` table — which is a different set: a local playlist
+    /// stores foreign keys into that same table, so a union of local playlists
+    /// would be a strict subset of it and could only ever show less. Spotify
+    /// playlists are the ones that are not already in it.
+    ///
+    /// Ordered so the first playlist's order wins for a track that appears in
+    /// several, which is the least surprising reading of "all tracks". Rebuilt
+    /// when the playlist sync lands, not per read: it is a full copy of every
+    /// playlist and the row renderer asks for it on every frame.
+    pub fn playlist_union(&self) -> &[TrackInfo] {
+        &self.playlist_tracks
+    }
+
+    /// Rebuild [`App::playlist_union`] from the current playlist cache.
+    pub fn rebuild_playlist_union(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for pl in &self.spotify.playlists {
+            for t in &pl.tracks {
+                let Some(uri) = t.uri.as_deref().filter(|u| !u.is_empty()) else {
+                    continue;
+                };
+                if !seen.insert(uri.to_string()) {
+                    continue;
+                }
+                out.push(TrackInfo {
+                    id: 0,
+                    // The provider URI, not a filesystem path: this is what the
+                    // queue route needs to resolve the row to a real stream.
+                    path: uri.to_string(),
+                    title: t.name.clone(),
+                    artist: t.artists.clone(),
+                    album: t.album.clone().unwrap_or_default(),
+                    duration: t.duration_ms.unwrap_or_default() as f64 / 1000.0,
+                    cover_url: t.image_url.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+        self.playlist_tracks = out;
+    }
+
     pub fn filtered_tracks(&self) -> Vec<&TrackInfo> {
         if self.library_category == 4 && self.browse_detail.is_some() {
             return self.playlist_tracks_cache.iter().collect();
+        }
+        if self.library_category == 0 && self.browse_detail.is_none() {
+            let mut tracks: Vec<&TrackInfo> = self.playlist_union().iter().collect();
+            if !self.search_query.is_empty() {
+                let q = self.search_query.to_lowercase();
+                tracks.retain(|t| {
+                    t.title.to_lowercase().contains(&q)
+                        || t.artist.to_lowercase().contains(&q)
+                        || t.album.to_lowercase().contains(&q)
+                });
+            }
+            Self::sort_tracks(&mut tracks, self.track_sort);
+            return tracks;
         }
         if self.browse_detail.is_none() {
             match self.library_category {
@@ -379,47 +438,68 @@ impl App {
             // on radio:// paths, never on the flat TrackInfo list.
             tracks.clear();
         }
-        // Sorting applies to the flat track list (All Tracks / Favourites and the
-        // album/artist drill-downs). Playlist and Spotify views sort upstream.
-        if self.browse_detail.is_none() && self.library_category <= 1 {
-            match self.track_sort {
-                TrackSort::Recents => {
-                    tracks.sort_by(|a, b| b.year.cmp(&a.year).then_with(|| a.title.cmp(&b.title)));
-                }
-                TrackSort::RecentlyAdded => {
-                    tracks.sort_by_key(|a| std::cmp::Reverse(a.id));
-                }
-                TrackSort::Alphabetical => {
-                    tracks.sort_by(|a, b| {
-                        a.title
-                            .to_lowercase()
-                            .cmp(&b.title.to_lowercase())
-                            .then_with(|| a.artist.to_lowercase().cmp(&b.artist.to_lowercase()))
-                    });
-                }
-                TrackSort::Artist => {
-                    tracks.sort_by(|a, b| {
-                        a.artist
-                            .to_lowercase()
-                            .cmp(&b.artist.to_lowercase())
-                            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-                    });
-                }
-                TrackSort::Album => {
-                    tracks.sort_by(|a, b| {
-                        a.album
-                            .to_lowercase()
-                            .cmp(&b.album.to_lowercase())
-                            .then_with(|| {
-                                a.track_number
-                                    .cmp(&b.track_number)
-                                    .then_with(|| a.title.cmp(&b.title))
-                            })
-                    });
-                }
-            }
+        // Sorting applies to the flat track list (Favourites and the
+        // album/artist drill-downs). Playlist, Spotify and All Tracks views
+        // either sort upstream or are not sorted at all — see `playlist_union`.
+        if self.browse_detail.is_none() && self.library_category == 1 {
+            Self::sort_tracks(&mut tracks, self.track_sort);
         }
         tracks
+    }
+
+    /// Order a flat track list by the selected sort.
+    ///
+    /// `RecentlyAdded` sorts by library id, so it is only meaningful for rows
+    /// that have one: every track in a Spotify playlist has `id == 0` and would
+    /// compare equal, leaving the list in playlist order rather than in any.
+    /// `Recents` is likewise meaningless off the local library, where `year` is
+    /// filled in from tags. Both fall back to alphabetical for the union rather
+    /// than presenting a sort that does nothing.
+    fn sort_tracks(tracks: &mut [&TrackInfo], sort: TrackSort) {
+        match sort {
+            TrackSort::Recents if tracks.iter().all(|t| t.year.is_some_and(|y| y > 0)) => {
+                tracks.sort_by(|a, b| b.year.cmp(&a.year).then_with(|| a.title.cmp(&b.title)));
+            }
+            TrackSort::RecentlyAdded if tracks.iter().all(|t| t.id > 0) => {
+                tracks.sort_by_key(|a| std::cmp::Reverse(a.id));
+            }
+            TrackSort::Alphabetical => {
+                tracks.sort_by(|a, b| {
+                    a.title
+                        .to_lowercase()
+                        .cmp(&b.title.to_lowercase())
+                        .then_with(|| a.artist.to_lowercase().cmp(&b.artist.to_lowercase()))
+                });
+            }
+            TrackSort::Artist => {
+                tracks.sort_by(|a, b| {
+                    a.artist
+                        .to_lowercase()
+                        .cmp(&b.artist.to_lowercase())
+                        .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+                });
+            }
+            TrackSort::Album => {
+                tracks.sort_by(|a, b| {
+                    a.album
+                        .to_lowercase()
+                        .cmp(&b.album.to_lowercase())
+                        .then_with(|| {
+                            a.track_number
+                                .cmp(&b.track_number)
+                                .then_with(|| a.title.cmp(&b.title))
+                        })
+                });
+            }
+            TrackSort::Recents | TrackSort::RecentlyAdded => {
+                tracks.sort_by(|a, b| {
+                    a.title
+                        .to_lowercase()
+                        .cmp(&b.title.to_lowercase())
+                        .then_with(|| a.artist.to_lowercase().cmp(&b.artist.to_lowercase()))
+                });
+            }
+        }
     }
 
     /// Expand the highlighted album/artist row to the ids of every cached track

@@ -27,7 +27,7 @@ use crate::shared::ipc::{
 };
 use crate::shared::log::log;
 use crate::shared::playlist::PlaylistFormatKind;
-use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
+use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastResult, PodcastStatus};
 use crate::shared::radio::{RadioCountry, RadioStation, RadioTag, RadioTracklist};
 use crate::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::shared::track;
@@ -1396,6 +1396,22 @@ impl<'a> Podcast<'a> {
         let res = self.client.send_raw(DaemonReq::PodcastFeeds).await?;
         match res {
             DaemonRes::PodcastFeedsRes { feeds, .. } => Ok(feeds),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    /// Search the public directory. Results are feed urls, not subscriptions.
+    pub async fn discover(&self, term: &str, country: &str) -> Result<Vec<PodcastResult>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::PodcastSearch {
+                term: term.into(),
+                country: country.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::PodcastSearchRes { results, .. } => Ok(results),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
         }
