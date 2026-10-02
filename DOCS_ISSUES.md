@@ -11,10 +11,38 @@ reader to trip over.
 
 ## Sections
 
+- [Docs-site changes already applied](#docs-site-changes-already-applied)
 - [A. Prose stripped from the docs](#a-prose-stripped-from-the-docs)
 - [B. Doc claims that contradict the code](#b-doc-claims-that-contradict-the-code)
 - [C. Undocumented features — candidate pages](#c-undocumented-features--candidate-pages)
 - [D. Bugs found in gtm.rs](#d-bugs-found-in-gtmrs)
+
+---
+
+## Docs-site changes already applied
+
+So the next pass does not re-litigate settled decisions:
+
+- `content/interface.mdx` → `content/tui.mdx`, route `/docs/tui`. **The old
+  `/docs/interface` URL is not redirected and will 404** — by choice, not
+  oversight. Anything still linking to it needs updating (`playback.mdx`,
+  `configuration.mdx`, `RULES.md`, and the sitemap, which regenerates on build).
+- Sidebar: the "More" group heading is gone. `/docs/` pages and the top-level
+  `/install` and `/benchmark` pages render as one continuous list.
+- The breadcrumb component was deleted outright rather than reduced to a single
+  crumb, since `HeadingSelect` already covers jump-to-top on narrow viewports
+  and the `<h1>` sits directly below it on desktop.
+- `public/samples/` → `public/media/{static,gif}/`.
+- Every item in section A was removed. Every item in section B that could be
+  fixed from the docs side was fixed: the counts, key names, the Last.fm flow,
+  the lyric nudge, the layout diagram, `Alt+b`, `Browse`, the broken anchors and
+  the wrong benchmark README link.
+- `daydream_secs` and `discord_id` / `discord_app_id` gained rows in the config
+  field reference, and a Discord Rich Presence section was added.
+
+Items in section B that need a decision rather than an edit: **B1** (speed),
+**B2** (visualizer toggle). **B3** and **B4** are code fixes — the docs now
+describe the code as it should be.
 
 ---
 
@@ -163,7 +191,20 @@ man pages, which are currently one bullet in `install.mdx`.
 ### Two undocumented keys
 
 `daydream_secs` and `discord_id` / `discord_app_id` are readable, persisted config
-keys with no documentation at all. `configuration.mdx` gained rows for the first.
+keys with no documentation at all. `configuration.mdx` gained rows for both.
+
+### Loudness mode and pre-gain have no surface at all
+
+`LoudnessMode` (Off / Track / Album / Auto) and `pre_gain_db` are persisted in
+`AudioSettings` and settable over IPC (`SetLoudnessMode`, `SetPreGain`), with
+their own events — but there is no CLI command, no Settings row, and no
+`keymap.rs` action. `audio.mdx` now has a short section saying exactly that.
+Worth deciding whether they are a feature to expose or state to drop.
+
+### Packaging
+
+`Formula/gtm.rb` (Homebrew) and `flake.nix` (Nix) exist in this repository but
+were documented nowhere — `install.mdx` listed crates.io alone. Both added.
 
 ---
 
