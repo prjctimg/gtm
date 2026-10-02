@@ -341,6 +341,14 @@ pub fn default_keybindings() -> Keybindings {
                 KeyboardAction::OpenOverlay(PickerId::About),
                 NORMAL
             ),
+            // Advertised by the help buffer and the command palette since the
+            // health check shipped, with no binding behind either: pressing the
+            // key the app told you about did nothing.
+            b!(
+                KeyEvent::new(KeyCode::Char('H'), KeyModifiers::ALT),
+                KeyboardAction::CheckHealth,
+                NORMAL
+            ),
             b!(
                 KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT),
                 KeyboardAction::OpenOverlay(PickerId::SleepTimer),
@@ -351,8 +359,10 @@ pub fn default_keybindings() -> Keybindings {
                 KeyboardAction::OpenOverlay(PickerId::Equalizer),
                 NORMAL
             ),
+            // `Alt+l` is already AddToSpotify, so the whole-picker key is
+            // capitalised rather than stealing the lowercase one.
             b!(
-                KeyEvent::new(KeyCode::Char('l'), KeyModifiers::ALT),
+                KeyEvent::new(KeyCode::Char('L'), KeyModifiers::ALT),
                 KeyboardAction::OpenOverlay(PickerId::Look),
                 NORMAL
             ),
@@ -364,11 +374,6 @@ pub fn default_keybindings() -> Keybindings {
             b!(
                 KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
                 KeyboardAction::OpenLook(crate::app::Look::Visualizer),
-                NORMAL
-            ),
-            b!(
-                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-                KeyboardAction::OpenLook(crate::app::Look::Progress),
                 NORMAL
             ),
             b!(
@@ -778,10 +783,12 @@ mod tests {
         }
     }
 
-    /// `Alt+p` is podcasts; the progress bar style moved to `Alt+b` so the
-    /// Podcasts category is reachable at all.
+    /// `Alt+p` is Podcasts and `Alt+b` is Browse, so both categories are
+    /// reachable at all -- the Progress Bar category, which is what used to
+    /// shadow Podcasts, now has no key of its own and is reached with `Alt+L`
+    /// then Tab. The clash test is what keeps that arrangement honest.
     #[test]
-    fn podcasts_and_progress_style_are_both_reachable() {
+    fn podcasts_and_browse_are_both_reachable() {
         assert!(matches!(
             dispatch(
                 KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
@@ -794,7 +801,22 @@ mod tests {
                 KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
                 KeyContext::Normal
             ),
-            Some(KeyboardAction::OpenLook(crate::app::Look::Progress))
+            Some(KeyboardAction::OpenOverlay(PickerId::Browse))
+        ));
+        // The presentation picker keeps its own key, clear of `Alt+l`.
+        assert!(matches!(
+            dispatch(
+                KeyEvent::new(KeyCode::Char('L'), KeyModifiers::ALT),
+                KeyContext::Normal
+            ),
+            Some(KeyboardAction::OpenOverlay(PickerId::Look))
+        ));
+        assert!(matches!(
+            dispatch(
+                KeyEvent::new(KeyCode::Char('l'), KeyModifiers::ALT),
+                KeyContext::Normal
+            ),
+            Some(KeyboardAction::AddToSpotify)
         ));
     }
 

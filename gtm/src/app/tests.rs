@@ -97,7 +97,7 @@ fn pinned_category_indices_do_not_move() {
     assert_eq!(LIBRARY_CATEGORIES[12], "Top Charts");
     assert_eq!(
         *LIBRARY_CATEGORIES.last().unwrap(),
-        "Podcasts",
+        "Browse",
         "the newest category must be appended, not inserted"
     );
 }

@@ -110,9 +110,10 @@ To turn it off, empty the `Alt+X` field and press Enter, or remove
 | `Alt+/` | Search the library |
 | `Alt+l` | Add the current track to a Spotify playlist |
 | `Alt+L` | Presentation picker: zen layout, theme, visualizer, progress bar, footer |
+| `Tab` | In the presentation picker: next setting |
+| `Left` / `Right` | In the presentation picker: change the setting |
 | `Alt+c` | Presentation picker, on Theme |
 | `Alt+v` | Presentation picker, on Visualizer |
-| `Alt+b` | Presentation picker, on Progress Bar |
 | `Alt+,` | Settings |
 | `Alt+.` | Pick a library to show |
 | `Alt+a` | About |

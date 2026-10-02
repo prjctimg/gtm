@@ -30,7 +30,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   S           Shuffle Library"),
     ("", "   f           Toggle Favourite"),
     ("", "   L           Like on Spotify (live track)"),
-    ("", "   Alt+L       Add live track to Spotify"),
+    ("", "   Alt+l       Add live track to Spotify"),
     ("topic", "── Navigation ──"),
     ("", "   Tab         Switch Pane"),
     ("", "   Shift+Tab   Switch Pane (back)"),

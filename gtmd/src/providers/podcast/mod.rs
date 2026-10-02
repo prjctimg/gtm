@@ -523,20 +523,7 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 {
                     p.url = url;
                 }
-                // Channel artwork. `<itunes:image href>` is an empty element
-                // carrying only its attribute, so it has to be read here rather
-                // than as text; Atom's `<logo>` and `<icon>` do the same job and
-                // also carry the href in an attribute. A per-episode image wins
-                // over the channel's, since it is the more specific answer.
-                if (name == "image" || name == "logo" || name == "icon")
-                    && let Some(href) = attr_str(&e, "href").or_else(|| attr_str(&e, "url"))
-                    && !href.trim().is_empty()
-                {
-                    match ep.as_mut() {
-                        Some(p) => p.image.get_or_insert(href),
-                        None => image.get_or_insert(href),
-                    };
-                }
+                take_art(&name, &e, &mut image, ep.as_mut());
                 // `<media:content url=... type="audio/mpeg">` is how a growing
                 // number of feeds carry the audio, in place of an RSS
                 // `<enclosure>`. It was not read at all, so those episodes came
@@ -597,6 +584,7 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 {
                     p.url = url;
                 }
+                take_art(&name, &e, &mut image, ep.as_mut());
                 if name == "link"
                     && is_atom
                     && let Some(p) = ep.as_mut()
@@ -882,6 +870,36 @@ fn attr_str(e: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<String> 
         }
     }
     None
+}
+
+/// Read artwork from `<itunes:image href>`, `<image href>` or Atom's
+/// `<logo>`/`<icon>`, which all carry the URL in an attribute rather than as
+/// text.
+///
+/// Feeds write these self-closing, so the parser has to answer on both `Start`
+/// and `Empty`; it did only on `Start`, and every real feed therefore arrived
+/// with no artwork. A per-episode image wins over the channel's, being the more
+/// specific answer, and the first one seen wins within a scope -- a channel that
+/// lists several sizes wants the first, not the largest.
+fn take_art(
+    name: &str,
+    e: &quick_xml::events::BytesStart<'_>,
+    image: &mut Option<String>,
+    ep: Option<&mut ParsedEpisode>,
+) {
+    if name != "image" && name != "logo" && name != "icon" {
+        return;
+    }
+    let Some(href) = attr_str(e, "href").or_else(|| attr_str(e, "url")) else {
+        return;
+    };
+    if href.trim().is_empty() {
+        return;
+    }
+    match ep {
+        Some(p) => p.image.get_or_insert(href),
+        None => image.get_or_insert(href),
+    };
 }
 
 fn looks_audio(mime: &str) -> bool {
