@@ -106,19 +106,20 @@ To turn it off, empty the `Alt+X` field and press Enter, or remove
 | `Alt+S` | Cycle library sort order |
 | `Alt+O` | Play an HTTP(S) stream URL |
 | `Alt+p` | Podcast feeds |
-| `Alt+b` | Progress bar style |
 | `Alt+1` | Toggle mono |
 | `Alt+/` | Search the library |
 | `Alt+l` | Add the current track to a Spotify playlist |
+| `Alt+L` | Presentation picker: zen layout, theme, visualizer, progress bar, footer |
+| `Alt+c` | Presentation picker, on Theme |
+| `Alt+v` | Presentation picker, on Visualizer |
+| `Alt+b` | Presentation picker, on Progress Bar |
 | `Alt+,` | Settings |
 | `Alt+.` | Pick a library to show |
 | `Alt+a` | About |
-| `Alt+c` | Theme picker |
 | `Alt+e` | Equalizer |
 | `Alt+n` | Notifications |
 | `Alt+q` | Queue |
 | `Alt+s` | Search Spotify (requires linking) |
-| `Alt+v` | Visualizer preset |
 | `Alt+x` | Setup walkthrough (Spotify, Last.fm, YouTube, Discord) |
 | `Alt+y` | Search YouTube |
 | `Alt+z` | Sleep timer |

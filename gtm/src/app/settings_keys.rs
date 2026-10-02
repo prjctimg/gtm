@@ -157,7 +157,7 @@ impl App {
                 _ => {}
             },
             1 => match opt {
-                0 => self.pickers.open(PickerId::ThemePicker),
+                0 => self.open_look_on(Look::Theme),
                 1 => self.cycle_theme_mode(),
                 2 => self.open_audio_picker(),
                 3 => {
@@ -171,9 +171,9 @@ impl App {
                 5 => self.toggle_hide_footer(),
                 6 => self.toggle_reactive_theme(tx),
                 7 => self.cycle_reactive_intensity(),
-                8 => self.pickers.open(PickerId::VisualizerPreset),
+                8 => self.open_look_on(Look::Visualizer),
                 9 => self.cycle_daydream(),
-                10 => self.pickers.open(PickerId::FooterPreset),
+                10 => self.open_look_on(Look::Footer),
                 11 => sync_and_wait(
                     self.client.clone(),
                     SyncKind::Covers,

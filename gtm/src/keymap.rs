@@ -71,6 +71,14 @@ pub enum KeyboardAction {
 
     // Overlay triggers
     OpenOverlay(PickerId),
+    /// Open the unified presentation picker on one category.
+    ///
+    /// Five settings, one overlay: the keys that used to open five pickers now
+    /// open this one, so each has to carry which setting it meant. A bare
+    /// `OpenOverlay(PickerId::Look)` would drop all five on the first category,
+    /// which is how a key labelled "progress bar" would have opened the theme
+    /// list.
+    OpenLook(crate::app::Look),
 
     // Navigation
     Back,
@@ -339,23 +347,28 @@ pub fn default_keybindings() -> Keybindings {
                 NORMAL
             ),
             b!(
-                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT),
-                KeyboardAction::OpenOverlay(PickerId::ThemePicker),
-                NORMAL
-            ),
-            b!(
                 KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
                 KeyboardAction::OpenOverlay(PickerId::Equalizer),
                 NORMAL
             ),
             b!(
-                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-                KeyboardAction::OpenOverlay(PickerId::ProgressStyle),
+                KeyEvent::new(KeyCode::Char('l'), KeyModifiers::ALT),
+                KeyboardAction::OpenOverlay(PickerId::Look),
+                NORMAL
+            ),
+            b!(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT),
+                KeyboardAction::OpenLook(crate::app::Look::Theme),
                 NORMAL
             ),
             b!(
                 KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
-                KeyboardAction::OpenOverlay(PickerId::VisualizerPreset),
+                KeyboardAction::OpenLook(crate::app::Look::Visualizer),
+                NORMAL
+            ),
+            b!(
+                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+                KeyboardAction::OpenLook(crate::app::Look::Progress),
                 NORMAL
             ),
             b!(
@@ -631,12 +644,15 @@ impl KeyboardAction {
             "open_notifications" | "notifications" => {
                 KeyboardAction::OpenOverlay(PickerId::Notifications)
             }
-            "open_theme_picker" | "themes" => KeyboardAction::OpenOverlay(PickerId::ThemePicker),
+            "open_look" | "look" | "presentation" => KeyboardAction::OpenOverlay(PickerId::Look),
+            "open_theme_picker" | "themes" => KeyboardAction::OpenLook(crate::app::Look::Theme),
+            "open_zen_layout" => KeyboardAction::OpenLook(crate::app::Look::Layout),
             "open_eq" | "open_equalizer" | "equalizer" => {
                 KeyboardAction::OpenOverlay(PickerId::Equalizer)
             }
-            "open_progress_style" => KeyboardAction::OpenOverlay(PickerId::ProgressStyle),
-            "open_visualizer_preset" => KeyboardAction::OpenOverlay(PickerId::VisualizerPreset),
+            "open_progress_style" => KeyboardAction::OpenLook(crate::app::Look::Progress),
+            "open_visualizer_preset" => KeyboardAction::OpenLook(crate::app::Look::Visualizer),
+            "open_footer_preset" => KeyboardAction::OpenLook(crate::app::Look::Footer),
             "open_about" | "about" => KeyboardAction::OpenOverlay(PickerId::About),
             "open_sleep_timer" | "sleep_timer" => KeyboardAction::OpenOverlay(PickerId::SleepTimer),
             "open_command_palette" | "commands" => {
@@ -778,7 +794,7 @@ mod tests {
                 KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
                 KeyContext::Normal
             ),
-            Some(KeyboardAction::OpenOverlay(PickerId::ProgressStyle))
+            Some(KeyboardAction::OpenLook(crate::app::Look::Progress))
         ));
     }
 

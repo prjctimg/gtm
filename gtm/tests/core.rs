@@ -2528,34 +2528,40 @@ fn list_rows_have_no_bracketed_stream_suffix() {
     );
 }
 
-/// The lyrics header needs its own cover protocol, not the now-playing one.
+/// The lyrics header shares the now-playing cover protocol, and does so on
+/// purpose: one image, two draws.
 ///
-/// Both panes can be on screen in the same frame, and one `StatefulProtocol`
-/// rendered twice writes into the same cell buffer twice, so each pane would
-/// draw part of the other. The state must therefore be per-pane.
+/// The two panes used to keep separate `StatefulProtocol`s built from the same
+/// bytes, on the theory that drawing one twice would garble it. They are the
+/// same picture at the same size, so the second protocol cost a decode per pane
+/// and could not drift from the first. Sharing is the fix, but only while both
+/// panes really do ask for the same geometry — so that is what is pinned here.
 #[test]
-fn lyrics_cover_has_its_own_protocol() {
+fn lyrics_cover_shares_the_now_playing_protocol() {
     let app = include_str!("../src/app/mod.rs");
     let cover = include_str!("../src/app/cover.rs");
     let chrome = include_str!("../src/ui/chrome.rs");
 
+    // One state, not two. A second one would decode the same bytes twice.
     assert!(
-        app.contains("pub lyrics_cover: NowPlayingCoverState,"),
-        "App has no separate cover state for the lyrics pane"
+        !app.contains("lyrics_cover"),
+        "a second per-pane cover state is back"
     );
-    // Built in the same place as the now-playing one, from the same bytes.
+    // Built once, from the track's own art.
     assert!(
-        cover.contains("self.lyrics_cover.stateful = Some(picker.new_resize_protocol(img2))"),
-        "the lyrics protocol is not built alongside the now-playing one"
+        cover
+            .contains("Ok(img) => self.np_cover.stateful = Some(picker.new_resize_protocol(img)),"),
+        "the now-playing protocol is not built from the fetched art"
     );
-    // The renderer must take the lyrics one, not the shared now-playing one.
+    // The lyrics header draws it, centred in the same column the left pane
+    // uses, so the two images land at the same height.
     assert!(
-        chrome.contains("app.lyrics_cover.stateful.as_mut()"),
-        "the lyrics header does not use its own protocol"
+        chrome.contains("app.np_cover.stateful.as_mut(),\n                        app.np_cover.image.as_deref(),\n                        app.theme.fg_dim,\n                        Some(\" \\u{266b} \"),"),
+        "the lyrics header does not draw the shared protocol"
     );
     assert!(
-        !chrome.contains("app.np_cover.stateful.as_mut(),\n                        app.np_cover.image.as_deref(),\n                        app.theme.fg_dim,\n                        Some(\" \\u{266b} \"),\n                    );\n                }\n\n                let para"),
-        "the lyrics header still borrows the now-playing protocol"
+        chrome.contains("x: col.x + col.width.saturating_sub(cw) / 2,"),
+        "the lyrics cover is no longer centred in its column"
     );
 }
 
@@ -2690,10 +2696,6 @@ fn crossfade_advances_exactly_once_at_full_volume() {
     );
 }
 
-/// The up-next card's countdown must follow the real crossfade setting.
-///
-/// It was built from a field initialised to 6 and never written again, so the
-
 /// Four scrobbling and state-persistence defects.
 ///
 /// A scrobble that never lands and a state file that never loads both fail
@@ -2748,7 +2750,7 @@ fn scrobbling_and_state_persistence() {
         "SavedState::load is discarding parse errors silently again"
     );
     assert!(
-        state.contains("ignoring unreadable state file"),
+        state.contains("ignoring unreadable state file {}: {e}"),
         "a bad state file is not reported"
     );
     let saved = state.find("pub struct SavedState").expect("no SavedState");
