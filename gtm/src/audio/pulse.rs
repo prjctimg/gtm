@@ -20,7 +20,7 @@ use crate::audio::buffer::{
     RingBufferInner, SharedRingBuffer,
 };
 use crate::audio::decoder::DecodeThread;
-use crate::audio::eq::{EqGains, EqSource, ReverbSource};
+use crate::audio::eq::{EqGains, EqSource, PreGain, PreGainSource, ReverbSource};
 use crate::audio::mixer::{Mixer, STREAM_PREBUFFER_TIMEOUT};
 use crate::audio::symphonia::SymphoniaSource;
 use crate::audio::wave::WaveformShared;
@@ -345,8 +345,10 @@ impl PulseAudioMixer {
         source: Box<dyn Source<Item = f32> + Send>,
     ) -> Box<dyn Source<Item = f32> + Send> {
         // Pre-gain first, so the EQ and reverb see the level it produced --
-        // which is the whole point of calling it pre-gain.
-        let source = PreGainSource::new(source, self.pre_gain.clone());
+        // which is the whole point of calling it pre-gain. Boxed so the two
+        // branches below keep one concrete type to share.
+        let source: Box<dyn Source<Item = f32> + Send> =
+            Box::new(PreGainSource::new(source, self.pre_gain.clone()));
         let source = if self.eq_enabled.load(Ordering::Relaxed) {
             Box::new(EqSource::new(source, self.eq_gains.clone()))
                 as Box<dyn Source<Item = f32> + Send>
