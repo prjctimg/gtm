@@ -674,6 +674,26 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                     && (description.is_empty() || !is_atom)
                 {
                     description = t.decode().unwrap_or_default().trim().to_string();
+                } else if let Some(field) = stack.last()
+                    && (field == "logo" || field == "icon" || field == "image")
+                    && (in_channel || is_atom)
+                {
+                    let url = t.decode().unwrap_or_default().trim().to_string();
+                    if !url.is_empty() {
+                        image.get_or_insert(url);
+                    }
+                } else if ep.is_none()
+                    && stack.last().is_some_and(|f| f == "url")
+                    && stack.iter().any(|f| f == "image")
+                {
+                    // RSS 2.0's own channel art, `<image><url>…</url></image>`,
+                    // which is what a feed without the iTunes namespace uses.
+                    // Neither form nests, so the enclosing `<image>` on the
+                    // stack is what tells a channel image from any other URL.
+                    let url = t.decode().unwrap_or_default().trim().to_string();
+                    if !url.is_empty() {
+                        image.get_or_insert(url);
+                    }
                 }
             }
             Ok(Event::CData(c)) => {
@@ -872,15 +892,17 @@ fn attr_str(e: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<String> 
     None
 }
 
-/// Read artwork from `<itunes:image href>`, `<image href>` or Atom's
-/// `<logo>`/`<icon>`, which all carry the URL in an attribute rather than as
-/// text.
+/// Read artwork from an attribute: `<itunes:image href>` or `<image href>`.
 ///
 /// Feeds write these self-closing, so the parser has to answer on both `Start`
 /// and `Empty`; it did only on `Start`, and every real feed therefore arrived
 /// with no artwork. A per-episode image wins over the channel's, being the more
 /// specific answer, and the first one seen wins within a scope -- a channel that
 /// lists several sizes wants the first, not the largest.
+///
+/// Atom's `<logo>`/`<icon>` and RSS 2.0's `<image><url>` put the URL in text
+/// instead, and are read in the `Text` arm for that reason. All three shapes
+/// are out there, and a feed that publishes one of them is not unusual.
 fn take_art(
     name: &str,
     e: &quick_xml::events::BytesStart<'_>,
@@ -991,6 +1013,31 @@ mod tests {
             atom.episodes[0].image_url.as_deref(),
             Some("https://cdn.example.com/ep1.png"),
             "a per-episode image must win over the channel's"
+        );
+
+        // RSS 2.0 without the iTunes namespace: the URL is inside <image>.
+        let plain = feed(
+            r#"<rss version="2.0">
+<channel><title>Show</title>
+<image>
+  <url>https://cdn.example.com/plain.jpg</url>
+  <title>Show</title>
+  <link>https://example.com</link>
+</image>
+<item>
+  <title>Ep 1</title>
+  <enclosure url="https://cdn.example.com/1.mp3" type="audio/mpeg"/>
+</item>
+</channel></rss>"#,
+        );
+        assert_eq!(
+            plain.image.as_deref(),
+            Some("https://cdn.example.com/plain.jpg"),
+            "RSS 2.0 puts the channel image in <image><url>"
+        );
+        assert_eq!(
+            plain.episodes[0].image_url.as_deref(),
+            Some("https://cdn.example.com/plain.jpg")
         );
     }
 

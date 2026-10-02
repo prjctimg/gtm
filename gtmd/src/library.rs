@@ -403,12 +403,7 @@ impl Library {
             .execute("INSERT INTO playlists (name) VALUES (?1)", params![name])
             .map_err(|e| format!("create playlist: {e}"))?;
         let id = self.conn.last_insert_rowid();
-        // Mirror the playlist as a `.m3u8` file next to the database so the
-        // playlist survives a DB reset and is usable by other players.
-        let m3u_path = self.data_dir.join(m3u8_file_name(name));
-        if let Err(e) = std::fs::write(&m3u_path, format!("#EXTM3U\n#PLAYLIST: {name}\n")) {
-            tracing::warn!("failed to write {}: {e}", m3u_path.display());
-        }
+        self.write_m3u8(id);
         self.get_playlist(id)?
             .ok_or_else(|| "created playlist not found".to_string())
     }
@@ -437,14 +432,13 @@ impl Library {
             return Err("playlist not found".to_string());
         }
         // Mirror the rename on the filesystem copy so the `.m3u8` filename
-        // still matches the playlist after a DB reset.
+        // still matches the playlist after a DB reset. The contents are
+        // rewritten rather than moved, since the header carries the name.
         if let Some(old_name) = old_name {
             let old_path = self.data_dir.join(m3u8_file_name(&old_name));
-            let new_path = self.data_dir.join(m3u8_file_name(&name));
-            if old_path.exists() {
-                let _ = std::fs::rename(old_path, new_path);
-            }
+            let _ = std::fs::remove_file(old_path);
         }
+        self.write_m3u8(id);
         self.get_playlist(id)?
             .ok_or_else(|| "renamed playlist not found".to_string())
     }
@@ -488,6 +482,7 @@ impl Library {
                 params![playlist_id, track_id, max_pos + 1],
             )
             .map_err(|e| format!("add to playlist: {e}"))?;
+        self.write_m3u8(playlist_id);
         Ok(())
     }
 
@@ -498,7 +493,32 @@ impl Library {
                 params![playlist_id, track_id],
             )
             .map_err(|e| format!("remove from playlist: {e}"))?;
+        self.write_m3u8(playlist_id);
         Ok(())
+    }
+
+    /// Rewrite a playlist's `.m3u8` mirror next to the database.
+    ///
+    /// The mirror is written once at create time and never again, so it stayed a
+    /// two-line header: it survived a DB reset, as intended, but it was not a
+    /// usable playlist for any other player, which is the other half of why it
+    /// exists. Every mutation that changes the track list goes through here.
+    ///
+    /// Best-effort: a mirror that cannot be written is worth a warning, not a
+    /// failed mutation, since the database is the real copy and a playlist the
+    /// user can still play has been saved either way.
+    fn write_m3u8(&self, playlist_id: i64) {
+        let (Ok(Some(playlist)), Ok(tracks)) = (
+            self.get_playlist(playlist_id),
+            self.get_playlist_tracks(playlist_id),
+        ) else {
+            return;
+        };
+        let path = self.data_dir.join(m3u8_file_name(&playlist.name));
+        let content = M3u8Format.render(&playlist, &tracks);
+        if let Err(e) = std::fs::write(&path, content) {
+            tracing::warn!("failed to write {}: {e}", path.display());
+        }
     }
 
     /// Reassign contiguous `position` values (0..n) in playlist order, so gaps
@@ -532,23 +552,34 @@ impl Library {
         tx.commit().map_err(|e| format!("reposition commit: {e}"))
     }
 
-    /// Remove duplicate track entries from a playlist (keeping the earliest
-    /// `position`), returning how many rows were removed. With the
-    /// `(playlist_id, track_id)` primary key duplicates can only arise from
-    /// manual DB edits, but the repair doubles as a position repack.
+    /// Remove duplicate entries from a playlist, keeping the earliest one, and
+    /// return how many rows went.
+    ///
+    /// It used to group by `track_id`, which the `(playlist_id, track_id)`
+    /// primary key already forbids: the command could never remove a row, and
+    /// was a position repack wearing a name that promised otherwise. The
+    /// duplication it can actually find is two *different* `track_id`s pointing
+    /// at the same file — `tracks.path` is indexed but not unique, so a
+    /// re-scan or a manual edit can produce that, and the primary key does not
+    /// stop it. Grouping by path catches both that and anything a hand-edited
+    /// database contains.
     pub fn playlist_dedup(&self, id: i64) -> Result<usize, String> {
         let removed = self
             .conn
             .execute(
                 "DELETE FROM playlist_tracks
                  WHERE playlist_id = ?1 AND rowid NOT IN (
-                     SELECT MIN(rowid) FROM playlist_tracks
-                     WHERE playlist_id = ?1 GROUP BY track_id
+                     SELECT MIN(pt.rowid) FROM playlist_tracks pt
+                     JOIN tracks t ON t.id = pt.track_id
+                     WHERE pt.playlist_id = ?1 GROUP BY t.path
                  )",
-                params![id, id],
+                params![id],
             )
             .map_err(|e| format!("playlist dedup: {e}"))?;
         self.reposition(id)?;
+        if removed > 0 {
+            self.write_m3u8(id);
+        }
         Ok(removed)
     }
 
@@ -565,6 +596,7 @@ impl Library {
         }
         if removed > 0 {
             self.reposition(id)?;
+            self.write_m3u8(id);
         }
         Ok(removed)
     }
@@ -613,7 +645,9 @@ impl Library {
             }
         }
         tx.commit()
-            .map_err(|e| format!("playlist sort commit: {e}"))
+            .map_err(|e| format!("playlist sort commit: {e}"))?;
+        self.write_m3u8(id);
+        Ok(())
     }
 
     pub fn get_playlist_tracks(&self, id: i64) -> Result<Vec<TrackInfo>, String> {

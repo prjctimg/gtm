@@ -345,13 +345,26 @@ pub fn clear(state: &mut DaemonState) {
     state.fallback_disabled = true;
 }
 
-const AUDIO_EXTENSIONS: &[&str] = &["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus", "wma"];
+const AUDIO_EXTENSIONS: &[&str] = &["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus"];
 
-fn is_audio_file(path: &Path) -> bool {
+/// Audio that `wma` used to sit beside in [`AUDIO_EXTENSIONS`] and that nothing
+/// can decode.
+///
+/// Symphonia's `all-codecs` is aac, adpcm, alac, flac, mp1, mp2, mp3, pcm and
+/// vorbis; there is no WMA decoder in it or anywhere else in the build. Listing
+/// the extension anyway meant `queue-add` took the file, reported success, and
+/// the failure only surfaced once playback reached it. Rejecting it here says
+/// "unsupported" instead of letting it look playable.
+const UNDECODABLE_EXTENSIONS: &[&str] = &["wma"];
+
+fn ext_of(path: &Path) -> Option<String> {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
-        .is_some_and(|ext| AUDIO_EXTENSIONS.contains(&ext.as_str()))
+}
+
+fn is_audio_file(path: &Path) -> bool {
+    ext_of(path).is_some_and(|ext| AUDIO_EXTENSIONS.contains(&ext.as_str()))
 }
 
 /// Expand a list of user-supplied paths into concrete audio files. A path
@@ -366,6 +379,16 @@ pub fn expand_paths(paths: &[String]) -> Result<Vec<String>, String> {
         if p.is_dir() {
             out.extend(scan_audio_files(path));
         } else if p.is_file() {
+            // Audio we cannot decode is reported as unsupported rather than as
+            // "not an audio file": it is audio, and the distinction is the whole
+            // answer.
+            if let Some(ext) = ext_of(p)
+                && UNDECODABLE_EXTENSIONS.contains(&ext.as_str())
+            {
+                return Err(format!(
+                    "unsupported audio format (nothing here can decode .{ext}): {path}"
+                ));
+            }
             if !is_audio_file(p) {
                 return Err(format!("not an audio file: {path}"));
             }
