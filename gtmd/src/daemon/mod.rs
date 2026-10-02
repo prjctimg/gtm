@@ -457,8 +457,7 @@ impl Cmd {
     /// Play a synthetic remote path (`podcast://`, `radio://`, `stream://`)
     /// by streaming the underlying HTTP URL through the native decoder. Reuses
     /// the same `load_active_decoded` pipeline as local files and Spotify, so
-    /// EQ, crossfade-standby and gapless handling all agree on the
-    /// decoded sample stream.
+    /// EQ and crossfade-standby handling agree on the decoded sample stream.
     async fn play_remote(
         inner: &DaemonInner,
         path: &str,
@@ -1127,15 +1126,6 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    pub async fn set_gapless(inner: &DaemonInner, enabled: bool) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.set_gapless(enabled)?;
-        drop(state);
-        Daemon::push_event(inner, DaemonEvent::GaplessChanged { enabled });
-        Daemon::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
     pub async fn set_dynamic_mode(
         inner: &DaemonInner,
         enabled: bool,
@@ -1796,7 +1786,6 @@ fn request_is_playback(req: &DaemonReq) -> bool {
             | DaemonReq::SetReverb { .. }
             | DaemonReq::SetPreGain { .. }
             | DaemonReq::SetLoudnessMode { .. }
-            | DaemonReq::SetGapless { .. }
             | DaemonReq::SetDynamicMode { .. }
             | DaemonReq::SetSleepTimer { .. }
             | DaemonReq::CancelSleepTimer
@@ -2795,7 +2784,6 @@ impl Daemon {
                 Cmd::scan_loudness(inner, track_ids.clone(), *force).await
             }
             DaemonReq::SetPreGain { pre_gain_db } => Cmd::set_pre_gain(inner, *pre_gain_db).await,
-            DaemonReq::SetGapless { enabled } => Cmd::set_gapless(inner, *enabled).await,
             DaemonReq::SetDynamicMode {
                 enabled,
                 min_queue_remaining,

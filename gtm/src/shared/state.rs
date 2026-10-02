@@ -200,7 +200,6 @@ pub struct DaemonState {
     pub sleep_timer: Option<u32>,
     #[serde(flatten)]
     pub audio: AudioSettings,
-    pub gapless: bool,
     pub dynamic_mode: DynamicModeConfig,
     pub scrobble: ScrobbleConfig,
     #[serde(default)]
@@ -552,8 +551,6 @@ pub struct SavedState {
     #[serde(flatten)]
     pub audio: AudioSettings,
     #[serde(default)]
-    pub gapless: bool,
-    #[serde(default)]
     pub dynamic_mode: DynamicModeConfig,
     /// Present in every state this build writes, but a state file written by
     /// an older version lacks the key -- and without a default that made the
@@ -587,7 +584,6 @@ impl SavedState {
             mono: state.mono,
             crossfade: state.crossfade.clone(),
             audio: state.audio.clone(),
-            gapless: state.gapless,
             dynamic_mode: state.dynamic_mode.clone(),
             scrobble: state.scrobble.clone(),
             current_track: state.current_track.clone(),
@@ -607,7 +603,6 @@ impl SavedState {
         state.mono = self.mono;
         state.crossfade = self.crossfade.clone();
         state.audio = self.audio.clone();
-        state.gapless = self.gapless;
         state.dynamic_mode = self.dynamic_mode.clone();
         state.scrobble = self.scrobble.clone();
         // Restore the last track so the daemon can resume exactly as left.

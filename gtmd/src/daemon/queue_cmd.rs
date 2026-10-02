@@ -117,10 +117,7 @@ impl Queue {
                 Daemon::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
-            QueueAction::Set {
-                paths,
-                start_idx: _,
-            } => {
+            QueueAction::Set { paths } => {
                 Daemon::clear_history(inner).await;
                 let base = paths.clone();
                 let tracks = tokio::task::spawn_blocking(move || {

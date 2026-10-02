@@ -420,10 +420,6 @@ impl DaemonClient {
         self.send_ok(DaemonReq::SetPreGain { pre_gain_db }).await
     }
 
-    pub async fn set_gapless(&self, enabled: bool) -> Result<()> {
-        self.send_ok(DaemonReq::SetGapless { enabled }).await
-    }
-
     pub async fn set_dynamic_mode(
         &self,
         enabled: bool,
@@ -660,10 +656,10 @@ impl<'a> Queue<'a> {
             .await
     }
 
-    pub async fn set(&self, paths: Vec<String>, start_idx: u64) -> Result<()> {
+    pub async fn set(&self, paths: Vec<String>) -> Result<()> {
         self.client
             .send_ok(DaemonReq::Queue {
-                action: QueueAction::Set { paths, start_idx },
+                action: QueueAction::Set { paths },
             })
             .await
     }

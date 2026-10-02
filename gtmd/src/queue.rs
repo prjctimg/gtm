@@ -321,20 +321,6 @@ pub fn move_track(state: &mut DaemonState, from: u64, to: u64) -> bool {
     true
 }
 
-/// Replace the user queue with `paths` and drop the default-list session.
-pub fn set(state: &mut DaemonState, paths: &[String], _start_idx: u64) -> Vec<TrackInfo> {
-    let mut tracks = Vec::with_capacity(paths.len());
-    for path in paths {
-        tracks.push(resolve_track(path));
-    }
-    state.queue = tracks;
-    state.queue_cursor = 0;
-    state.default_list.clear();
-    state.default_cursor = 0;
-    state.fallback_disabled = false;
-    state.queue.clone()
-}
-
 /// Clear the user queue and the default-list session.  Disables the
 /// auto-build fallback so playback stops after the current track ends.
 pub fn clear(state: &mut DaemonState) {

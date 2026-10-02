@@ -125,6 +125,7 @@ To turn it off, empty the `Alt+X` field and press Enter, or remove
 | `Alt+y` | Search YouTube |
 | `Alt+z` | Sleep timer |
 | `l` | Fetch lyrics for current track |
+| `i` | Track info — what the daemon knows about the current track |
 | `:` | Command mode |
 | `?` | Toggle help |
 | `Q` / `Ctrl+Q` | Quit and stop the daemon |
@@ -218,9 +219,9 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 **queue-clear**
 :   Clear the entire queue.
 
-**queue-set** *paths*... `--start-idx` *index*
-:   Replace the entire queue with the given paths. `--start-idx` is required
-    but currently ignored — playback always starts at index 0.
+**queue-set** *paths*...
+:   Replace the entire queue with the given paths. Playback does not start; use
+    **play** for that.
 
 ## Library
 

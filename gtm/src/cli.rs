@@ -143,8 +143,6 @@ pub enum CliCommand {
     QueueSet {
         #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath, num_args = 1..)]
         paths: Vec<String>,
-        #[arg(long, value_name = "INDEX")]
-        start_idx: u64,
     },
     /// Scan a directory for audio files and add to library
     Scan {
@@ -644,9 +642,9 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
-            CliCommand::QueueSet { paths, start_idx } => client
+            CliCommand::QueueSet { paths } => client
                 .queue()
-                .set(paths.clone(), *start_idx)
+                .set(paths.clone())
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),

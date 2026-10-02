@@ -146,14 +146,6 @@ impl DaemonState {
         Ok(())
     }
 
-    /// Set gapless playback.
-    pub fn set_gapless(&mut self, enabled: bool) -> Result<()> {
-        tripwire::check(FailPoint::StateTransition)?;
-        self.gapless = enabled;
-        self.commit();
-        Ok(())
-    }
-
     /// Set dynamic mode configuration.
     pub fn set_dynamic_mode(
         &mut self,
@@ -313,9 +305,6 @@ impl DaemonState {
             }
             DaemonEvent::PreGainChanged { pre_gain_db } => {
                 self.audio.pre_gain_db = *pre_gain_db;
-            }
-            DaemonEvent::GaplessChanged { enabled } => {
-                self.gapless = *enabled;
             }
             DaemonEvent::DynamicModeChanged {
                 enabled,

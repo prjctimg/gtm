@@ -50,7 +50,6 @@ impl DaemonState {
             radio_artist: None,
             sleep_timer: None,
             audio: AudioSettings::default(),
-            gapless: false,
             dynamic_mode: DynamicModeConfig::default(),
             scrobble: ScrobbleConfig::default(),
             audio_levels: Vec::new(),

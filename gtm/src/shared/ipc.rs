@@ -69,7 +69,6 @@ pub enum QueueAction {
     },
     Set {
         paths: Vec<String>,
-        start_idx: u64,
     },
 }
 
@@ -245,9 +244,6 @@ pub enum DaemonReq {
     },
     SetPreGain {
         pre_gain_db: f32,
-    },
-    SetGapless {
-        enabled: bool,
     },
     SetDynamicMode {
         enabled: bool,
@@ -612,7 +608,6 @@ impl DaemonReq {
             DaemonReq::SetLoudnessMode { .. } => "set_loudness_mode",
             DaemonReq::ScanLoudness { .. } => "scan_loudness",
             DaemonReq::SetPreGain { .. } => "set_pre_gain",
-            DaemonReq::SetGapless { .. } => "set_gapless",
             DaemonReq::SetDynamicMode { .. } => "set_dynamic_mode",
             DaemonReq::SetScrobble { .. } => "set_scrobble",
             DaemonReq::SetEqPreset { .. } => "set_eq_preset",
@@ -854,14 +849,6 @@ impl DaemonReq {
                 DaemonReq::SetPreGain {
                     pre_gain_db: x.pre_gain_db,
                 }
-            }
-            "set_gapless" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    enabled: bool,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SetGapless { enabled: x.enabled }
             }
             "set_dynamic_mode" => {
                 #[derive(Deserialize)]
@@ -1668,8 +1655,6 @@ pub enum DaemonEvent {
     LoudnessScanDone { scanned: u32, failed: u32 },
     #[serde(rename = "pre_gain_changed")]
     PreGainChanged { pre_gain_db: f32 },
-    #[serde(rename = "gapless_changed")]
-    GaplessChanged { enabled: bool },
     #[serde(rename = "dynamic_mode_changed")]
     DynamicModeChanged {
         enabled: bool,

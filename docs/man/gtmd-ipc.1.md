@@ -186,7 +186,6 @@ DSP configuration. Every setter is acknowledged with no payload and reports the 
 | `list_eq_presets` | — | `presets` | — |
 | `set_reverb` | `enabled` : bool, `room_size` : float | — | `reverb_changed` |
 | `crossfade` | `enabled` : bool, `duration_secs` : u8 | — | `crossfade_changed` |
-| `set_gapless` | `enabled` : bool | — | `gapless_changed` |
 | `set_dynamic_mode` | `enabled` : bool, `min_queue_remaining` : uint32, `max_history` : uint32 | — | `dynamic_mode_changed` |
 | `set_pre_gain` | `pre_gain_db` : float | — | `pre_gain_changed` |
 | `set_loudness_mode` | `mode` : LoudnessMode | — | `loudness_mode_changed` |
@@ -347,12 +346,12 @@ so a client should treat it as a hard error and not retry it unchanged.
 | `remove` | `index` : uint64 |
 | `move` | `from` : uint64, `to` : uint64 |
 | `add` | `paths` : list, `position` : uint64 (optional) |
-| `set` | `paths` : list, `start_idx` : uint64 |
+| `set` | `paths` : list |
 
 `list` is the only read and the only one with a payload. `add` appends unless
 `position` is given, in which case it inserts at that index; `set` replaces the
-whole queue and takes the index to start playing from, which is the usual way to
-hand a finished playlist to the daemon in one call.
+whole queue, which is the usual way to hand a finished playlist to the daemon in
+one call. `set` does not start playback — pair it with `play` for that.
 
 ## library actions
 
@@ -425,7 +424,6 @@ the rest are state transitions.
 | `loudness_scan_progress` | `tracks_remaining`, `tracks_total` |
 | `loudness_scan_done` | `scanned`, `failed` |
 | `pre_gain_changed` | `pre_gain_db` |
-| `gapless_changed` | `enabled` |
 | `dynamic_mode_changed` | `enabled`, `min_queue_remaining`, `max_history` |
 | `scrobble_config_changed` | `enabled` |
 | `sleep_timer_tick` | `remaining_secs` |

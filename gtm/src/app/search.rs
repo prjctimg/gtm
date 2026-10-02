@@ -588,7 +588,7 @@ impl App {
         let path = paths[idx].clone();
         let c = self.client.clone();
         tokio::spawn(async move {
-            let _ = c.queue().set(paths, idx as u64).await;
+            let _ = c.queue().set(paths).await;
             let _ = c.play(&path, 0.0).await;
         });
     }
