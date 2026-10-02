@@ -445,9 +445,9 @@ impl AudioVisualizer {
     fn step_stereo(&mut self, dt: f32) {
         let mut acc = [0.0f32; 2];
         let mut n = [0usize; 2];
-        // `as_chunks`, clippy's suggested fix for constant-size chunks, is
-        // nightly-only; keep the stable `chunks_exact` form.
-        #[allow(clippy::as_chunks)]
+        // Two samples per lane, by construction rather than by pairing up a
+        // flat buffer: the array is filled as L then R, so the split is exact
+        // and `.0` is the remainder, which is always empty.
         for pair in self.wave_samples.as_chunks::<2>().0 {
             acc[0] += pair[0] * pair[0];
             acc[1] += pair[1] * pair[1];

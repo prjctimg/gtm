@@ -169,8 +169,13 @@ pub struct AlbumPage {
 }
 
 // Daemon-side trait. Implementations live in gtmd/src/charts/.
-// async_trait makes it dyn-compatible for `Box<dyn ChartProvider>`.
+// async_trait makes it dyn-compatible for `Box<dyn ChartProvider>`. It also
+// stamps `#[must_use]` onto the trait, duplicating the one its generated
+// futures already carry, which `clippy::double_must_use` rejects. The lint has
+// no machine-applicable fix, so `clippy --fix` cannot clear it and CI fails
+// until it is allowed here.
 #[async_trait]
+#[allow(clippy::double_must_use)]
 pub trait ChartProvider: Send + Sync {
     fn source_id(&self) -> &str;
     fn display_name(&self) -> &str;
