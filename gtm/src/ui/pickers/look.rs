@@ -30,7 +30,7 @@ impl Pickers {
         let cat = app.look.cat();
         let hint = Self::look_hint(cat);
         let title = format!(" {} ", cat.label());
-        let block = Self::picker_panel(app, &title, Some(&hint));
+        let block = Self::picker_panel(app, &title, Some(hint));
         let inner = block.inner(area);
         f.render_widget(block, area);
 

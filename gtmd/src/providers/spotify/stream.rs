@@ -124,15 +124,14 @@ impl StreamStat {
     /// How long the sink has gone without delivering a packet, measured from
     /// the load when nothing ever arrived.
     fn silence(&self) -> Duration {
-        let since = match (
+        match (
             *self.last_packet_at.lock().unwrap(),
             *self.loaded_at.lock().unwrap(),
         ) {
             (Some(at), _) => at.elapsed(),
             (None, Some(loaded)) => loaded.elapsed(),
             (None, None) => Duration::ZERO,
-        };
-        since
+        }
     }
 
     /// One line summarising a load: how long the first packet took, and how much

@@ -448,7 +448,7 @@ impl AudioVisualizer {
         // `as_chunks`, clippy's suggested fix for constant-size chunks, is
         // nightly-only; keep the stable `chunks_exact` form.
         #[allow(clippy::as_chunks)]
-        for pair in self.wave_samples.chunks_exact(2) {
+        for pair in self.wave_samples.as_chunks::<2>().0 {
             acc[0] += pair[0] * pair[0];
             acc[1] += pair[1] * pair[1];
             n[0] += 1;

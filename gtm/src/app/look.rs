@@ -190,10 +190,11 @@ impl App {
             Look::Theme => {
                 let t = self.themes.get(self.theme_index);
                 let name = t.map(|t| t.name.to_string()).unwrap_or_default();
-                let light = t
-                    .is_some_and(|t| t.light)
-                    .then_some(" (light)")
-                    .unwrap_or("");
+                let light = if t.is_some_and(|t| t.light) {
+                    " (light)"
+                } else {
+                    ""
+                };
                 format!("Theme: {name}{light}")
             }
             Look::Visualizer => format!("Visualizer: {}", self.visualizer.preset.name()),

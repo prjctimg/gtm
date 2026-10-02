@@ -194,10 +194,7 @@ impl App {
             } else {
                 format!("{artist} - {title}")
             };
-            let uri = match c.spotify().match_track(&query).await {
-                Ok(u) => Some(u),
-                Err(_) => None,
-            };
+            let uri = c.spotify().match_track(&query).await.ok();
             if let Err(e) = c
                 .spotify()
                 .resolve_track(

@@ -2599,7 +2599,7 @@ impl Render {
             row_offsets.push(cumulative);
             cumulative += Paragraph::new(rendered.clone())
                 .wrap(Wrap { trim: false })
-                .line_count(width as u16) as usize;
+                .line_count(width as u16);
             text.push(rendered);
         }
         let total_rows = cumulative;
