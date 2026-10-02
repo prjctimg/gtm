@@ -78,6 +78,101 @@ impl EqGains {
     }
 }
 
+/// A linear gain applied to every sample before the EQ.
+///
+/// Held as a shared atomic in the same shape as [`EqGains`] because the decode
+/// thread reads it per sample and the mixer thread writes it from a settings
+/// change: it has to be lock-free, and a change has to take effect on the track
+/// already playing rather than at the next load.
+///
+/// The dB is converted once on write rather than per sample. `db_amp` is a
+/// `powf`, which is cheap but not free, and there is no reason to pay it
+/// 44 100 times a second for a value that only changes when the user moves a
+/// slider.
+#[derive(Clone)]
+pub struct PreGain(pub Arc<AtomicU32>);
+
+impl PreGain {
+    pub fn new(db: f32) -> Self {
+        Self(Arc::new(AtomicU32::new(Self::to_amp(db).to_bits())))
+    }
+
+    /// dB to linear amplitude, clamped to a range that cannot destroy the
+    /// output. +24 dB is loud but survivable; beyond that the intent is
+    /// certainly a typo, and clipping every sample is not a useful answer.
+    fn to_amp(db: f32) -> f32 {
+        if !db.is_finite() {
+            return 1.0;
+        }
+        db_amp(db.clamp(PRE_GAIN_MIN_DB, PRE_GAIN_MAX_DB))
+    }
+
+    /// Set the gain in dB.
+    pub fn set_db(&self, db: f32) {
+        self.0.store(Self::to_amp(db).to_bits(), Ordering::Relaxed);
+    }
+
+    /// The current gain as a linear multiplier, ready to multiply a sample.
+    #[inline]
+    pub fn amp(&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Relaxed))
+    }
+}
+
+/// Wraps a source with the shared [`PreGain`].
+///
+/// The decode thread applies the same gain inline rather than through a
+/// wrapper, because it is already in a per-sample loop. The PulseAudio backend
+/// composes its chain out of `Source` wrappers instead, so it needs one of
+/// these to reach the same place in the chain.
+pub struct PreGainSource<S: Source<Item = f32>> {
+    inner: S,
+    gain: PreGain,
+}
+
+impl<S: Source<Item = f32>> PreGainSource<S> {
+    pub fn new(inner: S, gain: PreGain) -> Self {
+        Self { inner, gain }
+    }
+}
+
+impl<S: Source<Item = f32>> Iterator for PreGainSource<S> {
+    type Item = f32;
+    fn next(&mut self) -> Option<f32> {
+        let amp = self.gain.amp();
+        self.inner.next().map(|s| s * amp)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<S: Source<Item = f32>> Source for PreGainSource<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> NonZeroU16 {
+        self.inner.channels()
+    }
+    fn sample_rate(&self) -> NonZeroU32 {
+        self.inner.sample_rate()
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+}
+
+/// Clamp bounds for [`PreGain`], and the values the settings row steps through.
+pub const PRE_GAIN_MIN_DB: f32 = -24.0;
+pub const PRE_GAIN_MAX_DB: f32 = 24.0;
+pub const PRE_GAIN_STEP_DB: f32 = 1.0;
+
+impl Default for PreGain {
+    fn default() -> Self {
+        Self::new(0.0)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // EqSource: 15-band parametric EQ applied per-sample
 // ---------------------------------------------------------------------------

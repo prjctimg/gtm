@@ -143,6 +143,7 @@ impl Pickers {
                     },
                     on_off(app.state.audio.eq_enabled),
                     on_off(app.state.audio.reverb.enabled),
+                    pre_gain_label(app.state.audio.pre_gain_db),
                     cover_provider_label(&app.cover_provider).to_string(),
                 ]
             }
@@ -234,6 +235,16 @@ impl Pickers {
             c.push('…');
         }
         c
+    }
+}
+
+/// Pre-gain in dB, with the sign the user expects to see on a value column.
+/// 0 dB is unity and is the default, so it gets a word rather than a number.
+pub(crate) fn pre_gain_label(db: f32) -> String {
+    if db == 0.0 {
+        "0 dB".to_string()
+    } else {
+        format!("{db:+.0} dB")
     }
 }
 

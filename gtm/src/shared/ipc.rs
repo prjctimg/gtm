@@ -7,7 +7,7 @@
 use crate::shared::chart::{
     AlbumPage, ArtistPage, BrowseHit, ChartPlaylist, ChartSource, ChartTrack,
 };
-use crate::shared::global::{DaemonState, EqPreset, LoudnessMode, RepeatMode, YTFilter};
+use crate::shared::global::{DaemonState, EqPreset, RepeatMode, YTFilter};
 use crate::shared::playlist::PlaylistFormatKind;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastResult, PodcastStatus};
 use crate::shared::radio::{RadioCountry, RadioStation, RadioTag, RadioTracklist};
@@ -234,13 +234,6 @@ pub enum DaemonReq {
     Crossfade {
         enabled: bool,
         duration_secs: u8,
-    },
-    SetLoudnessMode {
-        mode: LoudnessMode,
-    },
-    ScanLoudness {
-        track_ids: Option<Vec<i64>>,
-        force: Option<bool>,
     },
     SetPreGain {
         pre_gain_db: f32,
@@ -605,8 +598,6 @@ impl DaemonReq {
             DaemonReq::ToggleMute => "toggle_mute",
             DaemonReq::SetMono { .. } => "set_mono",
             DaemonReq::Crossfade { .. } => "crossfade",
-            DaemonReq::SetLoudnessMode { .. } => "set_loudness_mode",
-            DaemonReq::ScanLoudness { .. } => "scan_loudness",
             DaemonReq::SetPreGain { .. } => "set_pre_gain",
             DaemonReq::SetDynamicMode { .. } => "set_dynamic_mode",
             DaemonReq::SetScrobble { .. } => "set_scrobble",
@@ -818,26 +809,6 @@ impl DaemonReq {
                 DaemonReq::Crossfade {
                     enabled: x.enabled,
                     duration_secs: x.duration_secs,
-                }
-            }
-            "set_loudness_mode" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    mode: LoudnessMode,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SetLoudnessMode { mode: x.mode }
-            }
-            "scan_loudness" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    track_ids: Option<Vec<i64>>,
-                    force: Option<bool>,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::ScanLoudness {
-                    track_ids: x.track_ids,
-                    force: x.force,
                 }
             }
             "set_pre_gain" => {
@@ -1642,17 +1613,6 @@ pub enum DaemonEvent {
     ShuffleChanged { enabled: bool },
     #[serde(rename = "crossfade_changed")]
     CrossfadeChanged { enabled: bool, duration_secs: u8 },
-    #[serde(rename = "loudness_mode_changed")]
-    LoudnessModeChanged { mode: LoudnessMode },
-    #[serde(rename = "loudness_scan_progress")]
-    LoudnessScanProgress {
-        tracks_remaining: u32,
-        tracks_total: u32,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        current_track: Option<TrackInfo>,
-    },
-    #[serde(rename = "loudness_scan_done")]
-    LoudnessScanDone { scanned: u32, failed: u32 },
     #[serde(rename = "pre_gain_changed")]
     PreGainChanged { pre_gain_db: f32 },
     #[serde(rename = "dynamic_mode_changed")]

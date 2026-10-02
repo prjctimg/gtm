@@ -18,9 +18,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::shared::CoreError;
 use crate::shared::Result;
-use crate::shared::global::{
-    DaemonState, EqPreset, LoudnessMode, PlaybackStatus, RepeatMode, YTFilter,
-};
+use crate::shared::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
 use crate::shared::ipc::{
     CacheKind, DaemonEvent, DaemonReq, DaemonRes, HealthReport, LibraryAction, MetadataPatch,
     QueueAction, SyncKind, WireRes,
@@ -401,19 +399,6 @@ impl DaemonClient {
             duration_secs,
         })
         .await
-    }
-
-    pub async fn set_loudness_mode(&self, mode: LoudnessMode) -> Result<()> {
-        self.send_ok(DaemonReq::SetLoudnessMode { mode }).await
-    }
-
-    pub async fn scan_loudness(
-        &self,
-        track_ids: Option<Vec<i64>>,
-        force: Option<bool>,
-    ) -> Result<()> {
-        self.send_ok(DaemonReq::ScanLoudness { track_ids, force })
-            .await
     }
 
     pub async fn set_pre_gain(&self, pre_gain_db: f32) -> Result<()> {

@@ -23,15 +23,6 @@ pub enum CoreError {
     Timeout,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum LoudnessMode {
-    #[default]
-    Off,
-    Track,
-    Album,
-    Auto,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -130,7 +121,6 @@ pub struct AudioSettings {
     pub eq_preset: EqPreset,
     pub eq_enabled: bool,
     pub reverb: ReverbConfig,
-    pub loudness_mode: LoudnessMode,
     pub pre_gain_db: f32,
     /// Active output device name (`None` = system default). Applied (and
     /// reset on failure) by the daemon; device switching restarts output.
@@ -144,7 +134,6 @@ impl Default for AudioSettings {
             eq_preset: EqPreset::Flat,
             eq_enabled: true,
             reverb: ReverbConfig::default(),
-            loudness_mode: LoudnessMode::Off,
             pre_gain_db: 0.0,
             audio_device: None,
         }

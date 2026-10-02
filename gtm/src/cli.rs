@@ -7,6 +7,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+use crate::audio::eq::{PRE_GAIN_MAX_DB, PRE_GAIN_MIN_DB};
 use crate::shared::client::{DaemonClient, LastfmStatus};
 use crate::shared::daemon::ensure_daemon_running;
 use crate::shared::global::{PlaybackStatus, RepeatMode};
@@ -122,6 +123,11 @@ pub enum CliCommand {
         )]
         enabled: bool,
         duration_secs: Option<u8>,
+    },
+    /// Set the pre-gain applied to every sample, in dB
+    PreGain {
+        #[arg(value_name = "DB", allow_negative_numbers = true)]
+        db: f32,
     },
     /// Show the current queue
     Queue,
@@ -608,6 +614,22 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     .crossfade(*enabled, dur)
                     .await
                     .map(|()| "ok".to_string())
+                    .map_err(|e| e.to_string())
+            }
+            CliCommand::PreGain { db } => {
+                // Rejected here rather than silently clamped by the mixer, so a
+                // typo in a script fails where it can be seen instead of
+                // quietly becoming something else.
+                if !db.is_finite() || *db < PRE_GAIN_MIN_DB || *db > PRE_GAIN_MAX_DB {
+                    return Err(format!(
+                        "pre-gain must be between {PRE_GAIN_MIN_DB:.0} and \
+                         {PRE_GAIN_MAX_DB:.0} dB"
+                    ));
+                }
+                client
+                    .set_pre_gain(*db)
+                    .await
+                    .map(|()| format!("ok (pre-gain {db:+.0} dB)"))
                     .map_err(|e| e.to_string())
             }
             CliCommand::Queue => {

@@ -10,8 +10,7 @@
 
 pub use crate::shared::state::{
     AudioSettings, CoreError, CrossfadeConfig, DaemonState, DynamicMode, DynamicModeConfig,
-    EQ_DEFAULT_Q, EQ_FREQUENCIES, EQ_PRESETS, EqBand, EqPreset, Image, LoudnessMode, MAX_VOLUME,
-    PlaybackStatus, RepeatMode, ReverbConfig, SavedState, ScrobbleConfig, ThemeMode, UIMode,
-    YTFilter,
+    EQ_DEFAULT_Q, EQ_FREQUENCIES, EQ_PRESETS, EqBand, EqPreset, Image, MAX_VOLUME, PlaybackStatus,
+    RepeatMode, ReverbConfig, SavedState, ScrobbleConfig, ThemeMode, UIMode, YTFilter,
 };
 pub use crate::shared::state::{volume_from_ratio, volume_ratio};

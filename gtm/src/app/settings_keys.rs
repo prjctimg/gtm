@@ -101,7 +101,8 @@ impl App {
                         let _ = c.set_reverb(next, room).await;
                     });
                 }
-                5 => self.cycle_cover_provider(),
+                5 => self.cycle_pre_gain(),
+                6 => self.cycle_cover_provider(),
                 _ => {}
             },
             1 => match opt {

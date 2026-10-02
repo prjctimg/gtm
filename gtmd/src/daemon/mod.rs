@@ -25,8 +25,8 @@ use gtm::audio::{AudioError, AudioEvent, AudioMixer, AudioResult, Mixer, NullMix
 #[cfg(feature = "mpris")]
 use gtm::mpris::{MprisHandle, start};
 use gtm::shared::global::{
-    DaemonState, EQ_PRESETS, EqPreset, LoudnessMode, PlaybackStatus, RepeatMode, ReverbConfig,
-    SavedState, YTFilter,
+    DaemonState, EQ_PRESETS, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState,
+    YTFilter,
 };
 use gtm::shared::ipc::{
     CacheKind, ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus,
@@ -1075,45 +1075,6 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    pub async fn set_loudness_mode(
-        inner: &DaemonInner,
-        mode: LoudnessMode,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.set_loudness_mode(mode)?;
-        drop(state);
-        Daemon::push_event(inner, DaemonEvent::LoudnessModeChanged { mode });
-        Daemon::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    pub async fn scan_loudness(
-        inner: &DaemonInner,
-        track_ids: Option<Vec<i64>>,
-        _force: Option<bool>,
-    ) -> Result<DaemonRes, CoreError> {
-        let total = track_ids.as_ref().map(|v| v.len() as u32).unwrap_or(0);
-        for i in 0..total {
-            let remaining = total - i;
-            Daemon::push_event(
-                inner,
-                DaemonEvent::LoudnessScanProgress {
-                    tracks_remaining: remaining,
-                    tracks_total: total,
-                    current_track: None,
-                },
-            );
-        }
-        Daemon::push_event(
-            inner,
-            DaemonEvent::LoudnessScanDone {
-                scanned: total,
-                failed: 0,
-            },
-        );
-        Ok(DaemonRes::Ok)
-    }
-
     pub async fn set_pre_gain(
         inner: &DaemonInner,
         pre_gain_db: f32,
@@ -1121,6 +1082,10 @@ impl Cmd {
         let mut state = inner.state.write().await;
         state.set_pre_gain(pre_gain_db)?;
         drop(state);
+        // The mixer is the thing that has to hear about it. Writing the state
+        // and announcing the change without this left the value in `state.json`
+        // doing nothing at all, which is the entire bug this was.
+        inner.mixer.lock().await.set_pre_gain(pre_gain_db);
         Daemon::push_event(inner, DaemonEvent::PreGainChanged { pre_gain_db });
         Daemon::save_state(inner);
         Ok(DaemonRes::Ok)
@@ -1563,7 +1528,7 @@ pub(crate) struct DaemonInner {
     pub(crate) cmd_lock: tokio::sync::RwLock<()>,
     /// Serializes fast user-initiated playback commands (play/pause/next/prev/
     /// seek/volume) against each other only. Playback runs on this lock rather
-    /// than `cmd_lock` so a slow background job (Spotify sync, yt-dlp, loudness
+    /// than `cmd_lock` so a slow background job (Spotify sync, yt-dlp, library
     /// scan) holding the exclusive `cmd_lock` never delays the remote's next
     /// track. Long-running jobs and playback commands can then interleave: the
     /// underlying `DaemonState` keeps each individual mutation safe.
@@ -1785,7 +1750,6 @@ fn request_is_playback(req: &DaemonReq) -> bool {
             | DaemonReq::SetEqEnabled { .. }
             | DaemonReq::SetReverb { .. }
             | DaemonReq::SetPreGain { .. }
-            | DaemonReq::SetLoudnessMode { .. }
             | DaemonReq::SetDynamicMode { .. }
             | DaemonReq::SetSleepTimer { .. }
             | DaemonReq::CancelSleepTimer
@@ -1858,6 +1822,15 @@ impl Daemon {
             let cfg = config.clone();
             let device = initial_state.audio.audio_device.clone();
             let mono = initial_state.mono;
+            // The audio settings are replayed here for the same reason the
+            // device is: a persisted value nothing reads back at startup is not
+            // persisted, it is merely written down. EQ, reverb and pre-gain all
+            // lived in `state.json` and reached the mixer only if the user
+            // happened to touch the matching control in this session.
+            let eq_preset = initial_state.audio.eq_preset;
+            let eq_enabled = initial_state.audio.eq_enabled;
+            let reverb = initial_state.audio.reverb.clone();
+            let pre_gain_db = initial_state.audio.pre_gain_db;
             Box::new(DeferredMixer::new(move || {
                 let mut m =
                     Self::init_mixer(&cfg).map_err(|e| AudioError::OutputError(e.to_string()))?;
@@ -1869,6 +1842,10 @@ impl Daemon {
                 if mono {
                     m.set_mono(true);
                 }
+                m.set_eq_preset(&eq_preset);
+                m.set_eq_enabled(eq_enabled);
+                m.set_reverb(&reverb);
+                m.set_pre_gain(pre_gain_db);
                 Ok(m)
             }))
         };
@@ -2779,10 +2756,6 @@ impl Daemon {
                 enabled,
                 duration_secs,
             } => Cmd::crossfade(inner, *enabled, *duration_secs).await,
-            DaemonReq::SetLoudnessMode { mode } => Cmd::set_loudness_mode(inner, *mode).await,
-            DaemonReq::ScanLoudness { track_ids, force } => {
-                Cmd::scan_loudness(inner, track_ids.clone(), *force).await
-            }
             DaemonReq::SetPreGain { pre_gain_db } => Cmd::set_pre_gain(inner, *pre_gain_db).await,
             DaemonReq::SetDynamicMode {
                 enabled,

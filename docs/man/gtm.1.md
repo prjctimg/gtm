@@ -199,6 +199,12 @@ daemon and prints the result. Use **\--json** for machine-readable output.
     (default: 7, clamped to 1–30). Crossfade is skipped for Spotify tracks
     (`spotify:` URIs), which librespot cannot pre-decode.
 
+**pre-gain** *db*
+:   Set the gain applied to every sample before the EQ and reverb, in decibels
+    (range −24…+24). Positive values make it louder. The value is persisted and
+    replayed into the mixer at startup, and takes effect on the track already
+    playing. Also in Settings → Playback, where it steps by 1 dB.
+
 ## Queue
 
 **queue**

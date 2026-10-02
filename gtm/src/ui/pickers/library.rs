@@ -434,12 +434,6 @@ impl Pickers {
         if let Some(s) = track.samplerate {
             push("Sample rate", format!("{s} kHz"));
         }
-        if let Some(lufs) = track.loudness_lufs {
-            push("Loudness", format!("{lufs:.1} LUFS"));
-        }
-        if let Some(pk) = track.loudness_peak_db {
-            push("Peak", format!("{pk:.1} dB"));
-        }
         if track.favourite {
             push("Favourite", "yes".to_string());
         }

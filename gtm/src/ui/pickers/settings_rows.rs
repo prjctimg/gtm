@@ -45,6 +45,7 @@ pub(crate) const PLAYBACK_ROWS: SettingsRows = &[
     ("Crossfade", RowKind::Chooser),
     ("EQ Enabled", RowKind::Toggle),
     ("Reverb", RowKind::Toggle),
+    ("Pre-Gain", RowKind::Cycle),
     ("Cover Source", RowKind::Cycle),
 ];
 

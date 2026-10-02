@@ -22,7 +22,7 @@
 use crate::shared::MAX_VOLUME;
 use crate::shared::Result;
 use crate::shared::global::{
-    CoreError, CrossfadeConfig, DaemonState, LoudnessMode, PlaybackStatus, RepeatMode, ReverbConfig,
+    CoreError, CrossfadeConfig, DaemonState, PlaybackStatus, RepeatMode, ReverbConfig,
 };
 use crate::shared::ipc::DaemonEvent;
 use crate::shared::track::TrackInfo;
@@ -126,14 +126,6 @@ impl DaemonState {
         } else {
             None
         };
-        self.commit();
-        Ok(())
-    }
-
-    /// Set loudness mode (Off, Track, Album, Auto).
-    pub fn set_loudness_mode(&mut self, mode: LoudnessMode) -> Result<()> {
-        tripwire::check(FailPoint::StateTransition)?;
-        self.audio.loudness_mode = mode;
         self.commit();
         Ok(())
     }
@@ -300,9 +292,6 @@ impl DaemonState {
             DaemonEvent::EqPresetChanged { preset } => {
                 self.audio.eq_preset = *preset;
             }
-            DaemonEvent::LoudnessModeChanged { mode } => {
-                self.audio.loudness_mode = *mode;
-            }
             DaemonEvent::PreGainChanged { pre_gain_db } => {
                 self.audio.pre_gain_db = *pre_gain_db;
             }
@@ -318,8 +307,6 @@ impl DaemonState {
             DaemonEvent::ScrobbleConfigChanged { enabled } => {
                 self.scrobble.enabled = *enabled;
             }
-            DaemonEvent::LoudnessScanProgress { .. } => {}
-            DaemonEvent::LoudnessScanDone { .. } => {}
             DaemonEvent::SpectrumChanged { levels } => {
                 self.audio_levels = levels.clone();
                 return; // don't bump version for high-frequency spectrum

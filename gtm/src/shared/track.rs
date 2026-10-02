@@ -27,12 +27,6 @@ pub struct TrackInfo {
     pub album_id: Option<String>,
     pub favourite: bool,
     #[serde(default)]
-    pub loudness_lufs: Option<f32>,
-    #[serde(default)]
-    pub loudness_peak_db: Option<f32>,
-    #[serde(default)]
-    pub loudness_range: Option<f32>,
-    #[serde(default)]
     pub artist_image: Option<String>,
     /// Remote album-art URL a provider handed us for this entry. Distinct from
     /// `cover_path`, which is a file already on disk: this is the address the

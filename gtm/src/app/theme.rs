@@ -1,4 +1,6 @@
 use crate::app::*;
+use crate::audio::eq::{PRE_GAIN_MAX_DB, PRE_GAIN_MIN_DB, PRE_GAIN_STEP_DB};
+use crate::ui::pre_gain_label;
 
 impl App {
     /// Open the `gtm setup` walkthrough, either the service chooser or the
@@ -129,6 +131,38 @@ impl App {
         self.notify_typed(
             "System",
             format!("Cover source: {}", label),
+            NotificationKind::Info,
+            true,
+            NotifType::Prefs,
+        );
+    }
+
+    /// Step the pre-gain by one dB, wrapping at the ends of its range, and push
+    /// the value to the daemon so it takes effect on the track already playing.
+    ///
+    /// A cycle rather than a picker because the useful range is small and the
+    /// interesting quantity is a number: `+3 dB` says what to do, where picking
+    /// "Pre-Gain" from a list of the same five values would not.
+    pub(crate) fn cycle_pre_gain(&mut self) {
+        let next = (self.state.audio.pre_gain_db + PRE_GAIN_STEP_DB)
+            .clamp(PRE_GAIN_MIN_DB, PRE_GAIN_MAX_DB);
+        // Wrapping rather than sticking at the end, so a held key keeps moving
+        // rather than sitting on the clamp. A 0 dB default means the first press
+        // is always the same step, whichever direction the user expects.
+        let next = if next > PRE_GAIN_MAX_DB {
+            PRE_GAIN_MIN_DB
+        } else {
+            next
+        };
+        self.state.audio.pre_gain_db = next;
+        let c = self.client.clone();
+        tokio::spawn(async move {
+            let _ = c.set_pre_gain(next).await;
+        });
+        save_prefs(&self.current_prefs());
+        self.notify_typed(
+            "System",
+            format!("Pre-gain: {}", pre_gain_label(next)),
             NotificationKind::Info,
             true,
             NotifType::Prefs,

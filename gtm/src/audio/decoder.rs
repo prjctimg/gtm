@@ -17,7 +17,7 @@ use rodio::Source;
 use crate::shared::global::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
 use crate::audio::buffer::{DecodeControl, SharedRingBuffer};
-use crate::audio::eq::EqGains;
+use crate::audio::eq::{EqGains, PreGain};
 use crate::audio::symphonia::SymphoniaSource;
 use crate::audio::wave::{WAVEFORM_DECIM, WaveformShared};
 
@@ -216,6 +216,7 @@ pub struct DecodeThread {
     control: Arc<DecodeControl>,
     eq_gains: EqGains,
     eq_enabled: Arc<AtomicBool>,
+    pre_gain: PreGain,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
     spectrum: Arc<Mutex<Vec<f32>>>,
@@ -248,6 +249,7 @@ impl DecodeThread {
         control: Arc<DecodeControl>,
         eq_gains: EqGains,
         eq_enabled: Arc<AtomicBool>,
+        pre_gain: PreGain,
         reverb_enabled: Arc<AtomicBool>,
         reverb_room_size: Arc<Mutex<f32>>,
         spectrum: Arc<Mutex<Vec<f32>>>,
@@ -260,6 +262,7 @@ impl DecodeThread {
             control,
             eq_gains,
             eq_enabled,
+            pre_gain,
             reverb_enabled,
             reverb_room_size,
             spectrum,
@@ -279,6 +282,7 @@ impl DecodeThread {
         control: Arc<DecodeControl>,
         eq_gains: EqGains,
         eq_enabled: Arc<AtomicBool>,
+        pre_gain: PreGain,
         reverb_enabled: Arc<AtomicBool>,
         reverb_room_size: Arc<Mutex<f32>>,
         spectrum: Arc<Mutex<Vec<f32>>>,
@@ -291,6 +295,7 @@ impl DecodeThread {
             control,
             eq_gains,
             eq_enabled,
+            pre_gain,
             reverb_enabled,
             reverb_room_size,
             spectrum,
@@ -312,6 +317,7 @@ impl DecodeThread {
         control: Arc<DecodeControl>,
         eq_gains: EqGains,
         eq_enabled: Arc<AtomicBool>,
+        pre_gain: PreGain,
         reverb_enabled: Arc<AtomicBool>,
         reverb_room_size: Arc<Mutex<f32>>,
         spectrum: Arc<Mutex<Vec<f32>>>,
@@ -324,6 +330,7 @@ impl DecodeThread {
             control,
             eq_gains,
             eq_enabled,
+            pre_gain,
             reverb_enabled,
             reverb_room_size,
             spectrum,
@@ -503,6 +510,13 @@ impl DecodeThread {
                     }
                 };
 
+                // Pre-gain, before anything else touches the sample, so the EQ
+                // and reverb see the level it produced. Read per sample rather
+                // than hoisted: a relaxed atomic load is one instruction, and
+                // hoisting would freeze the gain for the length of a track,
+                // which is the opposite of what the control is for.
+                let sample = sample * self.pre_gain.amp();
+
                 // Apply EQ
                 let eq_sample = if self.eq_enabled.load(Ordering::Relaxed) {
                     gain_check += 1;
@@ -536,6 +550,7 @@ impl DecodeThread {
                             // This is a left sample: we need the right sample too
                             match source_iter.next() {
                                 Some(right_raw) => {
+                                    let right_raw = right_raw * self.pre_gain.amp();
                                     let right_eq = if self.eq_enabled.load(Ordering::Relaxed) {
                                         apply_headroom(
                                             eq_right.filter_mono(right_raw),

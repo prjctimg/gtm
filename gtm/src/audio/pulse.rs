@@ -249,6 +249,7 @@ pub struct PulseAudioMixer {
 
     eq_gains: EqGains,
     eq_enabled: Arc<AtomicBool>,
+    pre_gain: PreGain,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
     spectrum: Arc<Mutex<Vec<f32>>>,
@@ -283,6 +284,7 @@ impl PulseAudioMixer {
             user_volume: Arc::new(AtomicU8::new(MAX_VOLUME)),
             eq_gains: EqGains::new_flat(),
             eq_enabled: Arc::new(AtomicBool::new(true)),
+            pre_gain: PreGain::default(),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
             reverb_room_size: Arc::new(Mutex::new(0.3)),
             spectrum: Arc::new(Mutex::new(Vec::new())),
@@ -342,6 +344,9 @@ impl PulseAudioMixer {
         &self,
         source: Box<dyn Source<Item = f32> + Send>,
     ) -> Box<dyn Source<Item = f32> + Send> {
+        // Pre-gain first, so the EQ and reverb see the level it produced --
+        // which is the whole point of calling it pre-gain.
+        let source = PreGainSource::new(source, self.pre_gain.clone());
         let source = if self.eq_enabled.load(Ordering::Relaxed) {
             Box::new(EqSource::new(source, self.eq_gains.clone()))
                 as Box<dyn Source<Item = f32> + Send>
@@ -366,6 +371,7 @@ impl PulseAudioMixer {
         ring: &SharedRingBuffer,
         eq_gains: &EqGains,
         eq_enabled: &Arc<AtomicBool>,
+        pre_gain: &PreGain,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
         spectrum: &Arc<Mutex<Vec<f32>>>,
@@ -378,6 +384,7 @@ impl PulseAudioMixer {
             control.clone(),
             eq_gains.clone(),
             eq_enabled.clone(),
+            pre_gain.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
             spectrum.clone(),
@@ -409,6 +416,7 @@ impl PulseAudioMixer {
         ring: &SharedRingBuffer,
         eq_gains: &EqGains,
         eq_enabled: &Arc<AtomicBool>,
+        pre_gain: &PreGain,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
         spectrum: &Arc<Mutex<Vec<f32>>>,
@@ -420,6 +428,7 @@ impl PulseAudioMixer {
             control.clone(),
             eq_gains.clone(),
             eq_enabled.clone(),
+            pre_gain.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
             spectrum.clone(),
@@ -465,6 +474,7 @@ impl PulseAudioMixer {
         ring: &SharedRingBuffer,
         eq_gains: &EqGains,
         eq_enabled: &Arc<AtomicBool>,
+        pre_gain: &PreGain,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
         spectrum: &Arc<Mutex<Vec<f32>>>,
@@ -476,6 +486,7 @@ impl PulseAudioMixer {
             control.clone(),
             eq_gains.clone(),
             eq_enabled.clone(),
+            pre_gain.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
             spectrum.clone(),
@@ -556,6 +567,7 @@ impl Mixer for PulseAudioMixer {
             &self.active().ring,
             &self.eq_gains,
             &self.eq_enabled,
+            &self.pre_gain,
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,
@@ -648,6 +660,7 @@ impl Mixer for PulseAudioMixer {
             &self.active().ring,
             &self.eq_gains,
             &self.eq_enabled,
+            &self.pre_gain,
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,
@@ -694,6 +707,7 @@ impl Mixer for PulseAudioMixer {
             &self.active().ring,
             &self.eq_gains,
             &self.eq_enabled,
+            &self.pre_gain,
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,
@@ -738,6 +752,7 @@ impl Mixer for PulseAudioMixer {
             &self.standby().ring,
             &self.eq_gains,
             &self.eq_enabled,
+            &self.pre_gain,
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,
@@ -1050,6 +1065,10 @@ impl Mixer for PulseAudioMixer {
 
     fn set_eq_enabled(&self, enabled: bool) {
         self.eq_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    fn set_pre_gain(&self, db: f32) {
+        self.pre_gain.set_db(db);
     }
 
     fn set_reverb(&self, config: &ReverbConfig) {

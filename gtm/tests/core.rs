@@ -3684,3 +3684,84 @@ fn completion_consumers_all_invoke_the_one_generator() {
         );
     }
 }
+
+/// A persisted audio setting that nothing replays into the mixer is not a
+/// setting, it is a line in a JSON file.
+///
+/// Pre-gain was the third one. `pre_gain_db` lived in `AudioSettings`, had a
+/// setter, an IPC request and a `pre_gain_changed` event — and the only thing
+/// the setter did was write state and announce the change. Nothing multiplied
+/// any samples by it, on any backend, at any point. EQ, reverb and the audio
+/// device were all in the same position, and the device was the only one that
+/// happened to work, because the mixer factory happened to replay it.
+///
+/// So this pins the two halves that have to stay together: the value reaches
+/// the sample path, and it is replayed at startup rather than waiting for the
+/// user to touch the control.
+#[test]
+fn pre_gain_reaches_the_samples_and_survives_a_restart() {
+    let decoder = include_str!("../src/audio/decoder.rs");
+    let mixer = include_str!("../src/audio/mixer.rs");
+    let daemon = include_str!("../../gtmd/src/daemon/mod.rs");
+
+    // 1. The gain is applied to the decoded sample, before the EQ, so the
+    //    bands and the reverb see the level it produced.
+    assert!(
+        decoder.contains("let sample = sample * self.pre_gain.amp();"),
+        "the decode loop does not apply the pre-gain to the sample"
+    );
+    let at = decoder
+        .find("let sample = sample * self.pre_gain.amp();")
+        .expect("no pre-gain in the decode loop");
+    let eq_at = decoder[at..]
+        .find("// Apply EQ")
+        .expect("no EQ after the pre-gain");
+    assert!(
+        eq_at < 400,
+        "the pre-gain is applied after the EQ, so it is not a pre-gain"
+    );
+    // The right channel of a stereo pair is pulled separately and would skip the
+    // gain entirely, which would pan a positive pre-gain hard left.
+    assert!(
+        decoder.contains("let right_raw = right_raw * self.pre_gain.amp();"),
+        "the stereo right channel bypasses the pre-gain"
+    );
+
+    // 2. Every backend implements it, and the deferred one forwards rather than
+    //    swallowing it — the deferred mixer is what the daemon actually holds.
+    for (what, src) in [
+        ("mixer", mixer),
+        ("silent", include_str!("../src/audio/silent.rs")),
+        ("pulse", include_str!("../src/audio/pulse.rs")),
+    ] {
+        assert!(
+            src.contains("fn set_pre_gain(&self"),
+            "{what} does not implement set_pre_gain"
+        );
+    }
+    assert!(
+        include_str!("../../gtmd/src/deferred_mixer.rs")
+            .contains("fn set_pre_gain(&self, db: f32)"),
+        "DeferredMixer does not forward set_pre_gain, so the daemon cannot use it"
+    );
+
+    // 3. The setter tells the mixer, not just the state file.
+    let at = daemon
+        .find("pub async fn set_pre_gain(")
+        .expect("no set_pre_gain handler");
+    let block = &daemon[at..at + 700];
+    assert!(
+        block.contains("set_pre_gain(pre_gain_db);"),
+        "set_pre_gain writes state and emits an event but never reaches the mixer"
+    );
+
+    // 4. And the saved value is replayed into the mixer on first init, or it
+    //    only takes effect once the user touches the control in this session.
+    let at = daemon
+        .find("let pre_gain_db = initial_state.audio.pre_gain_db;")
+        .expect("pre_gain_db is not captured for the mixer factory");
+    assert!(
+        daemon[at..at + 900].contains("m.set_pre_gain(pre_gain_db);"),
+        "the saved pre-gain is not replayed into the mixer at startup"
+    );
+}

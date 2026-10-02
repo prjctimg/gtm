@@ -19,7 +19,7 @@ use crate::audio::buffer::{
     RingBufferInner, RingBufferSource,
 };
 use crate::audio::decoder::DecodeThread;
-use crate::audio::eq::{EqGains, EqSource, ReverbSource};
+use crate::audio::eq::{EqGains, EqSource, PreGain, ReverbSource};
 use crate::audio::mono::MonoSource;
 use crate::audio::symphonia::{StreamingReopen, SymphoniaSource};
 use crate::audio::wave::{WAVEFORM_FRESHNESS, WaveformShared};
@@ -93,6 +93,8 @@ pub trait Mixer: Send + Sync {
     // ─── EQ / Reverb ───
     fn set_eq_preset(&self, preset: &EqPreset);
     fn set_eq_enabled(&self, enabled: bool);
+    /// Gain in dB applied to every sample before the EQ and reverb.
+    fn set_pre_gain(&self, db: f32);
     fn set_reverb(&self, config: &ReverbConfig);
 
     // ─── Audio device switching ───
@@ -143,6 +145,7 @@ pub struct AudioMixer {
     // ─── EQ / Reverb ───
     pub eq_gains: EqGains,
     eq_enabled: Arc<AtomicBool>,
+    pre_gain: PreGain,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
     // ─── Decode thread / Ring buffer ───
@@ -265,6 +268,10 @@ impl Mixer for AudioMixer {
         self.eq_enabled.store(enabled, Ordering::Relaxed);
     }
 
+    fn set_pre_gain(&self, db: f32) {
+        self.pre_gain.set_db(db);
+    }
+
     fn set_reverb(&self, config: &ReverbConfig) {
         self.reverb_enabled.store(config.enabled, Ordering::Relaxed);
         *self.reverb_room_size.lock().unwrap() = config.room_size;
@@ -284,6 +291,7 @@ impl Mixer for AudioMixer {
         let volume = self.volume.load(Ordering::SeqCst);
         let eq_enabled = self.eq_enabled.load(Ordering::Relaxed);
         let eq_gains = self.eq_gains.clone();
+        let pre_gain = self.pre_gain.clone();
         let reverb_enabled = self.reverb_enabled.load(Ordering::Relaxed);
         let reverb_room = *self.reverb_room_size.lock().unwrap();
         let mono = self.mono.load(Ordering::Relaxed);
@@ -297,6 +305,7 @@ impl Mixer for AudioMixer {
         let _ = fresh.set_volume(volume);
         fresh.eq_enabled.store(eq_enabled, Ordering::Relaxed);
         fresh.eq_gains = eq_gains;
+        fresh.pre_gain = pre_gain;
         fresh
             .reverb_enabled
             .store(reverb_enabled, Ordering::Relaxed);
@@ -377,6 +386,7 @@ impl AudioMixer {
             last_reported_pos: f64::NEG_INFINITY,
             eq_gains: EqGains::new_flat(),
             eq_enabled: Arc::new(AtomicBool::new(true)),
+            pre_gain: PreGain::default(),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
             reverb_room_size: Arc::new(Mutex::new(0.3)),
             active_control: None,
@@ -495,6 +505,7 @@ impl AudioMixer {
         path: &str,
         eq_gains: &EqGains,
         eq_enabled: &Arc<AtomicBool>,
+        pre_gain: &PreGain,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
         spectrum: &Arc<Mutex<Vec<f32>>>,
@@ -514,6 +525,7 @@ impl AudioMixer {
             control.clone(),
             eq_gains.clone(),
             eq_enabled.clone(),
+            pre_gain.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
             spectrum.clone(),
@@ -565,6 +577,7 @@ impl AudioMixer {
             path,
             &self.eq_gains,
             &self.eq_enabled,
+            &self.pre_gain,
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,
@@ -624,6 +637,7 @@ impl AudioMixer {
         reader: Box<dyn std::io::Read + Send>,
         eq_gains: &EqGains,
         eq_enabled: &Arc<AtomicBool>,
+        pre_gain: &PreGain,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
         spectrum: &Arc<Mutex<Vec<f32>>>,
@@ -642,6 +656,7 @@ impl AudioMixer {
             control.clone(),
             eq_gains.clone(),
             eq_enabled.clone(),
+            pre_gain.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
             spectrum.clone(),
@@ -699,6 +714,7 @@ impl AudioMixer {
             reader,
             &self.eq_gains,
             &self.eq_enabled,
+            &self.pre_gain,
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,
@@ -749,6 +765,7 @@ impl AudioMixer {
             source,
             &self.eq_gains,
             &self.eq_enabled,
+            &self.pre_gain,
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,
@@ -791,6 +808,7 @@ impl AudioMixer {
         source: Box<dyn Source<Item = f32> + Send>,
         eq_gains: &EqGains,
         eq_enabled: &Arc<AtomicBool>,
+        pre_gain: &PreGain,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
         spectrum: &Arc<Mutex<Vec<f32>>>,
@@ -809,6 +827,7 @@ impl AudioMixer {
             control.clone(),
             eq_gains.clone(),
             eq_enabled.clone(),
+            pre_gain.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
             spectrum.clone(),
@@ -855,6 +874,7 @@ impl AudioMixer {
             path,
             &self.eq_gains,
             &self.eq_enabled,
+            &self.pre_gain,
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,

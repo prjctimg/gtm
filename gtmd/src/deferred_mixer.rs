@@ -220,6 +220,12 @@ impl Mixer for DeferredMixer {
         }
     }
 
+    fn set_pre_gain(&self, db: f32) {
+        if let Ok(m) = self.ensure_ref() {
+            m.set_pre_gain(db);
+        }
+    }
+
     fn set_reverb(&self, config: &ReverbConfig) {
         if let Ok(m) = self.ensure_ref() {
             m.set_reverb(config);

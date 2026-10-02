@@ -188,8 +188,6 @@ DSP configuration. Every setter is acknowledged with no payload and reports the 
 | `crossfade` | `enabled` : bool, `duration_secs` : u8 | — | `crossfade_changed` |
 | `set_dynamic_mode` | `enabled` : bool, `min_queue_remaining` : uint32, `max_history` : uint32 | — | `dynamic_mode_changed` |
 | `set_pre_gain` | `pre_gain_db` : float | — | `pre_gain_changed` |
-| `set_loudness_mode` | `mode` : LoudnessMode | — | `loudness_mode_changed` |
-| `scan_loudness` | `track_ids` : Vec<i64>, `force` : bool | — | `loudness_scan_progress`, `loudness_scan_done` |
 | `set_audio_device` | `name` : string | — | — |
 | `list_audio_devices` | — | `devices` | — |
 
@@ -420,9 +418,6 @@ the rest are state transitions.
 | `repeat_mode_changed` | `mode` |
 | `shuffle_changed` | `enabled` |
 | `crossfade_changed` | `enabled`, `duration_secs` |
-| `loudness_mode_changed` | `mode` |
-| `loudness_scan_progress` | `tracks_remaining`, `tracks_total` |
-| `loudness_scan_done` | `scanned`, `failed` |
 | `pre_gain_changed` | `pre_gain_db` |
 | `dynamic_mode_changed` | `enabled`, `min_queue_remaining`, `max_history` |
 | `scrobble_config_changed` | `enabled` |
