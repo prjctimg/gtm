@@ -31,3 +31,27 @@ jobs:
       # a red test in `gtm` hid every failure in `gtmd` behind it and the job
       # looked like one broken test rather than a backlog.
       - run: cargo test --workspace --no-fail-fast
+
+  # The PulseAudio backend, compiled by the release job and by nothing else.
+  #
+  # `pulseaudio` is not a default feature, so `gtm/src/audio/pulse.rs` is not
+  # compiled by any of the three steps above -- and it is the only PulseAudio
+  # path in the tree. A change to the audio chain could therefore be green on
+  # every signal available before the push and still fail the release build,
+  # which is how the pre-gain work reached `dev` with six unresolved names in
+  # that file.
+  #
+  # No system packages: `cargo check` and `clippy` do not link, and the
+  # `pulseaudio` crate does not need `libpulse` headers to typecheck.
+  pulseaudio:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install ALSA headers (Linux)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo clippy --workspace --all-targets --features pulseaudio -- -D warnings
+      - run: cargo test --workspace --features pulseaudio --no-fail-fast
