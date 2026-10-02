@@ -98,7 +98,8 @@ pub(crate) fn row_help(category: usize, option: usize) -> &'static str {
     match (category, option) {
         (0, 0) => " Press Enter to cycle repeat (off / one / all).",
         (0, 2) => " Press Enter to open the crossfade picker.",
-        (0, 5) => " Press Enter to cycle the cover art source.",
+        (0, 5) => " Press Enter to step the pre-gain by 1 dB.",
+        (0, 6) => " Press Enter to cycle the cover art source.",
         (1, 0) => " Press Enter to open the theme picker.",
         (1, 1) => " Press Enter to cycle theme mode (auto/dark/light).",
         (1, 6) => " Press Enter to toggle the reactive theme.",
@@ -125,7 +126,7 @@ mod tests {
     /// addressing a row that does not exist.
     #[test]
     fn row_counts_match_the_declared_lists() {
-        assert_eq!(rows_for(0).len(), 6);
+        assert_eq!(rows_for(0).len(), 7);
         assert_eq!(rows_for(1).len(), 17);
         // Status, Link Account, Unlink. The Spotify Next/Previous rows went
         // when the Connect transport moved to the command palette, and this
