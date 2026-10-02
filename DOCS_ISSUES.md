@@ -9,13 +9,20 @@ describe what gtm *does* rather than narrating the state of the codebase while i
 was being written — the observations here are for a maintainer to act on, not for a
 reader to trip over.
 
+**Re-audited at `d433e51`.** Everything in section D has been fixed, and section A
+has been overtaken by it. Several section B key names changed again when the
+presentation picker replaced five overlays. Read the **[changed]** and **[fixed]**
+markers below rather than trusting the original numbers — several are now wrong in
+the *other* direction, and copying them into the docs would reintroduce the very
+errors this audit was written to catch.
+
 ## Sections
 
 - [Docs-site changes already applied](#docs-site-changes-already-applied)
 - [A. Prose stripped from the docs](#a-prose-stripped-from-the-docs)
 - [B. Doc claims that contradict the code](#b-doc-claims-that-contradict-the-code)
 - [C. Undocumented features — candidate pages](#c-undocumented-features--candidate-pages)
-- [D. Bugs found in gtm.rs](#d-bugs-found-in-gtmrs)
+- [D. Bugs found in gtm.rs — all fixed](#d-bugs-found-in-gtmrs--all-fixed)
 
 ---
 
@@ -51,21 +58,27 @@ describe the code as it should be.
 These described internal or unfinished implementation state. Removed from the docs;
 the underlying observation is recorded here.
 
-| Was | Where |
-|---|---|
-| `gapless` "is currently a no-op placeholder — the flag is stored and restored but no playback, mixer or decoder path consults it, so it has no audible effect today", plus the note that it is reachable only via `DaemonReq::SetGapless` with no CLI command or TUI binding | `crossfade.mdx` |
-| `queue-set`'s `--start-idx` "is currently accepted and ignored: playback always starts at index 0" | `playback.mdx` |
-| `EqPreset::Custom([f32; 15])` "exists in the state model but is **not exposed in the TUI** — there is no per-band editing UI yet" | `audio.mdx` |
-| `playlist-dedup` "in practice can never remove anything — the primary key already prevents duplicates, so it is effectively a position repack" | `library.mdx` |
-| The `.m3u8` stub "is **not kept in sync** … never contains a track and is not a usable export" | `library.mdx` |
-| The help buffer "is a hand-maintained list … neither complete nor exact" | `tui.mdx` |
-| "`check_health` has no default key. The help screen advertises `Alt+H`, but no such binding exists" | `keybindings.mdx` |
-| `Alt+p` "shadowed and unreachable by default" for Podcasts | `keybindings.mdx` |
-| "note `Alt+p` is already mapped to the Progress Style picker" | `podcasts.mdx` |
-| Keybinding contexts "are metadata, not live modes … never dispatched by the keymap at all" | `keybindings.mdx` |
-| "There's a lot more involved in setting things up and I decided to just take the naive route because its enough, at least for now." | `benchmark.mdx` |
+**Several are no longer true of the code** — section D fixed them, so the honest
+fix on the docs side is to describe the behaviour, not to keep hedging. The last
+column says which; rows marked *Still true* are accurate as written and the only
+thing to do there is leave them recorded.
 
-See also [D](#d-bugs-found-in-gtmrs) — several of these have a root cause in the code.
+| Was | Where | Now |
+|---|---|---|
+| `gapless` "is currently a no-op placeholder — the flag is stored and restored but no playback, mixer or decoder path consults it, so it has no audible effect today", plus the note that it is reachable only via `DaemonReq::SetGapless` with no CLI command or TUI binding | `crossfade.mdx` | **[fixed]** Removed outright: the state field, the FSM method, the IPC request, the event and both man-page rows. It is no longer a feature that does nothing; it is gone. Say nothing about it. |
+| `queue-set`'s `--start-idx` "is currently accepted and ignored: playback always starts at index 0" | `playback.mdx` | **[fixed]** The flag, the client parameter, the IPC field and the dead daemon function are removed. `queue-set` now just replaces the queue; **play** is what starts playback. |
+| `EqPreset::Custom([f32; 15])` "exists in the state model but is **not exposed in the TUI** — there is no per-band editing UI yet" | `audio.mdx` | **Still true, and it is not going to change.** `Custom` is settable over IPC and honoured by `EqPreset::gains()`, so it is a working feature with no TUI surface, not dead state. Document it as an IPC capability. |
+| `playlist-dedup` "in practice can never remove anything — the primary key already prevents duplicates, so it is effectively a position repack" | `library.mdx` | **[fixed]** It now groups by `tracks.path`, which the `(playlist_id, track_id)` key does not cover — two different track ids on one file are possible, since `tracks.path` is indexed but not unique. |
+| The `.m3u8` stub "is **not kept in sync** … never contains a track and is not a usable export" | `library.mdx` | **[fixed]** Every mutation rewrites the mirror through the same `M3u8Format` the manual exporter uses. It is now a real, playable file. |
+| The help buffer "is a hand-maintained list … neither complete nor exact" | `tui.mdx` | *Still true.* It found two real bugs on its own — the duplicate `Alt+P` and the `Alt+H` with no binding — so it is worth keeping, just not worth quoting as complete. |
+| "`check_health` has no default key. The help screen advertises `Alt+H`, but no such binding exists" | `keybindings.mdx` | **[fixed]** `Alt+H` is now bound to `KeyboardAction::CheckHealth`. |
+| `Alt+p` "shadowed and unreachable by default" for Podcasts | `keybindings.mdx` | *Still true as a record of the old bug.* `Alt+p` is Podcasts and nothing else. |
+| "note `Alt+p` is already mapped to the Progress Style picker" | `podcasts.mdx` | **[changed]** The premise is doubly obsolete: `Alt+p` is Podcasts, and there is no Progress Style picker to collide with — see [B3](#b3-progress-style-key-changed). |
+| Keybinding contexts "are metadata, not live modes … never dispatched by the keymap at all" | `keybindings.mdx` | *Still true, and re-confirmed at `d433e51`.* The only production `dispatch` call passes `KeyContext::Normal`, so the `LIST` and `LIST_ONLY` bindings never fire. **This is not a dead-key bug**: arrows, `j`/`k`, `Shift+Up`/`Shift+Down`, `Alt+S` and the `Ctrl+j`/`Ctrl+k` queue moves are all handled directly in `gtm/src/app/keys.rs`, and the app even discards the four `QueueMove*` actions explicitly when they do arrive. The contexts are vestigial metadata for keys that have a hand-written path. Changing the dispatch to pass a real context would be a behavioural change with real regression risk and nothing observable to gain, so the code was left alone and the docs are right. |
+| "There's a lot more involved in setting things up and I decided to just take the naive route because its enough, at least for now." | `benchmark.mdx` | *Still true.* |
+
+See also [D](#d-bugs-found-in-gtmrs--all-fixed) — several of these had a root cause
+in the code.
 
 ---
 
@@ -85,8 +98,14 @@ keys, `gtm --cli speed`, the 0.25×–2.0× clamp), `keybindings.mdx` (`>` / `<`
 table), `mpris.mdx` ("playback speed is not mapped"), `configuration.mdx` (footer
 preset module lists).
 
-The docs section was removed. **The feature needs restoring or the scope needs
-deciding.**
+The docs section was removed. Re-confirmed at `d433e51`: still no `speed` or
+`rate` symbol anywhere in `gtm/src` or `gtmd/src`, still no `CliCommand::Speed`,
+still no field on `AudioSettings` and still no `Speed` variant on `FooterModule`.
+
+**This is the one item in section B that is still an open decision, and it is a
+product-scope question rather than a bug.** Either the feature is restored or the
+scope is decided to exclude it; nothing in the code can settle that. Everything
+else in section B is either fixed or already corrected on the docs side.
 
 ### B2. No visualizer toggle key
 
@@ -95,12 +114,29 @@ deciding.**
 `gtm/src/keymap.rs`. The visualizer now renders only in Zen mode and during
 daydreaming (`gtm/src/ui/chrome.rs:238`).
 
-### B3. Progress style is `Alt+b`, not `Alt+p`
+**[fixed]** The `enabled` flag and the `Ctrl+v` binding were both removed rather
+than the docs being edited around them: Zen or daydreaming decides whether the
+visualizer draws, and a second switch could only disagree with it. Delete the
+`Ctrl+v` rows; describe the two conditions that actually gate it.
 
-`Alt+p` opens Podcasts; progress style moved to `Alt+b`
-(`gtm/src/keymap.rs`, guarded by `podcasts_and_progress_style_are_both_reachable`).
-The old shadowing was a real bug and is now fixed — the docs were never updated.
-Wrong in `keybindings.mdx`, `theming.mdx`, `tui.mdx`.
+### B3. Progress style key **[changed]**
+
+The original finding was that progress style is `Alt+b`, not `Alt+p`, because
+`Alt+p` opens Podcasts. That was fixed in `gtm/src/keymap.rs`, and the docs were
+never updated.
+
+**[changed]** It is now neither. The presentation picker replaced the five
+separate overlays, so there is no Progress Style key at all:
+
+- `Alt+L` opens the picker on Zen Layout.
+- `Tab` / `Shift+Tab` moves between the five categories.
+- `Left` / `Right` changes the value, which applies it immediately.
+- `Alt+c` and `Alt+v` still open the picker directly on Theme and Visualizer.
+- Progress has no key of its own: `Alt+b` is Browse, and giving it a shortcut
+  would have re-created exactly the `Alt+p` bug this item is about.
+
+Writing `Alt+b` into the docs now would be wrong again. Rewrite these as one
+"Presentation" entry describing `Alt+L` plus `Tab`.
 
 ### B4. There is no `Alt+t`
 
@@ -131,12 +167,19 @@ which was the tell. **The section was rewritten** to match.
 
 ### B8. Counts are stale
 
+Re-measured at `d433e51`. Two of these have moved again since the audit, in the
+opposite direction.
+
 | Claim | Actual | Source |
 |---|---|---|
-| 14 library categories | 15 — `Browse` was added | `LIBRARY_CATEGORIES`, `gtm/src/app/mod.rs:68` |
+| 14 library categories | 15 — `Browse` was added | `LIBRARY_CATEGORIES`, `gtm/src/app/mod.rs` |
 | 14 `left_pane_lists` names | 15, and `Browse` is missing from the allowlist | `configuration.mdx`, `clean_left_pane` |
-| 22 footer modules | 21, and no `Speed` | `gtm/src/footer.rs:80` |
-| 51 command-palette actions | 54 | `gtm/src/ui/command.rs` |
+| 22 footer modules | **20**, and no `Speed` | `gtm/src/footer.rs` |
+| 51 command-palette actions | **52**, not 54 | `gtm/src/ui/command.rs` |
+
+The palette lost three rows (Theme, Progress Style, Visualizer Preset) and gained
+one (Presentation), and `COMMAND_GROUPS` sums to 52. The 54 in the original audit
+was the count *after* Browse was added but *before* the picker consolidation.
 
 ### B9. `cover-art.mdx` links to a section that does not exist
 
@@ -160,21 +203,26 @@ reconciling the two. Reworded to name both cases.
 
 Real, working features with no page. Ordered by how much surface each would absorb.
 
-1. **Charts** — Apple Music, Deezer and Spotify Top Charts
-   (`gtmd/src/providers/charts/{apple,deezer}.rs`; Deezer landed in `9b0c5a7`).
-   Today: one table row in `library.mdx` and two list mentions.
+**Four of the eight have shipped since the audit and are now undocumented
+features rather than candidate pages.** They are the ones to write first.
+
+1. **Charts** — Spotify and Deezer Top Charts
+   (`gtmd/src/providers/charts/`; Deezer landed in `9b0c5a7`). Spotify's
+   `/v1/charts` is dead (410) and Apple Music needs a token, so Deezer is what
+   actually answers. Today: one table row in `library.mdx` and two list mentions.
 2. **Browse** — the 15th sidebar category, backed by Deezer: free-text search,
-   artist pages, album tracklists (`gtmd/src/providers/browse.rs`). Completely
-   undocumented, and it is the reason Spotify artist/album browsing is absent
-   (Spotify's public API no longer exposes artist contents).
-3. **Notifications** — 10 categories (`NotifType::ALL`, `gtm/src/app/notify.rs:29`),
+   artist pages, album tracklists (`gtmd/src/providers/browse.rs`). Shipped, and
+   completely undocumented. It is also the reason Spotify artist/album browsing
+   is absent: Spotify's public API no longer exposes artist contents.
+3. **Notifications** — 10 categories (`NotifType::ALL`, `gtm/src/app/notify.rs`),
    each with a `floating` / `footer` / `off` mode, plus a history overlay and
    floating cards. The three `[extensions]` switches belong here.
 4. **Daydreaming** — the visualizer takes over after `daydream_secs` of idle
-   (default 60, `gtm/src/app/prefs.rs:139`), set in Settings → System.
+   (default 60), set in Settings → System. Shipped.
 5. **Discord Rich Presence** — `discord_id` in config, numeric-only validation
-   (`gtmd/src/config.rs:290`), cleared on daemon quit, reachable via `Alt+x` →
-   Discord (`PickerId::DiscordSetup`).
+   (`gtmd/src/config.rs`), cleared on daemon quit, reachable via `Alt+x` →
+   Discord (`PickerId::DiscordSetup`). Shipped; the presence is now cleared
+   rather than left to expire.
 6. **Downloads** — yt-dlp subprocess, 2-concurrent cap, EMA-smoothed footer
    progress, `~/Music/gtm/downloads`, post-download library scan. Currently
    squeezed into `youtube.mdx`.
@@ -201,6 +249,12 @@ their own events — but there is no CLI command, no Settings row, and no
 `keymap.rs` action. `audio.mdx` now has a short section saying exactly that.
 Worth deciding whether they are a feature to expose or state to drop.
 
+Re-confirmed at `d433e51`: nothing in `gtm/src/cli.rs`, `gtm/src/keymap.rs`,
+`gtm/src/app/settings_keys.rs` or `settings_rows.rs` mentions either. Unlike
+`gapless` these two *do* affect the signal chain, so dropping them would be a real
+behaviour change; exposing them is the smaller of the two jobs and needs no new
+machinery, only a Settings row. **Open decision, same shape as [B1](#b1-playback-speed-is-documented-on-six-pages-and-does-not-exist).**
+
 ### Packaging
 
 `Formula/gtm.rb` (Homebrew) and `flake.nix` (Nix) exist in this repository but
@@ -208,33 +262,49 @@ were documented nowhere — `install.mdx` listed crates.io alone. Both added.
 
 ---
 
-## D. Bugs found in gtm.rs
+## D. Bugs found in gtm.rs — all fixed
 
-Independent of the docs. Found while auditing to verify claims above.
+Independent of the docs. Found while auditing to verify claims above. **All nine
+were fixed**; the notes say how, because three of them changed what the docs are
+allowed to claim.
 
-1. **`gtm/src/ui/help.rs` advertises `Alt+P` twice** — once for Progress Style
-   (should be `Alt+b`) and once for Podcasts. The `?` buffer therefore tells the
-   user two different things about the same key. `gtm/src/ui/command.rs` repeats
-   the same stale `Alt+H` claim.
-2. **`Alt+H` is advertised for `check_health` but no such binding exists.** The
-   action, the CLI command, and the advertised key all exist; only the default
-   binding is missing. Pressing the advertised key does nothing.
-3. **`i` (track info) and `l` (fetch lyrics) work but appear in no doc page.**
-4. **`queue-set --start-idx` is parsed, threaded through IPC, and discarded.**
-   `gtmd/src/queue.rs:325` takes `_start_idx` and ignores it. Either honour it or
-   drop the flag — silently accepting an argument and ignoring it is worse than
-   either.
-5. **`.m3u8` playlist stubs are written but never updated.** `gtmd/src/library.rs:409`
-   writes a two-line stub at create time and nothing rewrites it, so the file in
-   the data dir is never a usable export.
-6. **`playlist-dedup` cannot remove anything.** The `(playlist_id, track_id)`
-   primary key already prevents duplicates; the command is a position repack with a
-   name that promises otherwise.
-7. **`gapless` is persisted and never read.** `set_gapless` writes state and emits
-   `GaplessChanged`; no playback, mixer or decoder path consults the flag. It has no
-   CLI command or TUI binding either.
-8. **No WMA decoder, but `wma` is in the accepted extension list.**
-   `gtmd/src/queue.rs:348` accepts it for `queue-add`, so a `.wma` file enters the
-   queue cleanly and fails only at decode time.
-9. **`EqPreset::Custom([f32; 15])` is unreachable from the UI** and never written by
-   anything, so per-band EQ is state-only.
+1. **`gtm/src/ui/help.rs` advertised `Alt+P` twice** — once for Progress Style
+   and once for Podcasts. The `?` buffer therefore told the user two different
+   things about the same key. Fixed when the Progress Style row went away with
+   the overlay it described.
+2. **`Alt+H` was advertised for `check_health` with no binding behind it.** The
+   action, the CLI command and the advertised key all existed; only the default
+   binding was missing, so pressing the key the app told you about did nothing.
+   **Bound it.**
+3. **`i` (track info) and `l` (fetch lyrics) worked but appeared in no doc page.**
+   Both were already in the in-app help; `docs/man/gtm.1.md` now has both.
+4. **`queue-set --start-idx` was parsed, threaded through IPC, and discarded.**
+   **Removed**, along with the client parameter, the IPC field and the dead
+   daemon function. The queue model makes it ambiguous — index 0 is the
+   currently-playing entry, so "start at N" either drops tracks or starts
+   playback nobody asked for. The one caller that wanted a row was already
+   working around it with an explicit `play`.
+5. **`.m3u8` playlist stubs were written once and never updated.** They were a
+   two-line header at create time, so the file was never a usable export despite
+   the comment claiming one. **Every mutation rewrites it now**, through the
+   same `M3u8Format` the manual exporter uses. Rename rewrites rather than moves,
+   since the header carries the name.
+6. **`playlist-dedup` could not remove anything.** It grouped by `track_id`,
+   which the primary key already forbids. **It now groups by `tracks.path`**,
+   which the key does not cover: `path` is indexed but not unique, so two
+   different track ids can point at one file.
+7. **`gapless` was persisted and never read.** **Removed entirely** — state
+   field, FSM method, `SetGapless` request, `GaplessChanged` event and both
+   man-page rows. An external IPC client sending `set_gapless` now gets an error
+   instead of a silent no-op, which is the better failure. Existing `state.json`
+   files keep the now-unknown key and serde ignores it.
+8. **No WMA decoder, but `wma` was in the accepted extension list.** Confirmed:
+   Symphonia's `all-codecs` is aac, adpcm, alac, flac, mp1, mp2, mp3, pcm and
+   vorbis, and there is no WMA codec crate in the lockfile. **Removed**, with a
+   separate "unsupported audio format" error — it *is* audio, and that
+   distinction is the whole answer.
+9. **`EqPreset::Custom([f32; 15])` was unreachable from the UI.** **Not removed,
+   deliberately.** It is settable over `set_eq_preset` and honoured by
+   `EqPreset::gains()`, so per-band EQ is a working IPC capability that simply
+   has no TUI surface. Deleting it would have broken external clients to tidy up
+   a documentation gap. Document it as what it is.
