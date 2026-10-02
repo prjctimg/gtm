@@ -200,7 +200,7 @@ impl DaemonState {
                 duration,
                 ..
             } => {
-                self.current_track = Some(track.clone());
+                self.current_track = Some(track.as_ref().clone());
                 self.status = PlaybackStatus::Playing;
                 self.time_pos = *time_pos;
                 self.duration = *duration;

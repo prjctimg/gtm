@@ -292,7 +292,7 @@ impl Cmd {
         Daemon::push_event(
             inner,
             DaemonEvent::PlaybackStarted {
-                track,
+                track: Box::new(track),
                 auto_advanced,
                 time_pos: start_pos,
                 duration: dur,
@@ -444,7 +444,7 @@ impl Cmd {
         Daemon::push_event(
             inner,
             DaemonEvent::PlaybackStarted {
-                track,
+                track: Box::new(track),
                 auto_advanced,
                 time_pos: start_pos,
                 duration: dur,
@@ -567,7 +567,7 @@ impl Cmd {
         Daemon::push_event(
             inner,
             DaemonEvent::PlaybackStarted {
-                track,
+                track: Box::new(track),
                 auto_advanced,
                 time_pos: start_pos,
                 duration: dur,
@@ -706,7 +706,7 @@ impl Cmd {
                 Daemon::push_event(
                     inner,
                     DaemonEvent::PlaybackStarted {
-                        track,
+                        track: Box::new(track),
                         auto_advanced: false,
                         time_pos,
                         duration,
@@ -3809,7 +3809,7 @@ impl Daemon {
                 Self::push_event(
                     inner,
                     DaemonEvent::PlaybackStarted {
-                        track: next,
+                        track: Box::new(next),
                         auto_advanced: true,
                         time_pos: actual,
                         duration: dur,
@@ -4203,7 +4203,7 @@ impl Daemon {
         Self::push_event(
             inner,
             DaemonEvent::PlaybackStarted {
-                track,
+                track: Box::new(track),
                 auto_advanced: true,
                 time_pos: 0.0,
                 duration: dur,

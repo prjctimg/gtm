@@ -1580,9 +1580,13 @@ impl WireEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event")]
 pub enum DaemonEvent {
+    /// Boxed because `TrackInfo` is 329 bytes and every other variant is small:
+    /// inlined, one variant made the whole enum 336 bytes and every event the
+    /// daemon pushed copied 336. `Box` is transparent to serde, so the wire
+    /// format is unchanged.
     #[serde(rename = "playback_started")]
     PlaybackStarted {
-        track: TrackInfo,
+        track: Box<TrackInfo>,
         auto_advanced: bool,
         time_pos: f64,
         duration: f64,

@@ -456,7 +456,7 @@ async fn apply_event(state: &Arc<RwLock<DaemonState>>, event: &DaemonEvent) {
             ..
         } => {
             s.status = PlaybackStatus::Playing;
-            s.current_track = Some(track.clone());
+            s.current_track = Some(track.as_ref().clone());
             s.time_pos = *time_pos;
             s.duration = *duration;
         }

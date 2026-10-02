@@ -684,7 +684,7 @@ macro_rules! wire_event_roundtrip {
 wire_event_roundtrip!(
     event_play_started,
     DaemonEvent::PlaybackStarted {
-        track: sample_track(),
+        track: Box::new(sample_track()),
         auto_advanced: false,
         time_pos: 0.0,
         duration: 240.0,
@@ -1028,7 +1028,7 @@ fn trans_version() {
 fn apply_playback_started() {
     let mut s = DaemonState::new();
     s.apply_event(&DaemonEvent::PlaybackStarted {
-        track: sample_track(),
+        track: Box::new(sample_track()),
         auto_advanced: false,
         time_pos: 0.0,
         duration: 240.0,
