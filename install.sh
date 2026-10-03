@@ -75,13 +75,60 @@ stage() { printf "${BOLD}%s${NC}" "$*" >&2; }
 stage_ok() { printf " ${GREEN}✔${NC}\n" >&2; }
 stage_fail() { printf " ${RED}✘${NC}\n" >&2; }
 
-# Download a URL with a simple message. The progress indicator was removed
-# because it was showing incorrect file size and downloaded size.
+# Every network call gets these. Without them a slow DNS answer, a captive
+# portal or a half-open connection leaves curl on the socket with nothing
+# printed and nothing to interrupt it with — the script looks hung, and there
+# is no way to tell that apart from a slow download. The retries cover the two
+# cases that are transient rather than fatal: a connection refused while the
+# network comes up, and a 5xx/429 from the API while a release is mid-publish.
+#
+# `--retry-connrefused` needs curl 7.52 (2016). An older curl rejects the whole
+# command rather than ignoring the flag, so it is added only when supported.
+curl_supports() {
+  curl --help all 2>/dev/null | grep -q -- "$1"
+}
+
+CURL_WAIT=(--silent --show-error --connect-timeout 10 --max-time 60 --retry 2 --retry-delay 2)
+if curl_supports "retry-connrefused"; then
+  CURL_WAIT+=(--retry-connrefused)
+fi
+
+# Fetch a small JSON document, failing quietly. Callers decide what a failure
+# means — the stable path falls back to a conventional URL, the nightly path
+# aborts — so this only has to be bounded and loud enough to debug.
+api_get() {
+  curl "${CURL_WAIT[@]}" -fsSL "$1"
+}
+
+# Download a URL, showing a bar on a terminal.
+#
+# A bar, not a byte count: the byte-count indicator that used to be here
+# reported a total and a downloaded figure that did not match what was written,
+# and a wrong number is worse than none. `--progress-bar` draws the bar and the
+# percentage and nothing else. On a non-terminal stderr (CI logs, `2>log`,
+# `| tee`) there is no bar to draw into, so it stays quiet — but curl's own
+# errors still come through, which the old `2>/dev/null` swallowed along with
+# them: a 404 used to print "download failed" and not "404", which is the one
+# line that says why.
+#
+# No `--max-time`, because a 18 MB archive on a slow link legitimately takes
+# minutes and a total cap would fail the installs that most need patience.
+# `--speed-limit`/`--speed-time` cover the case a total cap cannot: bytes stop
+# arriving altogether while the connection stays open, which is the one failure
+# that looks exactly like waiting and is not. The archive is ~18 MB, so anything
+# under 1 kB/s sustained for 30 s is a dead transfer, not a slow one.
 #   download_simple <url> <outfile>
 download_simple() {
   local url="$1" out="$2"
-  curl -fL "$url" -o "$out" 2>/dev/null
-  return $?
+  local progress
+  if [ -t 2 ]; then
+    progress=(--progress-bar)
+  else
+    progress=(--silent)
+  fi
+  curl -fL "${progress[@]}" --show-error \
+    --connect-timeout 15 --speed-limit 1024 --speed-time 30 \
+    --retry 3 --retry-delay 2 "$url" -o "$out"
 }
 
 VERSION=""
@@ -182,9 +229,9 @@ detect_platform() {
 
 resolve_latest_stable_tag() {
   local tag
-  tag="$(curl -sfL "https://api.github.com/repos/${REPO}/releases/latest" \
+  tag="$(api_get "https://api.github.com/repos/${REPO}/releases/latest" \
     | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' || true)"
-  [ -n "${tag}" ] || die "could not resolve the latest stable release from GitHub"
+  [ -n "${tag}" ] || die "could not reach the GitHub API for the latest release (offline, blocked, or rate limited — try: install.sh --version <ver>)"
   echo "${tag}"
 }
 
@@ -211,7 +258,7 @@ resolve_asset_url() {
   local tag="$1" archive="$2" strict="${3:-0}"
   local direct="https://github.com/${REPO}/releases/download/${tag}/${archive}"
   local body head
-  body="$(curl -sfL "https://api.github.com/repos/${REPO}/releases/tags/${tag}" 2>/dev/null)" || body=""
+  body="$(api_get "https://api.github.com/repos/${REPO}/releases/tags/${tag}" 2>/dev/null)" || body=""
   # A release shares its `"name"` key with every asset it carries, but the assets
   # all sit inside the `assets` array, so cutting the body at that key leaves the
   # release's own name as the only match.
@@ -242,21 +289,28 @@ bootstrap_install() {
   elif [ -n "${VERSION}" ]; then
     tag="v${VERSION#v}"
   else
+    # Announced, because this is the first thing the script does that can wait
+    # on a network and it used to do it in silence.
+    stage "🔎 resolving the latest stable release"
     VERSION="$(resolve_latest_stable_tag)"
     tag="v${VERSION}"
+    stage_ok
     info "latest stable: v${VERSION}"
   fi
 
   local archive_name="gtm-${PLATFORM}.tar.gz"
+  stage "🔎 resolving the ${archive_name} download URL"
   if [ "${CHANNEL}" = "nightly" ]; then
     # Resolve strictly against the published nightly so a draft (mid-build)
     # resolves to a clear "try again" instead of a dead 404 URL.
     resolve_asset_url "${tag}" "${archive_name}" 1 || {
+      stage_fail
       die "nightly archive '${archive_name}' is not published yet — the latest nightly build may still be running or failed. Retry in a few minutes, or install a stable release with: install.sh --version <ver>"
     }
   else
     resolve_asset_url "${tag}" "${archive_name}"
   fi
+  stage_ok
   local url="${ASSET_URL}"
 
   # Name the build rather than the file. The platform triple is already decided
@@ -278,6 +332,13 @@ bootstrap_install() {
   # `$tmp`, and the trap uses `:?` so an empty value fails loudly instead of
   # running `rm -rf ""`.
   BOOTSTRAP_TMPDIR="$(mktemp -d)" || die "mktemp failed"
+  # EXIT alone does not fire on a signal: bash runs it on a normal exit and on
+  # `exit`, but a Ctrl-C during the download killed the script outright and left
+  # the partial archive in /tmp. These turn the signal into an exit so the EXIT
+  # trap still runs, and so the shell reports the interruption rather than
+  # reporting it as whatever the last command happened to be.
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   trap 'rm -rf "${BOOTSTRAP_TMPDIR:?}"' EXIT
 
   log "📥 downloading ${label}"
@@ -288,7 +349,15 @@ bootstrap_install() {
   # commit hash on success says nothing the reader does not have.
   ok "downloaded gtm"
 
-  tar -xzf "${BOOTSTRAP_TMPDIR}/${archive_name}" -C "${BOOTSTRAP_TMPDIR}"
+  # Announced because extracting a multi-megabyte archive is not instant and
+  # used to print nothing while it happened — a gap between two ✔ lines with
+  # nothing in it, which reads as a stall.
+  stage "📂 extracting"
+  tar -xzf "${BOOTSTRAP_TMPDIR}/${archive_name}" -C "${BOOTSTRAP_TMPDIR}" || {
+    stage_fail
+    die "could not extract ${archive_name} (truncated download?)"
+  }
+  stage_ok
 
   local extracted_dir="${BOOTSTRAP_TMPDIR}/${archive_name%.tar.gz}"
   [ -d "${extracted_dir}" ] || die "archive did not extract correctly"
@@ -432,10 +501,24 @@ install_from_archive() {
     case "${reply}" in
       [yY] | [yY][eE][sS])
         systemctl --user daemon-reload 2>/dev/null || true
-        if systemctl --user enable --now gtmd 2>/dev/null; then
+        # `enable --now` blocks until the unit has started or given up, and the
+        # give-up is 90 seconds of systemd's own default — spent with stderr
+        # discarded and nothing else in flight, so on a slow session bus the
+        # installer looked hung after everything was already installed. Bounded
+        # here and announced, so the worst case is a clear message rather than
+        # a silence. `timeout` is used only when present; the systemd block is
+        # Linux-only but the tool is not always installed.
+        stage "⚙️  enabling and starting gtmd (up to 30s)"
+        local systemctl_enable=(systemctl --user enable --now gtmd)
+        if command -v timeout >/dev/null 2>&1; then
+          systemctl_enable=(timeout --kill-after=5 30 systemctl --user enable --now gtmd)
+        fi
+        if "${systemctl_enable[@]}" 2>/dev/null; then
+          stage_ok
           ok "gtmd enabled and started"
         else
-          fail "could not enable gtmd"
+          stage_fail
+          fail "could not enable gtmd — start it yourself with: systemctl --user enable --now gtmd"
         fi
         ;;
       *) ;;
