@@ -182,6 +182,33 @@ impl App {
     /// local position estimate immediately for smooth feedback and only
     /// defers the authoritative daemon seek to `ensure_seek_flush`, so a
     /// long-press never floods the daemon with full re-decodes.
+    /// Refresh every widget in the next frame.
+    ///
+    /// The frame loop refreshes a widget when its own dirty flag is set, which
+    /// is fine for a change that widget caused and wrong for a change it merely
+    /// reads -- a new track, a transport state, a volume. Those left their
+    /// readers a frame behind, and up to ten frames behind when nothing else
+    /// was animating, so the footer and the transport could disagree about
+    /// whether anything was playing.
+    ///
+    /// Setting every flag is the blunt instrument and that is the point: the
+    /// alternative is a per-widget dependency list, which is the same graph
+    /// the reconciliations below already approximate, expressed twice.
+    pub(crate) fn mark_all_dirty(&mut self) {
+        self.data_dirty = true;
+        self.cover_art_dirty = true;
+        self.metadata.cover_dirty = true;
+        self.track_anim_trigger = true;
+    }
+
+    /// Invalidate the reconciliation itself, so the next frame trusts no
+    /// tracker. For the events that make every `prev_*` value suspect rather
+    /// than just one of them wrong: a reconnect, a full state resnapshot, a
+    /// resize that re-derives every layout.
+    pub(crate) fn request_full_sync(&mut self) {
+        self.full_sync = true;
+    }
+
     pub(crate) fn accumulate_seek(&mut self, delta: f64) {
         if self.state.current_track.is_none() {
             return;
@@ -443,6 +470,13 @@ impl App {
             if linked && !self.link_up {
                 self.link_up = true;
                 self.path_display = None;
+                // Everything the trackers remember is suspect after a reconnect:
+                // events that arrived while the link was down never reached the
+                // frame loop, so the position, the now-playing path and the
+                // cover are all whatever they were when it dropped. Sweep rather
+                // than reconcile field by field -- the snapshot below is about
+                // to replace the state wholesale anyway.
+                self.request_full_sync();
                 let client = self.client.clone();
                 let ipc_tx = self.ipc_tx.clone();
                 tokio::spawn(async move {
@@ -1547,10 +1581,12 @@ impl App {
                 if let Some(top) = self.pickers.top()
                     && top.id == PickerId::PodcastFeeds
                 {
+                    // Fired for an empty query as well: that is the popular
+                    // list, and the picker's whole first screen. It used to
+                    // require a non-empty query, so opening the picker showed
+                    // an empty directory until something was typed.
                     let q = top.query.trim().to_string();
-                    if !q.is_empty() {
-                        self.search_podcasts(q);
-                    }
+                    self.search_podcasts(q);
                 }
             }
 
@@ -1576,20 +1612,48 @@ impl App {
                 self.search_deadline = None;
             }
 
-            // Detect state changes
+            // Detect state changes.
+            //
+            // Each of these used to update its tracker and nothing else, which
+            // made a track, status, volume or cover change invisible to every
+            // widget that had not happened to be looking. They all waited for
+            // the periodic ten-frame repaint to notice -- up to a sixth of a
+            // second of the footer disagreeing with the transport and the cover
+            // disagreeing with the track it belongs to.
+            //
+            // Marking the frame dirty on the change itself is both the fix and
+            // the fault tolerance. These four comparisons are the whole
+            // reconciliation, so a tracker that has drifted from the state
+            // cannot leave anything stale: the drift *is* a change, and the
+            // frame after it every widget is refreshed.
             let current_tid = self.state.current_track.as_ref().map(|t| t.id);
-            if current_tid != self.prev_track_id {
+            // A latched `full_sync` makes every comparison below report a change,
+            // so the trackers are re-seeded from the state on the way past --
+            // which is the point: after a reconnect or a resnapshot their old
+            // values are not merely stale, they are untrustworthy, and a sweep
+            // that trusts them would leave whatever it missed stale too.
+            let full_sync = std::mem::take(&mut self.full_sync);
+            let mut changed = full_sync;
+            if current_tid != self.prev_track_id || full_sync {
                 self.prev_track_id = current_tid;
+                changed = true;
             }
-            if self.state.status != self.prev_status {
+            if self.state.status != self.prev_status || full_sync {
                 self.prev_status = self.state.status;
+                changed = true;
             }
-            // Volume changes: update the previous volume tracker without triggering an animation.
-            if self.state.volume != self.prev_volume {
+            // Volume changes: update the previous volume tracker without
+            // triggering an animation, but still refresh the readouts.
+            if self.state.volume != self.prev_volume || full_sync {
                 self.prev_volume = self.state.volume;
+                changed = true;
             }
-            if self.np_cover.track_id != self.prev_cover_id {
+            if self.np_cover.track_id != self.prev_cover_id || full_sync {
                 self.prev_cover_id = self.np_cover.track_id;
+                changed = true;
+            }
+            if changed {
+                self.mark_all_dirty();
             }
 
             let mut raw_pos = self.client.estimated_position().await;
@@ -1744,6 +1808,12 @@ impl App {
             // keep the old geometry until some unrelated change woke it.
             if std::mem::take(&mut self.resized) {
                 force_render = true;
+                // A resize re-derives every pane's geometry, so every widget is
+                // stale by definition -- not just the one that noticed. Sizing is
+                // also what decides whether a cover is drawn at all (the card
+                // skips it below a minimum height), so without this a pane can
+                // grow back with an empty card until something else changes.
+                self.mark_all_dirty();
                 // Drop the buffer ratatui diffs against. It is still the old
                 // size, and diffing a new-size frame against it is what panics.
                 let _ = terminal.clear();

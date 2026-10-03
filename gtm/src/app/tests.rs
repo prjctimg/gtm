@@ -32,6 +32,46 @@ fn lyridx_timed_lines() {
     assert_eq!(lyric_index_at(&lines, 999.0), 3);
 }
 
+/// A provider that returns lines out of timestamp order must still highlight
+/// the right verse.
+///
+/// Matching used to take the last qualifying line *in slice order*, which is
+/// the same as the latest timestamp only while the file is sorted. One line out
+/// of order parked the highlight on the wrong verse for the rest of the track,
+/// and the failure was invisible: the highlight kept moving, just against the
+/// wrong lyrics.
+#[test]
+fn lyridx_out_of_order_lines_match_by_timestamp() {
+    let mk = |timestamp: f64, text: &str| LrcLine {
+        timestamp,
+        text: text.into(),
+        words: Vec::new(),
+    };
+    // "third" is listed before "second", and the untimed header is not first.
+    let lines = vec![
+        mk(10.0, "third"),
+        mk(-1.0, "header"),
+        mk(5.0, "second"),
+        mk(0.0, "first"),
+    ];
+    // Sorted order would give 1 -> 2 -> 3 -> 0 here.
+    assert_eq!(
+        lyric_index_at(&lines, -1.0),
+        0,
+        "before the first timestamp"
+    );
+    assert_eq!(lyric_index_at(&lines, 0.0), 3, "at 0s: `first`");
+    assert_eq!(lyric_index_at(&lines, 4.9), 3, "before 5s: still `first`");
+    assert_eq!(
+        lyric_index_at(&lines, 5.0),
+        2,
+        "at 5s: `second`, not `third`"
+    );
+    assert_eq!(lyric_index_at(&lines, 9.9), 2, "before 10s: still `second`");
+    assert_eq!(lyric_index_at(&lines, 10.0), 0, "at 10s: `third`");
+    assert_eq!(lyric_index_at(&lines, 999.0), 0, "past the end: `third`");
+}
+
 #[test]
 fn lyridx_empty_zero() {
     assert_eq!(lyric_index_at(&[], 42.0), 0);

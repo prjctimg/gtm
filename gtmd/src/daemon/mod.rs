@@ -144,6 +144,57 @@ impl Cmd {
         }
     }
 
+    /// Scrobble the track being left, without blocking playback on Last.fm.
+    ///
+    /// A scrobble is a Last.fm HTTP request with a ten-second timeout on it, and
+    /// every path that leaves a track used to await that inline *before* starting
+    /// the next one. A slow or unreachable Last.fm therefore put up to ten
+    /// seconds between pressing Enter and hearing anything -- on the track-change
+    /// paths, the stream paths and the crossfade alike. The delay was worst
+    /// exactly where it was least welcome: starting a stream is the case where
+    /// the user is already waiting on a network round-trip.
+    ///
+    /// Split so that nothing waits. The listened-time read stays inline, because
+    /// the next track's own scrobble advances the same tracker and a read
+    /// deferred past the spawn would score this track against the next one's
+    /// listening. That read is a lock, not I/O. The request then runs on its own
+    /// task holding only clones of the two `Arc`s it needs, so the task borrows
+    /// nothing and playback never waits on telling a third party what was heard.
+    async fn scrobble_detached(inner: &DaemonInner, track: &TrackInfo, fallback_pos: f64) {
+        if track.duration <= 0.0 {
+            return;
+        }
+        let (enabled, min_secs, min_pct) = {
+            let state = inner.state.read().await;
+            (
+                state.scrobble.enabled,
+                state.scrobble.effective_play_secs(),
+                state.scrobble.effective_play_pct(),
+            )
+        };
+        if !enabled {
+            return;
+        }
+        let played_secs = inner
+            .scrobble
+            .lock()
+            .await
+            .listened_for(&track.path, fallback_pos)
+            .max(0.0);
+        let lastfm = std::sync::Arc::clone(&inner.lastfm);
+        let track = track.clone();
+        tokio::spawn(async move {
+            let client = lastfm.lock().await;
+            if client.is_ready().await {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    client.scrobble(&track, played_secs, min_secs, min_pct),
+                )
+                .await;
+            }
+        });
+    }
+
     /// Announce the track that is now playing to Last.fm.
     ///
     /// Every path that starts audio has to do this, and each one that grew its
@@ -264,7 +315,7 @@ impl Cmd {
             (prev, pos)
         };
         if let Some(prev_track) = prev_track {
-            Cmd::scrobble_track(inner, &prev_track, prev_pos).await;
+            Cmd::scrobble_detached(inner, &prev_track, prev_pos).await;
             let mut state = inner.state.write().await;
             state.current_track = Some(prev_track); // Restore for potential re-play
         }
@@ -378,7 +429,7 @@ impl Cmd {
             (prev, pos)
         };
         if let Some(prev_track) = prev_track {
-            Cmd::scrobble_track(inner, &prev_track, prev_pos).await;
+            Cmd::scrobble_detached(inner, &prev_track, prev_pos).await;
             let mut state = inner.state.write().await;
             state.current_track = Some(prev_track);
         }
@@ -488,7 +539,7 @@ impl Cmd {
             (prev, pos)
         };
         if let Some(prev_track) = prev_track {
-            Cmd::scrobble_track(inner, &prev_track, prev_pos).await;
+            Cmd::scrobble_detached(inner, &prev_track, prev_pos).await;
             let mut state = inner.state.write().await;
             state.current_track = Some(prev_track);
         }
@@ -1456,7 +1507,9 @@ pub(crate) struct DaemonInner {
     pub(crate) event_tx: broadcast::Sender<DaemonEvent>,
     pub(crate) cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
     pub(crate) lyrics_manager: tokio::sync::Mutex<Option<LyricsManager>>,
-    pub(crate) lastfm: tokio::sync::Mutex<LastfmManager>,
+    /// `Arc` so a detached scrobble can own the client without borrowing the
+    /// whole daemon state. See [`Cmd::scrobble_detached`].
+    pub(crate) lastfm: std::sync::Arc<tokio::sync::Mutex<LastfmManager>>,
     /// Last.fm loved-state for the current track: `Some((artist|title, loved))`
     /// once the user has loved/unloved anything this session.
     pub(crate) lastfm_loved: std::sync::Mutex<Option<(String, bool)>>,
@@ -1541,7 +1594,10 @@ pub(crate) struct DaemonInner {
     /// playlist fetch) independently of Spotify's slow lock.
     pub(crate) yt_slow_lock: tokio::sync::Mutex<()>,
     pub(crate) play_history: tokio::sync::Mutex<Vec<HistoryEntry>>,
-    pub(crate) scrobble: tokio::sync::Mutex<ScrobbleTracker>,
+    /// `Arc` for the same reason as [`Self::lastfm`]: the listened-time read
+    /// has to happen before the next track's scrobble advances this tracker,
+    /// so it cannot move into the detached task.
+    pub(crate) scrobble: std::sync::Arc<tokio::sync::Mutex<ScrobbleTracker>>,
     pub(crate) sync_progress: Arc<SyncProgress>,
 }
 
@@ -1925,7 +1981,7 @@ impl Daemon {
             cover_cache: tokio::sync::Mutex::new(None),
             cover_provider_override: tokio::sync::Mutex::new(None),
             lyrics_manager: tokio::sync::Mutex::new(None),
-            lastfm: tokio::sync::Mutex::new(LastfmManager::new()),
+            lastfm: std::sync::Arc::new(tokio::sync::Mutex::new(LastfmManager::new())),
             lastfm_loved: std::sync::Mutex::new(None),
             #[cfg(feature = "youtube")]
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
@@ -1956,7 +2012,7 @@ impl Daemon {
             spotify_slow_lock: tokio::sync::Mutex::new(()),
             yt_slow_lock: tokio::sync::Mutex::new(()),
             play_history: tokio::sync::Mutex::new(Vec::new()),
-            scrobble: tokio::sync::Mutex::new(ScrobbleTracker::default()),
+            scrobble: std::sync::Arc::new(tokio::sync::Mutex::new(ScrobbleTracker::default())),
             sync_progress: Arc::new(SyncProgress::default()),
         });
 
@@ -3777,7 +3833,7 @@ impl Daemon {
             state.current_track.clone()
         };
         if let Some(track) = prev_track {
-            Cmd::scrobble_track(inner, &track, inner.state.read().await.time_pos).await;
+            Cmd::scrobble_detached(inner, &track, inner.state.read().await.time_pos).await;
         }
 
         match Self::step_next(inner).await {

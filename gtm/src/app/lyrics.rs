@@ -20,22 +20,35 @@ pub(crate) fn lyrics_query(track: &TrackInfo) -> Option<(String, String)> {
 
 /// Index of the active time-synced lyric line for a playback position.
 /// Untimed lines (timestamp < 0) are skipped for matching but keep their
-/// index so the highlight tracks timed lines correctly. Uses
-/// rposition semantics over sorted timed entries.
+/// index so the highlight tracks timed lines correctly.
 pub(crate) fn lyric_index_at(lines: &[LrcLine], position: f64) -> usize {
     if lines.is_empty() {
         return 0;
     }
-    // Last timed line with timestamp <= position. Untimed
-    // lines keep their index but never match; before the first timestamp
-    // (and for plain lyrics) the highlight rests on line 0.
-    lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| l.timestamp >= 0.0 && l.timestamp <= position)
-        .map(|(i, _)| i)
-        .next_back()
-        .unwrap_or(0)
+    // The latest timestamp at or before `position`, chosen by value rather than
+    // by position in the slice.
+    //
+    // The two agree only while every provider hands lines back in timestamp
+    // order, and when they disagree this used to return whichever qualifying
+    // line came last in the array. One line out of order was then enough to
+    // park the highlight on the wrong verse for the rest of the track, with no
+    // way for the user to tell it had stopped tracking.
+    //
+    // Ties take the later index, so two lines sharing a timestamp resolve to the
+    // one the provider listed second -- the same answer the slice-order version
+    // gave for a well-formed file.
+    let mut best: Option<(usize, f64)> = None;
+    for (i, line) in lines.iter().enumerate() {
+        if line.timestamp < 0.0 || line.timestamp > position {
+            continue;
+        }
+        if best.is_none_or(|(_, latest)| line.timestamp >= latest) {
+            best = Some((i, line.timestamp));
+        }
+    }
+    // Nothing qualifies: before the first timestamp, or plain lyrics. The
+    // highlight rests on line 0, which is what an unsynced file's first line is.
+    best.map_or(0, |(index, _)| index)
 }
 
 /// Whether the current lyrics have any time-synced lines. Plain lyrics

@@ -29,7 +29,12 @@ impl App {
     /// want. The daemon caches by query, so repeating a search is free.
     pub fn search_podcasts(&mut self, term: String) {
         let term = term.trim().to_string();
-        if term.is_empty() {
+        // An empty term is allowed and means "what is popular". The daemon's
+        // directory call answers it, and refusing it here is what left the
+        // picker with nothing to show until the user had typed something.
+        if term.is_empty() && !self.podcast.results.is_empty() {
+            // Already holding the popular list: clearing and re-fetching on
+            // every debounce tick would empty the pane the user is reading.
             return;
         }
         // A new term invalidates the old rows immediately: leaving yesterday's
@@ -88,9 +93,22 @@ impl App {
     /// old query produced — a result list left under an edited query is the one
     /// state that reads as "the search found these".
     pub fn arm_podcast_search(&mut self) {
-        self.podcast.results.clear();
+        // Not cleared unconditionally any more. An emptied query is the popular
+        // list, so wiping the rows on every keystroke of the way back to empty
+        // emptied the pane instead of returning it to the default view. The rows
+        // go only when the new query is actually a search.
+        if !self.picker_query_is_empty_podcast() {
+            self.podcast.results.clear();
+        }
         self.podcast.search_deadline =
             Some(std::time::Instant::now() + Duration::from_millis(SEARCH_DEBOUNCE_MS));
+    }
+
+    /// Whether the podcast picker's query is blank.
+    fn picker_query_is_empty_podcast(&self) -> bool {
+        self.pickers.top().is_some_and(|t| {
+            t.id == crate::picker::PickerId::PodcastFeeds && t.query.trim().is_empty()
+        })
     }
 
     /// Load the subscribed feed list, and the directory status alongside it.

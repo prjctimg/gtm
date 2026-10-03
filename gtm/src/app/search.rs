@@ -137,7 +137,12 @@ impl App {
                 }
             }
             PickerId::PodcastFeeds => {
+                // Both, on open: the subscriptions *and* the directory's popular
+                // list. Only the subscriptions were asked for, so the picker's
+                // search half sat empty until the user typed something -- and
+                // the popular list is the screen most sessions start on.
                 self.fetch_podcast_feeds();
+                self.podcast.search_deadline = Some(std::time::Instant::now());
             }
             PickerId::PodcastEpisodes => {
                 if let Some(feed_id) = self.podcast.episodes_feed_id.clone() {
@@ -893,6 +898,19 @@ impl App {
     /// Track ids owned by the list position `pos` (when that row maps to a
     /// concrete track). Returns `None` for album/artist/playlist/spotify rows
     /// whose cover is derived from a different key.
+    /// The library id whose artwork the card shows for row `pos`, resolved the
+    /// same way [`App::update_track_popup`] resolves it.
+    ///
+    /// This used to answer only for All Tracks and Liked and `None` for every
+    /// other category, so the preload warmed those two lists and nothing else.
+    /// Every other list therefore fetched a row's artwork only once the cursor
+    /// landed on it: one visible frame of blank per step, and a burst of
+    /// requests while the list was moving.
+    ///
+    /// Album and artist rows resolve a *representative* track rather than the
+    /// row itself, so warming `filtered_tracks()[pos]` would have warmed the
+    /// wrong artwork -- at the top level those two lists show one row per album
+    /// or per artist while `filtered_tracks` is still the whole library.
     pub(crate) fn track_id_at(&self, pos: usize) -> Option<i64> {
         if self.browse_detail.is_some() {
             // Spotify drill-down rows are remote tracks (no local id to warm
@@ -902,8 +920,38 @@ impl App {
             }
             return None;
         }
-        match self.library_category {
-            0 | 1 => self.filtered_tracks().get(pos).map(|t| t.id),
+        match self.track_info_kind() {
+            TrackInfoKind::Track => self.filtered_tracks().get(pos).map(|t| t.id),
+            TrackInfoKind::Album => {
+                let name = self.unique_albums().get(pos)?.0.clone();
+                self.tracks_cache
+                    .iter()
+                    .find(|t| {
+                        let album: &str = if t.album.is_empty() {
+                            "Unknown Album"
+                        } else {
+                            &t.album
+                        };
+                        album == name
+                    })
+                    .map(|t| t.id)
+            }
+            TrackInfoKind::Artist => {
+                let name = self.unique_artists().get(pos)?.0.clone();
+                self.tracks_cache
+                    .iter()
+                    .find(|t| {
+                        let artist: &str = if t.artist.is_empty() {
+                            "Unknown Artist"
+                        } else {
+                            &t.artist
+                        };
+                        artist == name
+                    })
+                    .map(|t| t.id)
+            }
+            // Playlist and Spotify rows carry no library id, and a chart row is
+            // keyed on a URL. Both are warmed elsewhere.
             _ => None,
         }
     }

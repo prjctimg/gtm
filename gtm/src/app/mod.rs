@@ -315,10 +315,21 @@ pub struct App {
     /// Whether the IPC link is currently up, so a reconnect is handled on its
     /// rising edge rather than continuously.
     pub(crate) link_up: bool,
+    /// Last value each of these reconciliations saw. A difference is what
+    /// triggers a full sweep of the frame's dirty flags -- see
+    /// [`App::mark_all_dirty`].
     pub(crate) prev_track_id: Option<i64>,
     pub(crate) prev_status: PlaybackStatus,
     pub(crate) prev_volume: u8,
     pub(crate) prev_cover_id: Option<i64>,
+    /// Set when something has invalidated the reconciliation itself: a
+    /// reconnect, a state resnapshot, a resize. The next frame refreshes every
+    /// widget rather than trusting that the per-field trackers still agree with
+    /// the state, which is the assumption a tracker cannot check.
+    ///
+    /// Latched rather than acted on in place, because the place that needs to
+    /// know is the frame loop and the thing that knows is an event handler.
+    pub full_sync: bool,
     pub(crate) cover_art_dirty: bool,
     /// Set whenever the daemon pushes events or refreshes state so the next
     /// frame re-renders even if no visual trigger (position/animation) is
@@ -1096,6 +1107,7 @@ impl App {
             idle_reset: false,
             link_up: true,
             prev_track_id: None,
+            full_sync: false,
             prev_status: PlaybackStatus::Stopped,
             prev_volume: 100,
             prev_cover_id: None,

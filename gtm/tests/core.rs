@@ -2723,6 +2723,11 @@ fn scrobbling_and_state_persistence() {
         .find("pub async fn stop(inner: &DaemonInner)")
         .expect("no stop");
     let block = &daemon[stop..stop + 1400];
+    //
+    // Blocking here is deliberate and is the exception: `stop` is synchronous by
+    // contract, the user has asked for playback to end, and there is nothing to
+    // overlap the request with. Every path that *starts* a track uses
+    // `scrobble_detached` instead -- see `playback_starts_do_not_wait_on_lastfm`.
     assert!(
         block.contains("Cmd::scrobble_track(inner, &track, played_secs).await;"),
         "stop no longer scrobbles the track it interrupts"
@@ -2730,6 +2735,55 @@ fn scrobbling_and_state_persistence() {
     assert!(
         block.find("Cmd::scrobble_track").unwrap() < block.find("state.stop()?").unwrap(),
         "stop clears the track before scrobbling it"
+    );
+
+    // 4. Starting a track must not wait on Last.fm.
+    //
+    // A scrobble is a Last.fm HTTP request behind a ten-second timeout, and
+    // every path that leaves a track used to await it *before* starting the
+    // next one. An unreachable Last.fm therefore put up to ten seconds between
+    // pressing Enter and hearing anything -- on the track-change paths, the
+    // stream paths and the crossfade alike, and worst of all on a stream, where
+    // the user is already waiting on a network round-trip.
+    assert!(
+        daemon.contains("async fn scrobble_detached(inner: &DaemonInner"),
+        "there is no detached scrobble at all"
+    );
+    // The blocking variant survives for `stop` alone, so a global rename would
+    // show up here rather than silently changing what stop waits for.
+    assert_eq!(
+        daemon.matches("Cmd::scrobble_track(inner").count(),
+        2,
+        "exactly stop and stop_playback may still block on a scrobble"
+    );
+    // Every site that hands off to the next track uses the detached one.
+    for site in ["play", "play_stream", "play_remote", "finish_crossfade"] {
+        let start = daemon
+            .find(&format!("fn {site}("))
+            .unwrap_or_else(|| panic!("no {site}"));
+        let block = &daemon[start..(start + 4000).min(daemon.len())];
+        assert!(
+            !block.contains("Cmd::scrobble_track(inner"),
+            "{site} still blocks playback on a Last.fm scrobble"
+        );
+    }
+    // The listened-time read stays inline: deferred into the task it would score
+    // this track against the next one's listening, because the next scrobble
+    // advances the same tracker.
+    let detached = daemon
+        .find("async fn scrobble_detached")
+        .expect("no scrobble_detached");
+    let prep = &daemon[detached..(detached + 2600).min(daemon.len())];
+    let listened = prep.find("listened_for").expect("no listened_for read");
+    let spawn = prep.find("tokio::spawn").expect("no spawn");
+    assert!(
+        listened < spawn,
+        "the listened-time read moved into the task, where the next track can overtake it"
+    );
+    // And the spawned task owns what it needs rather than borrowing the daemon.
+    assert!(
+        prep.contains("std::sync::Arc::clone(&inner.lastfm)"),
+        "the detached scrobble borrows the daemon instead of owning an Arc"
     );
 
     // 3. A crossfaded track never reached Last.fm's "now playing", so the
@@ -3776,5 +3830,134 @@ fn pre_gain_reaches_the_samples_and_survives_a_restart() {
     assert!(
         daemon[at..at + 900].contains("m.set_pre_gain(pre_gain_db);"),
         "the saved pre-gain is not replayed into the mixer at startup"
+    );
+}
+
+/// The lyric highlight must track the audio, whatever order the lines arrive in.
+///
+/// Matching took the last qualifying line *in slice order*, which is the same
+/// as the latest timestamp only while the provider hands them back sorted. One
+/// line out of order parked the highlight on the wrong verse for the rest of the
+/// track, and the failure was invisible: the highlight kept moving, just against
+/// the wrong lyrics. Matching by value is correct for sorted and unsorted input
+/// alike.
+#[test]
+fn lyric_highlight_ignores_the_order_lines_arrive_in() {
+    let lyrics = include_str!("../src/app/lyrics.rs");
+    let at = lyrics
+        .find("pub(crate) fn lyric_index_at")
+        .expect("lyric_index_at is gone");
+    let block = &lyrics[at..(at + 1800).min(lyrics.len())];
+
+    assert!(
+        block.contains("line.timestamp > position"),
+        "the matcher no longer skips lines after the playhead"
+    );
+    // `next_back()` over a filtered iterator is the bug: last in slice order,
+    // not latest timestamp.
+    assert!(
+        !block.contains("next_back()"),
+        "the matcher is picking by slice position again"
+    );
+    assert!(
+        block.contains("if best.is_none_or(|(_, latest)| line.timestamp >= latest)"),
+        "the matcher does not keep the latest timestamp, only the last one seen"
+    );
+    assert!(
+        block.contains("map_or(0, |(index, _)| index)"),
+        "the before-the-first-timestamp fallback changed; it must still rest on line 0"
+    );
+}
+
+/// A state change has to reach every widget that reads it, not just the one
+/// that noticed.
+///
+/// The reconciliations updated their trackers and nothing else, so a track,
+/// status, volume or cover change was invisible to every other widget until the
+/// periodic ten-frame repaint happened -- up to a sixth of a second of the
+/// footer disagreeing with the transport.
+#[test]
+fn a_state_change_refreshes_every_widget() {
+    let run = include_str!("../src/app/run.rs");
+
+    assert!(
+        run.contains("pub(crate) fn mark_all_dirty(&mut self)"),
+        "there is no way to refresh every widget at once"
+    );
+    let at = run
+        .find("pub(crate) fn mark_all_dirty")
+        .expect("no mark_all_dirty");
+    let sweep = &run[at..(at + 700).min(run.len())];
+    for flag in [
+        "self.data_dirty = true;",
+        "self.cover_art_dirty = true;",
+        "self.metadata.cover_dirty = true;",
+        "self.track_anim_trigger = true;",
+    ] {
+        assert!(
+            sweep.contains(flag),
+            "a full sweep leaves {flag} unset, so that widget can still go stale"
+        );
+    }
+
+    // Every reconciliation must set `changed`, not merely update its tracker.
+    // Scoped to the single line rather than to a window: each branch assigns its
+    // tracker before the next comparison is written, so a window search runs
+    // past the block and finds the following branch's marker instead of its own.
+    let recon = run
+        .find("// Detect state changes.")
+        .expect("the reconciliation block moved");
+    let recon = &run[recon..(recon + 3200).min(run.len())];
+    for tracker in [
+        "prev_track_id",
+        "prev_status",
+        "prev_volume",
+        "prev_cover_id",
+    ] {
+        // The assignment and its `changed = true` sit on the *next* line, so
+        // this looks at the following one rather than the remainder of this.
+        let lines: Vec<&str> = recon.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.contains(&format!("self.{tracker} = ")))
+            .unwrap_or_else(|| panic!("{tracker} is no longer reconciled"));
+        let next = lines.get(at + 1).copied().unwrap_or_default().trim();
+        assert_eq!(
+            next, "changed = true;",
+            "a {tracker} change no longer marks the frame for a sweep"
+        );
+    }
+    assert!(
+        recon.contains("std::mem::take(&mut self.full_sync)"),
+        "a latched full sync is not consumed, so it would sweep every frame forever"
+    );
+    // And the flag those branches set has to reach the sweep.
+    let flag = recon
+        .find("if changed {")
+        .expect("nothing consumes `changed`");
+    assert!(
+        recon[flag..(flag + 120).min(recon.len())].contains("mark_all_dirty()"),
+        "`changed` is computed and then ignored"
+    );
+
+    // Fault tolerance: the events that make every tracker suspect, not just one
+    // field wrong, have to request the sweep themselves.
+    assert!(
+        run.contains("pub(crate) fn request_full_sync(&mut self)"),
+        "nothing can request a full reconciliation"
+    );
+    let linked = run
+        .find("if linked && !self.link_up")
+        .expect("no reconnect branch");
+    assert!(
+        run[linked..(linked + 900).min(run.len())].contains("self.request_full_sync()"),
+        "a reconnect re-seeds the state without invalidating the trackers that read it"
+    );
+    let resized = run
+        .find("if std::mem::take(&mut self.resized)")
+        .expect("no resize branch");
+    assert!(
+        run[resized..(resized + 700).min(run.len())].contains("self.mark_all_dirty()"),
+        "a resize re-derives every pane's geometry but only forces one frame"
     );
 }

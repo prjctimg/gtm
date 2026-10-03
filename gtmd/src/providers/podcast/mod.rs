@@ -187,9 +187,10 @@ impl PodcastManager {
         country: &str,
     ) -> Result<Vec<PodcastResult>, String> {
         let term = term.trim();
-        if term.is_empty() {
-            return Err("type something to search for".into());
-        }
+        // An empty term is not an error: it asks the directory for what is
+        // popular, which is the list the picker opens on and the one most
+        // sessions start from. iTunes reads a missing `term` as "everything",
+        // so the parameter is simply dropped rather than sent empty.
         let key = format!(
             "{}|{}",
             country.to_ascii_lowercase(),
@@ -198,11 +199,18 @@ impl PodcastManager {
         if let Some(hit) = self.discovery_cache.get(&key) {
             return Ok(hit.clone());
         }
-        let url = format!(
-            "https://itunes.apple.com/search?term={}&entity=podcast&country={}&limit=50",
-            urlencoding::encode(term),
-            urlencoding::encode(country)
-        );
+        let url = if term.is_empty() {
+            format!(
+                "https://itunes.apple.com/search?entity=podcast&country={}&limit=50",
+                urlencoding::encode(country)
+            )
+        } else {
+            format!(
+                "https://itunes.apple.com/search?term={}&entity=podcast&country={}&limit=50",
+                urlencoding::encode(term),
+                urlencoding::encode(country)
+            )
+        };
         let body: ItunesSearch = reqwest::Client::new()
             .get(&url)
             .timeout(FETCH_TIMEOUT)
