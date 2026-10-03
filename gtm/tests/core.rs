@@ -4310,7 +4310,7 @@ fn the_stats_line_counts_the_list_it_sits_under() {
 
     for (cat, noun) in [("2", "album"), ("3", "artist"), ("10", "genre")] {
         assert!(
-            block.contains(&format!("plural(n, \"{noun}\"")) || block.contains(noun),
+            block.contains(&format!("plural(n, \"{noun}\"")),
             "category {cat} has no count of its own, so it falls through to the track one"
         );
     }
