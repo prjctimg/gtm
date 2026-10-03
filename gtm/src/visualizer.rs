@@ -161,6 +161,153 @@ pub fn amplitude_color(val: f32, theme: &AppTheme) -> Color {
     }
 }
 
+/// Grid layer for the vintage car body in the Retro scene. Distinct from the
+/// sun (3), the wave (2) and the perspective lines (1) so the car can be drawn
+/// after them and stay legible.
+const RETRO_CAR: u8 = 4;
+/// Grid layer for a note drifting out of the car.
+const RETRO_NOTE: u8 = 5;
+
+/// A vintage car's silhouette, in dot rows: roof, cabin, body, then two wheel
+/// pairs cut into the bottom edge. Seven rows is under two Braille cells, which
+/// is what it has to be to sit on the road without pushing into the sun.
+///
+/// Kept as rows of text rather than coordinates because a car is a shape, and a
+/// picture of one is the only honest way to hold it.
+const RETRO_CAR_ART: &[&str] = &[
+    "......######......",
+    "....##########....",
+    "...############...",
+    "..##############..",
+    ".################.",
+    "##.############.##",
+    ".##.##.####.##.##.",
+];
+
+/// Top-left dot the car is drawn at: centred under the sun, sitting on the road
+/// just below the horizon. Returns `None` when the frame is too small for it,
+/// which is the common case on a short pane and must not draw a smear.
+fn retro_car_origin(dot_cols: usize, horizon: usize, floor_rows: usize) -> Option<(usize, usize)> {
+    let w = RETRO_CAR_ART[0].chars().count();
+    let h = RETRO_CAR_ART.len();
+    if dot_cols < w + 2 || floor_rows < h {
+        return None;
+    }
+    let x = (dot_cols - w) / 2;
+    // One row below the horizon line, so the wheels sit on the road rather than
+    // in it.
+    let y = horizon + 1;
+    if y + h > horizon + floor_rows {
+        return None;
+    }
+    Some((x, y))
+}
+
+/// Stamp the car into the grid. Silhouette only, and drawn over whatever the
+/// perspective lines put down there: the car is nearer the viewer than the road
+/// it is on.
+fn retro_car(grid: &mut [u8], dot_rows: usize, dot_cols: usize, origin: Option<(usize, usize)>) {
+    let Some((ox, oy)) = origin else { return };
+    for (dy, row) in RETRO_CAR_ART.iter().enumerate() {
+        let y = oy + dy;
+        if y >= dot_rows {
+            return;
+        }
+        for (dx, ch) in row.chars().enumerate() {
+            if ch == ' ' {
+                continue;
+            }
+            let x = ox + dx;
+            if x < dot_cols {
+                grid[y * dot_cols + x] = RETRO_CAR;
+            }
+        }
+    }
+}
+
+/// A stable pseudo-random number in `[0, 1)` from a seed.
+///
+/// A hash rather than an RNG on purpose. Two reasons: the notes must not jitter
+/// between two identical frames, and nothing in this renderer allocates per
+/// frame, so pulling from a shared generator would need state threaded through
+/// the call. Hashing the note's index and the frame gives each note its own
+/// trajectory that still changes from frame to frame.
+fn retro_jitter(seed: u32) -> f64 {
+    let mut h = seed.wrapping_mul(2_654_435_761).wrapping_add(0x9E37_79B9);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 13;
+    ((h >> 8) as f64) / ((1u32 << 24) as f64)
+}
+
+/// Notes drifting up out of the car: slow, irregular, and louder tracks carry
+/// more of them.
+///
+/// `frame` drives the drift, one dot every [`RETRO_NOTE_RISE`] frames, so the
+/// notes take a couple of seconds to leave the frame rather than streaming off
+/// it. The horizontal wander and the starting height come from
+/// [`retro_jitter`] keyed on the note's index, which is what makes them
+/// irregular rather than evenly spaced.
+fn retro_notes(
+    grid: &mut [u8],
+    dot_rows: usize,
+    dot_cols: usize,
+    origin: Option<(usize, usize)>,
+    frame: u64,
+    level: f32,
+) {
+    let Some((ox, oy)) = origin else { return };
+    // Silence gets no notes at all, which is the point: the car is silent until
+    // there is music to be making noise about.
+    let count = (level.clamp(0.0, 1.0) * RETRO_NOTES_MAX as f32).round() as usize;
+    if count == 0 {
+        return;
+    }
+    let roof = oy.saturating_sub(1);
+    for i in 0..count {
+        let seed = (i as u64).wrapping_mul(0x9E37) as u32;
+        let rise = (frame / RETRO_NOTE_RISE) as f64;
+        // Per-note phase and rate, so two notes never climb in lockstep.
+        let phase = retro_jitter(seed) * 40.0;
+        let rate = 0.6 + retro_jitter(seed ^ 0x5F5F) * 0.8;
+        let travelled = rise * rate + phase;
+        let Some(y) = y_from_height(roof, travelled, dot_rows) else {
+            continue;
+        };
+        // Wander widens as the note rises, the way smoke does.
+        let drift = (retro_jitter(seed ^ 0x1234) - 0.5) * 6.0 * (travelled / 12.0);
+        let base_x = ox as f64 + (RETRO_CAR_ART[0].chars().count() as f64) * 0.5;
+        let x = base_x + drift;
+        for dy in 0..2u8 {
+            let yy = y as isize + dy as isize;
+            if yy < 0 || yy as usize >= dot_rows {
+                break;
+            }
+            let xx = x.round() as isize;
+            if xx < 0 || xx as usize >= dot_cols {
+                break;
+            }
+            grid[yy as usize * dot_cols + xx as usize] = RETRO_NOTE;
+        }
+    }
+}
+
+/// Rows a note has risen, converted to a row, or `None` once it has left the
+/// top of the frame.
+fn y_from_height(roof: usize, travelled: f64, dot_rows: usize) -> Option<usize> {
+    let y = roof as f64 - travelled;
+    if y < 0.0 {
+        return None;
+    }
+    let y = y as usize;
+    if y >= dot_rows { None } else { Some(y) }
+}
+
+/// Frames a note takes to rise one dot. Slow on purpose.
+const RETRO_NOTE_RISE: u64 = 9;
+/// Notes at full scale. Few, because a car is not a music visualiser.
+const RETRO_NOTES_MAX: usize = 7;
+
 /// Fallback heat palette for Flame/Retro warm hues.
 fn heat_color(heat: f32, theme: &AppTheme) -> Color {
     if heat > 0.78 {
@@ -905,7 +1052,19 @@ impl AudioVisualizer {
             }
         }
 
-        // Render braille cells; colour priority: wave > sun > grid.
+        // The car, out on the road and away from the grid drawing order, so it
+        // reads as being in front of the perspective lines rather than part of
+        // them.
+        let car_origin = retro_car_origin(dot_cols, horizon, floor_rows);
+        retro_car(&mut grid, dot_rows, dot_cols, car_origin);
+
+        // Notes out of the exhaust. Drawn last so they are never clipped by the
+        // car they left, and so a note crossing the horizon is still a note
+        // rather than a grid line.
+        let level = self.bands.iter().copied().fold(0.0f32, f32::max);
+        retro_notes(&mut grid, dot_rows, dot_cols, car_origin, self.frame, level);
+
+        // Render braille cells; colour priority: wave > sun > car > notes > grid.
         for row in 0..height {
             let base = row * 4;
             let mut spans: Vec<Span<'static>> = Vec::new();
@@ -913,6 +1072,8 @@ impl AudioVisualizer {
                 let mut braille: u32 = 0x2800;
                 let mut has_wave = false;
                 let mut has_sun = false;
+                let mut has_car = false;
+                let mut has_note = false;
                 for (dr, bits) in BRAILLE_BIT.iter().enumerate() {
                     let dy = base + dr;
                     for (dc, bit) in bits.iter().enumerate() {
@@ -930,6 +1091,14 @@ impl AudioVisualizer {
                                 braille |= *bit;
                                 has_sun = true;
                             }
+                            4 => {
+                                braille |= *bit;
+                                has_car = true;
+                            }
+                            5 => {
+                                braille |= *bit;
+                                has_note = true;
+                            }
                             _ => {}
                         }
                     }
@@ -938,6 +1107,12 @@ impl AudioVisualizer {
                     theme.secondary_accent
                 } else if has_sun {
                     theme.accent
+                } else if has_car {
+                    // Cream rather than the accent the sun uses, so the two
+                    // brightest things in the frame do not read as one shape.
+                    blend_colors(theme.accent, Color::Rgb(255, 238, 205), 0.75)
+                } else if has_note {
+                    theme.tertiary_accent
                 } else {
                     tinted(theme, theme.fg_dim)
                 };
