@@ -1241,7 +1241,19 @@ impl Render {
                 .iter()
                 .position(|&i| i == app.library_category)
                 .unwrap_or(0);
-            let (scroll_start, scroll_end) = step_viewport(0, sel, list_rows as usize, total);
+            // Fed a real offset rather than a hardcoded 0. The category list is
+            // every category, while the results pane is one category's rows, so
+            // a pane shorter than the list has to scroll -- and with the offset
+            // pinned at 0 the window was always rows 0..list_rows: everything
+            // past the pane height was never drawn, so on a short terminal the
+            // categories after "Recently Played" simply were not there, while
+            // j/k still moved the selection into them and the highlight
+            // vanished off-screen. Persisted back each frame, as the results
+            // pane does with `list_scroll`, so the window settles instead of
+            // resetting every redraw.
+            let (scroll_start, scroll_end) =
+                step_viewport(app.left_list_scroll, sel, list_rows as usize, total);
+            app.left_list_scroll = scroll_start;
             // The icon is its own span so the selected row can invert it.
             //
             // It used to be part of the label string, which meant the

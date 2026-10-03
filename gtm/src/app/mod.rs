@@ -274,6 +274,12 @@ pub struct App {
     pub(crate) prefs_keybindings: std::collections::HashMap<String, String>,
     pub theme_index: usize,
     pub list_scroll: usize,
+    /// Scroll offset for the left pane's category list.
+    ///
+    /// A second offset because the left pane scrolls independently of the
+    /// results pane: it holds every category, the results pane holds one
+    /// category's rows, and they are not the same length in either direction.
+    pub left_list_scroll: usize,
     pub viewport_items: usize,
     pub transparent_bg: bool,
     pub transparent_pickers: bool,
@@ -1061,6 +1067,7 @@ impl App {
             prefs_keybindings: prefs.keybindings.clone(),
             theme_index,
             list_scroll: 0,
+            left_list_scroll: 0,
             viewport_items: 20,
             transparent_bg: prefs.transparent_bg,
             transparent_pickers: prefs.transparent_pickers,
