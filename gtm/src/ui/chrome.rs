@@ -2569,8 +2569,18 @@ impl Render {
             row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
         };
 
+        // Centred rather than left-aligned. Lyrics are read as a block, and a
+        // ragged left edge makes a chorus look like a list; centring also means
+        // the active line sits over the one it replaces instead of snapping to
+        // a margin as the line length changes.
+        //
+        // Set here rather than at the call sites because `lyrics_body` is the
+        // one renderer both the zen lyrics view and the single-column lyrics
+        // pane go through -- aligning per call site would have left the two
+        // disagreeing about the same text.
         let para = Paragraph::new(text)
             .wrap(Wrap { trim: false })
+            .alignment(Alignment::Center)
             .scroll((scroll_display as u16, 0));
         f.render_widget(para, scroll_view);
         if let Some(h) = hint_area {
