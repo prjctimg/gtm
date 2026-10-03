@@ -496,10 +496,6 @@ impl DaemonClient {
         Lastfm { client: self }
     }
 
-    pub fn browse(&self) -> Browse<'_> {
-        Browse { client: self }
-    }
-
     pub fn favourites(&self) -> Favourites<'_> {
         Favourites { client: self }
     }
@@ -1565,54 +1561,6 @@ impl<'a> Radio<'a> {
             .await?;
         match res {
             DaemonRes::RadioTracklistRes { list, .. } => Ok(*list),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-}
-
-/// Music browse: search, artist pages, album tracklists.
-///
-/// Named `Browse` for the same reason the library category is: it is the thing
-/// that answers "who is this and what did they record", which is the question a
-/// metadata lookup exists to ask.
-pub struct Browse<'a> {
-    client: &'a DaemonClient,
-}
-
-impl Browse<'_> {
-    /// Songs, releases and people matching `term`.
-    pub async fn search(&self, term: &str) -> Result<Vec<crate::shared::chart::BrowseHit>> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::BrowseSearch { term: term.into() })
-            .await?;
-        match res {
-            DaemonRes::BrowseSearchRes { hits, .. } => Ok(hits),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-
-    pub async fn artist(&self, artist_id: u64) -> Result<crate::shared::chart::ArtistPage> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::BrowseArtist { artist_id })
-            .await?;
-        match res {
-            DaemonRes::BrowseArtistRes { page, .. } => Ok(*page),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-
-    pub async fn album(&self, album_id: u64) -> Result<crate::shared::chart::AlbumPage> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::BrowseAlbum { album_id })
-            .await?;
-        match res {
-            DaemonRes::BrowseAlbumRes { page, .. } => Ok(*page),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
         }

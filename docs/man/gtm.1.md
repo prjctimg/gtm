@@ -29,10 +29,10 @@ directly with **[** / **]**.
 
 ## Library
 
-Browse tracks by one of 13 sidebar categories: All Tracks, Liked, Albums,
+Browse tracks by one of 14 sidebar categories: All Tracks, Liked, Albums,
 Artists, Playlists, Spotify, Radio, Most Played, Recently Played, Recently
-Added, Genres, Folders, Top Charts. The left pane selects the category, the
-centre pane lists its contents. Keys: **j**/**k** or **Up**/**Down**
+Added, Genres, Folders, Top Charts, Podcasts. The left pane selects the
+category, the centre pane lists its contents. Keys: **j**/**k** or **Up**/**Down**
 (navigate), **Enter** (drill down or play), **/** (contextual search),
 **Alt+S** (cycle sort in the List context).
 

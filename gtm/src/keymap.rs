@@ -403,11 +403,6 @@ pub fn default_keybindings() -> Keybindings {
                 NORMAL
             ),
             b!(
-                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-                KeyboardAction::OpenOverlay(PickerId::Browse),
-                NORMAL
-            ),
-            b!(
                 KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT),
                 KeyboardAction::OpenOverlay(PickerId::Notifications),
                 NORMAL
@@ -640,9 +635,6 @@ impl KeyboardAction {
                 KeyboardAction::OpenOverlay(PickerId::SpotifySearch)
             }
             "open_podcast" | "open_podcasts" => KeyboardAction::OpenOverlay(PickerId::PodcastFeeds),
-            "open_browse" | "browse" | "search_music" => {
-                KeyboardAction::OpenOverlay(PickerId::Browse)
-            }
             "open_radio" | "open_radios" | "open_radio_browse" | "browse_radio" => {
                 KeyboardAction::OpenOverlay(PickerId::Radio)
             }
@@ -783,25 +775,17 @@ mod tests {
         }
     }
 
-    /// `Alt+p` is Podcasts and `Alt+b` is Browse, so both categories are
-    /// reachable at all -- the Progress Bar category, which is what used to
-    /// shadow Podcasts, now has no key of its own and is reached with `Alt+L`
+    /// `Alt+p` is Podcasts, and the Progress Bar category -- which is what used
+    /// to shadow it -- now has no key of its own and is reached with `Alt+L`
     /// then Tab. The clash test is what keeps that arrangement honest.
     #[test]
-    fn podcasts_and_browse_are_both_reachable() {
+    fn podcasts_and_the_look_picker_are_both_reachable() {
         assert!(matches!(
             dispatch(
                 KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
                 KeyContext::Normal
             ),
             Some(KeyboardAction::OpenOverlay(PickerId::PodcastFeeds))
-        ));
-        assert!(matches!(
-            dispatch(
-                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
-                KeyContext::Normal
-            ),
-            Some(KeyboardAction::OpenOverlay(PickerId::Browse))
         ));
         // The presentation picker keeps its own key, clear of `Alt+l`.
         assert!(matches!(

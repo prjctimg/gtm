@@ -4,9 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use crate::shared::chart::{
-    AlbumPage, ArtistPage, BrowseHit, ChartPlaylist, ChartSource, ChartTrack,
-};
+use crate::shared::chart::{ChartPlaylist, ChartSource, ChartTrack};
 use crate::shared::global::{DaemonState, EqPreset, RepeatMode, YTFilter};
 use crate::shared::playlist::PlaylistFormatKind;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastResult, PodcastStatus};
@@ -557,18 +555,6 @@ pub enum DaemonReq {
         source_id: String,
         chart_id: String,
     },
-    /// Search for songs, releases and people.
-    BrowseSearch {
-        term: String,
-    },
-    /// One artist: their top tracks and their releases.
-    BrowseArtist {
-        artist_id: u64,
-    },
-    /// One album and its full tracklist.
-    BrowseAlbum {
-        album_id: u64,
-    },
     GetStatus,
     /// Like `GetStatus` but omits the full `default_list` (the whole library)
     /// from the returned state. Used for the client's periodic background
@@ -684,9 +670,6 @@ impl DaemonReq {
             DaemonReq::ChartsSources => "charts_sources",
             DaemonReq::ChartsList { .. } => "charts_list",
             DaemonReq::ChartsTracks { .. } => "charts_tracks",
-            DaemonReq::BrowseSearch { .. } => "browse_search",
-            DaemonReq::BrowseArtist { .. } => "browse_artist",
-            DaemonReq::BrowseAlbum { .. } => "browse_album",
             DaemonReq::GetStatus => "get_status",
             DaemonReq::GetStatusLite => "get_status_lite",
             DaemonReq::CheckHealth => "check_health",
@@ -1483,34 +1466,6 @@ impl DaemonReq {
                     chart_id: x.chart_id,
                 }
             }
-            "browse_search" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    term: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::BrowseSearch { term: x.term }
-            }
-            "browse_artist" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    artist_id: u64,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::BrowseArtist {
-                    artist_id: x.artist_id,
-                }
-            }
-            "browse_album" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    album_id: u64,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::BrowseAlbum {
-                    album_id: x.album_id,
-                }
-            }
             other => return Err(format!("unknown command: {other}")),
         })
     }
@@ -1781,16 +1736,6 @@ pub enum DaemonRes {
     ChartsTracksRes {
         tracks: Vec<ChartTrack>,
     },
-    /// Songs, releases and people matching a search.
-    BrowseSearchRes {
-        hits: Vec<BrowseHit>,
-    },
-    BrowseArtistRes {
-        page: Box<ArtistPage>,
-    },
-    BrowseAlbumRes {
-        page: Box<AlbumPage>,
-    },
     ChartsLoaded {
         charts: Vec<ChartPlaylist>,
     },
@@ -1920,9 +1865,6 @@ impl DaemonRes {
             }
             DaemonRes::ChartsListRes { charts } => Some(serde_json::json!({ "charts": charts })),
             DaemonRes::ChartsTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
-            DaemonRes::BrowseSearchRes { hits } => Some(serde_json::json!({ "hits": hits })),
-            DaemonRes::BrowseArtistRes { page } => Some(serde_json::json!({ "page": page })),
-            DaemonRes::BrowseAlbumRes { page } => Some(serde_json::json!({ "page": page })),
             DaemonRes::ChartsLoaded { charts } => Some(serde_json::json!({ "charts": charts })),
             DaemonRes::ChartTracksLoaded { tracks } => {
                 Some(serde_json::json!({ "tracks": tracks }))
@@ -2096,9 +2038,6 @@ impl DaemonRes {
             DaemonRes::ChartsSourcesRes { sources } => field!("sources", &sources),
             DaemonRes::ChartsListRes { charts } => field!("charts", &charts),
             DaemonRes::ChartsTracksRes { tracks } => field!("tracks", &tracks),
-            DaemonRes::BrowseSearchRes { hits } => field!("hits", &hits),
-            DaemonRes::BrowseArtistRes { page } => field!("page", &page),
-            DaemonRes::BrowseAlbumRes { page } => field!("page", &page),
             DaemonRes::ChartsLoaded { charts } => field!("charts", &charts),
             DaemonRes::ChartTracksLoaded { tracks } => field!("tracks", &tracks),
             DaemonRes::CoverArt { data } => field!("data", &data),
@@ -2388,24 +2327,6 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "browse_search" => {
-                match serde_json::from_value::<Vec<BrowseHit>>(field(&data, "hits")) {
-                    Ok(hits) => DaemonRes::BrowseSearchRes { hits },
-                    Err(_) => DaemonRes::Value { value: data },
-                }
-            }
-            "browse_artist" => match serde_json::from_value::<ArtistPage>(field(&data, "page")) {
-                Ok(page) => DaemonRes::BrowseArtistRes {
-                    page: Box::new(page),
-                },
-                Err(_) => DaemonRes::Value { value: data },
-            },
-            "browse_album" => match serde_json::from_value::<AlbumPage>(field(&data, "page")) {
-                Ok(page) => DaemonRes::BrowseAlbumRes {
-                    page: Box::new(page),
-                },
-                Err(_) => DaemonRes::Value { value: data },
-            },
             "podcast_episodes" => {
                 let feed_id = field_str(&data, "feed_id").to_string();
                 let feed_title = field_str(&data, "feed_title").to_string();

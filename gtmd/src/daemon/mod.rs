@@ -70,7 +70,6 @@ use crate::youtube::{YoutubeManager, download_into};
 type ClientId = u64;
 type ReplyTx = mpsc::UnboundedSender<(u64, DaemonRes)>;
 
-pub mod browse;
 pub mod charts;
 pub mod cover;
 pub mod favourites;
@@ -90,7 +89,6 @@ pub mod yt;
 
 #[cfg(test)]
 mod tests;
-pub(crate) use browse::*;
 pub(crate) use charts::*;
 pub(crate) use cover::*;
 pub(crate) use favourites::*;
@@ -3037,9 +3035,6 @@ impl Daemon {
                 source_id,
                 chart_id,
             } => Charts::tracks(inner, source_id.clone(), chart_id.clone()).await,
-            DaemonReq::BrowseSearch { term } => Browse_::search(term).await,
-            DaemonReq::BrowseArtist { artist_id } => Browse_::artist(*artist_id).await,
-            DaemonReq::BrowseAlbum { album_id } => Browse_::album(*album_id).await,
             DaemonReq::LastfmSetConfig {
                 enabled,
                 api_key,

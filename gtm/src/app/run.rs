@@ -1190,35 +1190,6 @@ impl App {
                     IpcResult::ClipboardPaste(field, text) => {
                         self.apply_paste(field, &text);
                     }
-                    IpcResult::BrowseHits(hits) => {
-                        self.browse.hits = hits;
-                        self.browse.pending = false;
-                        self.browse.level = BrowseLevel::Results;
-                        self.data_dirty = true;
-                    }
-                    IpcResult::BrowseAlbumPage(page) => {
-                        self.browse.level = BrowseLevel::Album;
-                        self.browse.rows = page.tracks.clone();
-                        self.browse.releases.clear();
-                        self.browse.album = Some(page);
-                        self.browse.pending = false;
-                        // A drill-down is a new list, so the cursor and the
-                        // scroller start at the top rather than wherever the
-                        // search results happened to leave them.
-                        self.set_list_pos(0);
-                        self.list_scroll = 0;
-                        self.data_dirty = true;
-                    }
-                    IpcResult::BrowseArtistPage(page) => {
-                        self.browse.level = BrowseLevel::Artist;
-                        self.browse.rows = page.top_tracks.clone();
-                        self.browse.releases = page.albums.clone();
-                        self.browse.artist = Some(page);
-                        self.browse.pending = false;
-                        self.set_list_pos(0);
-                        self.list_scroll = 0;
-                        self.data_dirty = true;
-                    }
                     IpcResult::QueuePreviewCover(cover, key, fetch_gen) => {
                         if !no_image_protocol()
                             && self.queue.preview_slot.id.as_deref() == Some(&key)
@@ -1569,21 +1540,6 @@ impl App {
             // Podcast directory search: same debounce, same reason. A directory
             // query goes over the network to a third party, so it waits for the
             // typing to settle rather than firing per keystroke.
-            // Browse search: same debounce, same reason as the two above.
-            if let Some(deadline) = self.browse.deadline
-                && now >= deadline
-            {
-                self.browse.deadline = None;
-                if let Some(top) = self.pickers.top()
-                    && top.id == PickerId::Browse
-                {
-                    let q = top.query.trim().to_string();
-                    if !q.is_empty() {
-                        self.browse_search(q);
-                    }
-                }
-            }
-
             if let Some(deadline) = self.podcast.search_deadline
                 && now >= deadline
             {

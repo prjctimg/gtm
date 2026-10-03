@@ -21,7 +21,6 @@ pub mod system;
 
 // Per-provider picker rendering lives under `providers`; re-exported here so
 // the dispatch above keeps resolving them by their existing paths.
-pub use crate::providers::browse::picker as browse;
 pub use crate::providers::podcast::picker as podcast;
 pub use crate::providers::radio::picker as radio;
 pub use crate::providers::spotify::{dest, picker as spotify};
@@ -93,7 +92,6 @@ impl Pickers {
             PickerId::NotificationSettings => (60, 14),
             PickerId::AudioDevice => (60, 14),
             PickerId::Settings => (64, 28),
-            PickerId::Browse => (64, 26),
             PickerId::Setup => (58, 24),
             PickerId::LastfmAuth => (60, 16),
             PickerId::YoutubeSetup => (58, 8),
@@ -229,7 +227,6 @@ impl Pickers {
             PickerId::PodcastEpisodes => Self::render_podcast_episodes(f, picker_area, app),
             PickerId::PodcastSubscribe => Self::render_podcast_subscribe(f, picker_area, app),
             PickerId::LoadStream => Self::render_load_stream(f, picker_area, app),
-            PickerId::Browse => Self::render_browse(f, picker_area, app),
             PickerId::Radio => Self::render_radio(f, picker_area, app),
             PickerId::Setup => Self::render_setup(f, picker_area, app),
             PickerId::LastfmAuth => Self::render_lastfm_setup(f, picker_area, app),

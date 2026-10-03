@@ -11,7 +11,6 @@
 //! ([`crate::cover`] and [`crate::lrclib`]) stay outside because more than one
 //! provider feeds them.
 
-pub mod browse;
 pub mod charts;
 pub mod deezer;
 pub mod lastfm;

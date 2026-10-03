@@ -699,9 +699,6 @@ impl App {
     /// Length of the list currently visible in the library right pane,
     /// depending on the active category and drill-down state.
     pub fn library_list_len(&self) -> usize {
-        if self.library_category == 14 {
-            return self.browse_len();
-        }
         if self.library_category == 12 {
             // Top Charts is a three-level tree: sources / charts / tracks.
             if self.charts.selected_chart.is_some() {

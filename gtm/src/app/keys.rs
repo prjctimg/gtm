@@ -1175,10 +1175,6 @@ impl App {
                                         }));
                                     }
                                 }
-                            } else if self.library_category == 14 {
-                                // Browse: play a song, open a release or a person
-                                let it = self.ipc_tx.clone();
-                                self.browse_enter(&it).await;
                             } else if self.library_category == 12 {
                                 // Top Charts: three-level navigation
                                 if self.charts.selected_source.is_none() {
@@ -1842,12 +1838,6 @@ impl App {
                                     self.podcast.episodes.clear();
                                     self.podcast.episodes_feed_id = None;
                                     self.set_list_pos(0);
-                                } else if self.library_category == 14 {
-                                    // Back out of a drill-down to the search
-                                    // that produced it.
-                                    if self.browse.level != BrowseLevel::Results {
-                                        self.browse_up();
-                                    }
                                 } else if self.library_category == 12 {
                                     // Top Charts: three-level back navigation
                                     if self.charts.selected_chart.is_some() {
@@ -4197,15 +4187,6 @@ impl App {
                                     Some(std::time::Instant::now() + Duration::from_millis(500));
                             }
                         }
-                        PickerId::Browse => {
-                            // Editing the query invalidates the results
-                            // immediately, so the list is never the previous
-                            // search's under a new term.
-                            top.query.push(c);
-                            self.browse.hits.clear();
-                            self.browse.pending = false;
-                            self.arm_browse();
-                        }
                         PickerId::EditMetadata => {
                             self.metadata.fields[self.metadata.field_idx].push(c);
                         }
@@ -4275,19 +4256,6 @@ impl App {
             KeyCode::Backspace => {
                 if let Some(top) = self.pickers.top_mut() {
                     match top.id {
-                        PickerId::Browse => {
-                            // Backspace is a query edit while searching and a
-                            // step back out of a drill-down otherwise: the two
-                            // never coexist, so the one key serves both.
-                            if self.browse.level == BrowseLevel::Results {
-                                top.query.pop();
-                                self.browse.hits.clear();
-                                self.browse.pending = false;
-                                self.arm_browse();
-                            } else {
-                                self.browse_up();
-                            }
-                        }
                         PickerId::EditMetadata => {
                             self.metadata.fields[self.metadata.field_idx].pop();
                         }
