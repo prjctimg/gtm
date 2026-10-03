@@ -8,6 +8,8 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm/ci.yml?label=CI)](https://github.com/prjctimg/gtm/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/prjctimg/gtm)](https://github.com/prjctimg/gtm/blob/main/LICENSE)
 
+
+![](./image.png)
 `gtm` is a terminal music player: a background daemon (`gtmd`) with a client
 (`gtm`), both driven from the terminal.
 
