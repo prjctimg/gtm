@@ -825,6 +825,34 @@ impl App {
                                 self.podcast.episodes.clear();
                                 self.podcast.episodes_feed_id = None;
                                 self.set_list_pos(0);
+                            } else if self.library_category == 12 {
+                                // Top Charts: three-level back navigation, the
+                                // same shape `Esc` walks. Without this, Backspace
+                                // drilled into a chart's tracks and then fell
+                                // through to "focus the library pane", which
+                                // looks like the key does nothing -- the pane
+                                // was already focused, so it stayed exactly
+                                // where it was.
+                                if self.charts.selected_chart.is_some() {
+                                    // Level 2 -> Level 1
+                                    self.charts.selected_chart = None;
+                                    self.charts.chart_tracks.clear();
+                                    self.set_list_pos(0);
+                                    // The card now describes a chart, not a
+                                    // track, and the two read different lists.
+                                    self.update_track_popup();
+                                } else if self.charts.selected_source.is_some() {
+                                    // Level 1 -> Level 0: refetch so a freshly
+                                    // linked Spotify account shows up.
+                                    self.charts.selected_source = None;
+                                    self.charts.charts.clear();
+                                    self.charts.chart_tracks.clear();
+                                    self.set_list_pos(0);
+                                    self.fetch_chart_sources();
+                                    self.update_track_popup();
+                                } else {
+                                    self.library_pane_focus = true;
+                                }
                             } else if !self.library_pane_focus {
                                 self.library_pane_focus = true;
                             }
