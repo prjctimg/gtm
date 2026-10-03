@@ -1228,7 +1228,13 @@ impl App {
     fn zen_key(&mut self, key: event::KeyEvent) {
         match key.code {
             event::KeyCode::Esc | event::KeyCode::Char('q') => {
+                // Both, not just `zen`. The fullscreen view is `zen ||
+                // daydreaming`, so clearing one of them can leave the other up
+                // -- and the idle timer would clear `daydreaming` a frame later
+                // anyway, so leaving it to that made the exit depend on when
+                // the next tick happened to run.
                 self.zen = false;
+                self.daydreaming = false;
                 self.set_last_action("Leave Zen Mode", &key);
             }
             event::KeyCode::Tab => {

@@ -1001,8 +1001,22 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         // rows tall, partial overwrites leave the tail of a
                         // taller previous frame on screen; home-and-clear is
                         // the only correct one.
+                        //
+                        // The playback status leads the line. It used to be
+                        // absent from the streamed frame altogether, so a
+                        // long-running `status --stream` reported a track and a
+                        // running position with no way to tell playing from
+                        // paused -- the one fact a status line exists for. The
+                        // plain-text labels are used rather than the coloured
+                        // ones the one-shot path prints, because this frame is
+                        // cleared and rewritten twice a second.
+                        let status_label = match state.status {
+                            PlaybackStatus::Playing => "Playing",
+                            PlaybackStatus::Paused => "Paused",
+                            PlaybackStatus::Stopped => "Stopped",
+                        };
                         print!("\x1b[H\x1b[J");
-                        print!("Stream: {} | {}s / {}s | {}%", track, elapsed, dur, vol);
+                        print!("{status_label}: {track} | {elapsed}s / {dur}s | {vol}%");
                         if let Some(line) = active {
                             print!("\n  ♪ {}", line);
                         }

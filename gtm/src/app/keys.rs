@@ -303,7 +303,15 @@ impl App {
                 // keybinding works as it does everywhere else, so the queue,
                 // search, the command palette and the transport are all
                 // reachable from a fullscreen view.
-                if self.zen && self.zen_owns(key) {
+                //
+                // Daydreaming counts as Zen here for the same reason it counts
+                // as Zen to draw: it puts the visualizer up full screen. Testing
+                // `self.zen` alone let `q` fall through to the global quit
+                // while a daydream was up, so leaving one killed the TUI rather
+                // than leaving it -- and the renderer and the key handler were
+                // disagreeing about which views were fullscreen, which is how
+                // that happened.
+                if (self.zen || self.daydreaming) && self.zen_owns(key) {
                     self.zen_key(key);
                     return true;
                 }
