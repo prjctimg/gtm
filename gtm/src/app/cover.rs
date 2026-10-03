@@ -40,11 +40,24 @@ impl App {
     /// can be fetched; playlist and Spotify rows show meta only.
     pub fn update_track_popup(&mut self) {
         let kind = self.track_info_kind();
+        // Artwork address for a row that has no local file behind it. "All
+        // Tracks" is a union of Spotify playlists, so its rows are remote: they
+        // carry a `cover_url` and no path, and `id` is 0 for every one of them.
+        // Asking the local art cache for id 0 therefore returned nothing for
+        // the whole list, which is why the left pane stayed empty there while
+        // every other category filled in. Read alongside the id/path pair
+        // because that pair is all the local path below needs.
+        let mut remote_url: Option<String> = None;
         let maybe_track: Option<(i64, String)> = match kind {
             TrackInfoKind::Track => {
                 let filtered = self.filtered_tracks();
                 let pos = self.list_pos();
-                filtered.get(pos).map(|t| (t.id, t.path.clone()))
+                filtered.get(pos).map(|hit| {
+                    if hit.path.is_empty() {
+                        remote_url = hit.cover_url.clone();
+                    }
+                    (hit.id, hit.path.clone())
+                })
             }
             TrackInfoKind::Album => {
                 let albums = self.unique_albums();
@@ -136,6 +149,18 @@ impl App {
             self.clear_popup_cover();
             return;
         };
+
+        // A remote row: same slot as a chart row's, because both are a plain
+        // URL rather than a library id. Checked before the local lookup below,
+        // which would otherwise ask the art cache for id 0 and find nothing.
+        if path.is_empty()
+            && let Some(url) = remote_url
+        {
+            self.popup_track_id = None;
+            self.fetch_url_cover(Some(url));
+            return;
+        }
+
         self.popup_track_id = Some(tid);
 
         let current_is_selected = self
