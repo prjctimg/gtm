@@ -4252,12 +4252,24 @@ fn the_grid_browses_covers_and_moves_by_cell() {
         chrome.contains("pub(crate) fn grid(f: &mut ratatui::Frame, area: Rect, app: &mut App)"),
         "the grid has no renderer"
     );
+    // The grid is drawn *instead of* the row list, gated on being the mode.
+    //
+    // Anchored on the pane fill rather than on the gate: there are two
+    // `if app.grid_active()` in the file — the dispatch above and this draw
+    // below — and a `find` on the gate alone answers for the first, which is
+    // 42 kB upstream of the call it is supposed to be guarding.
     let at = chrome
-        .find("Render::grid(f, right_inner, app);")
-        .expect("the results pane never draws the grid");
+        .find("fill_pane(f, right_inner, app);")
+        .expect("the results pane no longer fills before it draws");
+    let block = &chrome[at..(at + 700).min(chrome.len())];
     assert!(
-        chrome[at.saturating_sub(120)..at].contains("if app.grid_active()"),
-        "the results pane draws the grid without asking whether the grid is on"
+        block.contains("if app.grid_active() {")
+            && block.contains("Render::grid(f, right_inner, app);"),
+        "the results pane draws the grid but not from the mode's gate"
+    );
+    assert!(
+        block.contains("Render::evolving(f, right_inner, right_para, \"lib\", app, false);"),
+        "the row list is drawn without an `else`, so both are on screen at once"
     );
     // Labels come from the same helpers the rows come from, so a cell cannot
     // drift from its row.
