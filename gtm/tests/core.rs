@@ -3035,9 +3035,20 @@ fn zen_bands_are_header_cover_lyric_progress() {
 
     assert!(
         squish(zen).contains(&squish(
-            ".constraints([Constraint::Length(2),Constraint::Min(0),Constraint::Length(1),Constraint::Length(3),])"
+            ".constraints([Constraint::Length(2),Constraint::Min(0),Constraint::Length(1),Constraint::Length(3),Constraint::Length(3),])"
         )),
-        "zen's bands are not header / cover / lyric / progress"
+        "zen's bands are not header / cover / lyric / progress over a surface margin"
+    );
+
+    // Five bands, and the fifth is surface: without it the lyric line and the
+    // progress indicator sit on the bottom edge of the terminal. Asserted
+    // squished so the explanatory comment above the last constraint does not
+    // have to be kept in step with this string.
+    assert_eq!(
+        squish(zen).matches("Constraint::Length(").count()
+            + squish(zen).matches("Constraint::Min(").count(),
+        5,
+        "zen must reserve a band under the progress indicator"
     );
 
     // Each band is claimed by exactly one thing, and the cover's is not the

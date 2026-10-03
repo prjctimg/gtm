@@ -301,12 +301,19 @@ impl Render {
         // elapsed time two rows into it, and left the 3 rows reserved below
         // never rendered at all. That read as a cover floating too high with a
         // band of dead space under it.
+        //
+        // The fifth band is surface: three rows reserved under the progress
+        // indicator, so the lyric line and the bar sit three rows higher than
+        // they did pinned to the bottom edge. It comes out of the artwork band
+        // rather than being added to the layout, which is what keeps the
+        // composition the same overall height.
         let vchunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(2),
                 Constraint::Min(0),
                 Constraint::Length(1),
+                Constraint::Length(3),
                 Constraint::Length(3),
             ])
             .split(area);
@@ -3091,8 +3098,30 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(bg)),
         area,
     );
+
+    // Two rows are reserved at the top of every view and left as surface.
+    //
+    // The brand badge used to be pinned to row 0 and the panes started
+    // immediately under it, so the badge sat against both the top edge and the
+    // content it labels. Reserving the rows puts the whole composition -- zen
+    // included, since it is the same "no chrome" surface with the same badge --
+    // one step down from the terminal edge.
+    //
+    // The badge is drawn inside the reserved band rather than above it, so the
+    // reservation is what separates it from the content instead of being
+    // overwritten by it. Overlays still draw over the whole area: they are
+    // centred modals, and centring one inside a band would look off-centre.
+    let top_rows = 2u16.min(area.height.saturating_sub(3));
+    let vchunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(top_rows), Constraint::Min(0)])
+        .split(area);
+    let top_band = vchunks[0];
+    let body = vchunks[1];
+
     if zen {
-        Render::zen(f, area, app);
+        Render::zen(f, body, app);
+        Render::brand_badge(f, top_band, app);
         app.track_anim_trigger = false;
         return;
     }
@@ -3100,32 +3129,14 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(footer_height)])
-        .split(area);
+        .split(body);
 
     Render::content(f, chunks[0], app);
     if !app.hide_footer {
         Render::footer(f, chunks[1], app);
     }
 
-    // "gtm" brand badge pinned to the top-right corner with the themed
-    // accent background (restored from the pre-tabless UI).
-    let brand_w: u16 = 7.min(chunks[0].width);
-    let brand = Paragraph::new(Span::styled(
-        "  gtm  ",
-        Style::default()
-            .fg(readable_fg(app.theme.fg, app.theme.accent))
-            .bg(app.theme.accent)
-            .add_modifier(Modifier::BOLD),
-    ));
-    f.render_widget(
-        brand,
-        Rect {
-            x: chunks[0].right().saturating_sub(brand_w),
-            y: chunks[0].y,
-            width: brand_w,
-            height: 1,
-        },
-    );
+    Render::brand_badge(f, top_band, app);
 
     if app.pickers.is_open() {
         dim_background(f, area);
@@ -3145,6 +3156,34 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
 }
 
 impl Render {
+    /// The "gtm" brand badge, pinned to the right of the reserved top band with
+    /// the themed accent background.
+    fn brand_badge(f: &mut ratatui::Frame, top_band: Rect, app: &App) {
+        if top_band.height == 0 {
+            return;
+        }
+        let brand_w: u16 = 7.min(top_band.width);
+        if brand_w == 0 {
+            return;
+        }
+        let brand = Paragraph::new(Span::styled(
+            "  gtm  ",
+            Style::default()
+                .fg(readable_fg(app.theme.fg, app.theme.accent))
+                .bg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+        f.render_widget(
+            brand,
+            Rect {
+                x: top_band.right().saturating_sub(brand_w),
+                y: top_band.y,
+                width: brand_w,
+                height: 1,
+            },
+        );
+    }
+
     pub fn pending_prompt(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         render_pending_prompt(f, area, app);
     }
