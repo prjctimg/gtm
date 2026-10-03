@@ -3993,11 +3993,12 @@ fn the_look_picker_has_no_category_list() {
         ),
         "the hint lost its category-switching half"
     );
-    // The strip's own marker column, kept only to line labels up under it.
+    // The strip's own marker column, kept only to line the value labels up
+    // under it. The check mark beside the current value is not part of that —
+    // every one of the five pickers had one — so it stays.
     assert!(
-        !block.contains("let mark = \"   \";")
-            && !block.contains("let cur = if item.current && !selected"),
-        "the values carry the strip's gutter or check mark again"
+        !block.contains("let mark = \"   \";"),
+        "the values carry the strip's gutter again: three columns of nothing"
     );
 }
 
@@ -4092,10 +4093,19 @@ fn the_left_pane_keeps_both_the_list_and_the_card() {
         "the old budget is back: the card is reserved at full height first"
     );
     // The card then takes what is left, which is how the artwork shrinks
-    // instead of the list disappearing.
+    // instead of the list disappearing. Scoped to its own `if`, which is a
+    // separate statement from the list's budget and a screen further down.
+    let at = chrome
+        .find("let track_info_h: u16 = if has_card")
+        .expect("the card's row budget moved");
+    let card = &chrome[at..(at + 600).min(chrome.len())];
     assert!(
-        block.contains("info_block_h().min(left)"),
+        card.contains("info_block_h().min(left)"),
         "the card is no longer sized from what the list left over"
+    );
+    assert!(
+        !card.contains("need.min(avail_h.max(6))"),
+        "the card is back to a floor of six rows, which is what squeezed the list"
     );
 }
 
@@ -4118,7 +4128,7 @@ fn zen_lyrics_re_derive_their_foreground() {
     let at = chrome
         .find("pub(crate) fn lyrics_body")
         .expect("lyrics_body is gone");
-    let block = &chrome[at..(at + 2200).min(chrome.len())];
+    let block = &chrome[at..(at + 3200).min(chrome.len())];
     for (need, why) in [
         (
             "readable_fg(app.theme.accent, bg)",
@@ -4187,9 +4197,9 @@ fn the_radio_picker_matches_the_spotify_picker() {
     );
     // Long titles move inside the box instead of widening it.
     let at = radio
-        .find("pub(crate) fn render_radio")
-        .expect("render_radio is gone");
-    let block = &radio[at..(at + 4000).min(radio.len())];
+        .find("let row = if is_header {")
+        .expect("the radio rows moved");
+    let block = &radio[at..(at + 900).min(radio.len())];
     assert!(
         block.contains("scroll_text(&text, avail, app.footer_title_scroll, i == sel)"),
         "a long station name is truncated where the Spotify picker scrolls it"
@@ -4224,12 +4234,20 @@ fn the_grid_browses_covers_and_moves_by_cell() {
     let keymap = include_str!("../src/keymap.rs");
 
     // Three lists, one renderer, both views.
-    for cat in ["2", "3", "10"] {
+    for (cat, source) in [
+        ("2", "self.unique_albums()"),
+        ("3", "self.unique_artists()"),
+        ("10", "self.unique_genres()"),
+    ] {
         assert!(
-            cover.contains(&format!("| {cat} =>")),
-            "the grid is not offered for category {cat}"
+            cover.contains(&format!("{cat} => {source}")),
+            "the grid has no cell source for category {cat}"
         );
     }
+    assert!(
+        cover.contains("matches!(self.library_category, 2 | 3 | 10)"),
+        "the grid is offered on lists that have no covers to show"
+    );
     assert!(
         chrome.contains("pub(crate) fn grid(f: &mut ratatui::Frame, area: Rect, app: &mut App)"),
         "the grid has no renderer"
