@@ -70,7 +70,7 @@ impl PlaybackSource for PaPlaybackSource {
                     // Ring empty but decoding: report once per burst so stutter
                     // is visible in diagnostics without spamming the log.
                     self_.underrun_burst += 1;
-                    if self_.underrun_burst == 1 || self_.underrun_burst % 500 == 0 {
+                    if self_.underrun_burst == 1 || self_.underrun_burst.is_multiple_of(500) {
                         log::warn!(
                             "pa underrun: ring empty while decoding, {} consecutive polls",
                             self_.underrun_burst
@@ -120,8 +120,8 @@ impl PaStreamState {
                 max_length: u32::MAX,
                 // ~2s buffer and ~1.5s pre-buffer, scaled to the track rate so
                 // the timing stays constant regardless of the source rate.
-                target_length: (sample_rate * channels as u32 * 4 * 2) as u32,
-                pre_buffering: (sample_rate * channels as u32 * 4 * 3 / 2) as u32,
+                target_length: sample_rate * (channels as u32) * 4 * 2,
+                pre_buffering: sample_rate * (channels as u32) * 4 * 3 / 2,
                 minimum_request_length: 1024,
                 fragment_size: u32::MAX,
             },
@@ -536,11 +536,11 @@ impl PulseAudioMixer {
 
         self.is_a_active = !self.is_a_active;
 
-        Self::set_stream_volume(&self.active(), vol);
+        Self::set_stream_volume(self.active(), vol);
         self.active().uncork();
         self.standby().flush();
         self.standby().cork();
-        Self::set_stream_volume(&self.standby(), 0);
+        Self::set_stream_volume(self.standby(), 0);
 
         self.active_mut().control = self.standby_mut().control.take();
         self.active_mut().decode_handle = self.standby_mut().decode_handle.take();
@@ -557,7 +557,7 @@ impl Mixer for PulseAudioMixer {
 
         self.active().cork();
         self.active().flush();
-        Self::set_stream_volume(&self.active(), 0);
+        Self::set_stream_volume(self.active(), 0);
 
         let dur = Self::probe_duration(path)?;
         if dur > 0.0 {
@@ -605,7 +605,7 @@ impl Mixer for PulseAudioMixer {
 
         self.active().cork();
         self.active().flush();
-        Self::set_stream_volume(&self.active(), 0);
+        Self::set_stream_volume(self.active(), 0);
 
         if let Some(ref dur) = source.total_duration() {
             *self.duration.lock().unwrap() = dur.as_secs_f64();
@@ -655,7 +655,7 @@ impl Mixer for PulseAudioMixer {
 
         self.active().cork();
         self.active().flush();
-        Self::set_stream_volume(&self.active(), 0);
+        Self::set_stream_volume(self.active(), 0);
 
         let (control, handle) = Self::start_decode_reader(
             reader,
@@ -702,7 +702,7 @@ impl Mixer for PulseAudioMixer {
 
         self.active().cork();
         self.active().flush();
-        Self::set_stream_volume(&self.active(), 0);
+        Self::set_stream_volume(self.active(), 0);
 
         let (control, handle) = Self::start_decode_stream(
             source,
@@ -747,7 +747,7 @@ impl Mixer for PulseAudioMixer {
 
         self.standby().cork();
         self.standby().flush();
-        Self::set_stream_volume(&self.standby(), 0);
+        Self::set_stream_volume(self.standby(), 0);
 
         let (control, handle) = Self::start_decode(
             path,
@@ -782,7 +782,7 @@ impl Mixer for PulseAudioMixer {
 
         self.standby().cork();
         self.standby().flush();
-        Self::set_stream_volume(&self.standby(), 0);
+        Self::set_stream_volume(self.standby(), 0);
 
         let rate = source.sample_rate().get();
         let channels = source.channels().get();
@@ -832,7 +832,7 @@ impl Mixer for PulseAudioMixer {
         // on a resume-from-pause left a freshly loaded track scaled to silence
         // for its whole length: the callback still produced samples, but every
         // one of them was multiplied by zero.
-        Self::set_stream_volume(&self.active(), self.user_volume.load(Ordering::SeqCst));
+        Self::set_stream_volume(self.active(), self.user_volume.load(Ordering::SeqCst));
 
         *self.start_time.lock().unwrap() = Some(Instant::now());
         self.playing.store(true, Ordering::SeqCst);
@@ -850,8 +850,8 @@ impl Mixer for PulseAudioMixer {
     }
 
     fn stop(&mut self) -> AudioResult<()> {
-        Self::set_stream_volume(&self.active(), 0);
-        Self::set_stream_volume(&self.standby(), 0);
+        Self::set_stream_volume(self.active(), 0);
+        Self::set_stream_volume(self.standby(), 0);
         self.active().cork();
         self.standby().cork();
         self.active().flush();
@@ -875,7 +875,7 @@ impl Mixer for PulseAudioMixer {
         }
         self.active().flush();
         *self.position.lock().unwrap() = position_secs;
-        *self.start_time.lock().unwrap() = (position_secs > 0.0).then(|| Instant::now());
+        *self.start_time.lock().unwrap() = (position_secs > 0.0).then(Instant::now);
         *self.start_pos.lock().unwrap() = position_secs;
         Ok(())
     }
@@ -884,7 +884,7 @@ impl Mixer for PulseAudioMixer {
         let vol = volume.min(MAX_VOLUME);
         self.user_volume.store(vol, Ordering::SeqCst);
         if !self.pending_pause {
-            Self::set_stream_volume(&self.active(), vol);
+            Self::set_stream_volume(self.active(), vol);
         }
         Ok(())
     }
@@ -925,7 +925,7 @@ impl Mixer for PulseAudioMixer {
         if self.standby().ring.available() == 0 && self.standby().ring.is_finished() {
             return;
         }
-        Self::set_stream_volume(&self.standby(), 0);
+        Self::set_stream_volume(self.standby(), 0);
         self.crossfade_start = Some(Instant::now());
         self.crossfade_duration = duration_secs.max(1.0);
     }
@@ -947,16 +947,16 @@ impl Mixer for PulseAudioMixer {
         let vol = volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)));
 
         self.active_mut().stop_decode();
-        Self::set_stream_volume(&self.active(), 0);
+        Self::set_stream_volume(self.active(), 0);
         self.active().cork();
 
         self.is_a_active = !self.is_a_active;
 
-        Self::set_stream_volume(&self.active(), vol);
+        Self::set_stream_volume(self.active(), vol);
         self.active().uncork();
 
         self.standby().flush();
-        Self::set_stream_volume(&self.standby(), 0);
+        Self::set_stream_volume(self.standby(), 0);
         self.standby().cork();
 
         self.active_mut().control = self.standby_mut().control.take();
@@ -980,16 +980,16 @@ impl Mixer for PulseAudioMixer {
         let vol = volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)));
 
         self.active_mut().stop_decode();
-        Self::set_stream_volume(&self.active(), 0);
+        Self::set_stream_volume(self.active(), 0);
         self.active().cork();
 
         self.is_a_active = !self.is_a_active;
 
-        Self::set_stream_volume(&self.active(), vol);
+        Self::set_stream_volume(self.active(), vol);
         self.active().uncork();
 
         self.standby().flush();
-        Self::set_stream_volume(&self.standby(), 0);
+        Self::set_stream_volume(self.standby(), 0);
         self.standby().cork();
 
         self.active_mut().control = self.standby_mut().control.take();
@@ -1024,7 +1024,7 @@ impl Mixer for PulseAudioMixer {
                 let progress = elapsed / FADE_MS;
                 let target =
                     volume_ratio(self.stored_volume.min(MAX_VOLUME)) * (1.0 - progress as f32);
-                Self::set_stream_volume(&self.active(), volume_from_ratio(target));
+                Self::set_stream_volume(self.active(), volume_from_ratio(target));
             }
         }
 
@@ -1082,8 +1082,7 @@ impl Mixer for PulseAudioMixer {
         if !self.playing.load(Ordering::SeqCst) {
             return 0.0;
         }
-        let vol = volume_ratio(self.user_volume.load(Ordering::SeqCst));
-        vol
+        volume_ratio(self.user_volume.load(Ordering::SeqCst))
     }
     fn current_spectrum(&self) -> Vec<f32> {
         self.spectrum.lock().unwrap().clone()
