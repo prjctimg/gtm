@@ -1212,6 +1212,18 @@ impl App {
                             self.popup_cover_sync();
                         }
                     }
+                    IpcResult::GridCover(cover, track_id, round) => {
+                        // Not gated on a slot: every cell is its own slot, and
+                        // the round is what says the reply still belongs to the
+                        // list on screen. A stale one is dropped rather than
+                        // painted under a different album's cell.
+                        if !no_image_protocol()
+                            && self.grid.round == round
+                            && let Some(bytes) = cover
+                        {
+                            self.grid_put(track_id, bytes);
+                        }
+                    }
                     IpcResult::SpotifyPopupCover(cover, url, fetch_gen) => {
                         if !no_image_protocol()
                             && self.spotify_popup_slot.id.as_deref() == Some(&url)

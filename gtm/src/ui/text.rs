@@ -15,6 +15,16 @@ use crate::ui::*;
 /// usable on a tall one.
 pub(crate) const LEFT_LIST_MAX_ROWS: u16 = 10;
 
+/// Fewest rows the category list keeps when a preview card wants the space.
+///
+/// The card can shrink — its artwork is already sized from whatever box it is
+/// handed, and the field block clips before that — while a category list that
+/// drops to nothing takes the only route to every other category with it. Four
+/// categories (All Tracks, Spotify, Radio, Top Charts) carry a preview from the
+/// moment they are highlighted rather than only once something is loaded into
+/// them, so they were the ones where an empty list appeared.
+pub(crate) const LEFT_LIST_MIN_ROWS: u16 = 8;
+
 /// Blank rows between the category list and the cover art below it.
 ///
 /// Without it the two blocks abut, and the card's top border reads as another
@@ -87,6 +97,14 @@ pub(crate) fn library_stats_line(app: &App) -> String {
             let n = app.unique_artists().len();
             format!(" {} {} ", n, plural(n, "artist", "artists"))
         }
+        // Genres counted tracks. There is no genre arm, so the footer read
+        // "812 tracks | 3h 12m" under a list of forty genres — a count of the
+        // wrong list, sitting under the one thing on screen that says how many
+        // there actually are.
+        10 => {
+            let n = app.unique_genres().len();
+            format!(" {} {} ", n, plural(n, "genre", "genres"))
+        }
         4 => {
             let n = app.playlist_cache.len();
             format!(" {} {} ", n, plural(n, "playlist", "playlists"))
@@ -139,9 +157,26 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
     let use_nerd = use_nerd_fonts();
     match app.track_info_kind() {
         TrackInfoKind::Track => {
-            let track = app
-                .popup_track_id
-                .and_then(|id| app.tracks_cache.iter().find(|t| t.id == id))?;
+            // The highlighted row of the list itself, not a lookup of
+            // `popup_track_id` in `tracks_cache`.
+            //
+            // That lookup only works for a local library id, and it broke the
+            // categories whose rows are not in `tracks_cache`: "All Tracks" is a
+            // union of Spotify playlists whose rows are remote, so every one of
+            // them carries `id == 0` and an empty path — the lookup matched
+            // nothing (or, worse, an unrelated local track that happened to hold
+            // id 0), so the card described a different song than the row under
+            // the cursor. Reading `filtered_tracks()` at `list_pos()` is the same
+            // source `update_track_popup` reads, so the two agree by
+            // construction. `popup_track_id` stays as the fallback for the rows
+            // that carry an id but sit outside the filtered list.
+            let rows = app.filtered_tracks();
+            let track: &TrackInfo = match rows.get(app.list_pos()) {
+                Some(t) => t,
+                None => app
+                    .popup_track_id
+                    .and_then(|id| app.tracks_cache.iter().find(|t| t.id == id))?,
+            };
             let title = track.display_title();
             let artist = if track.artist.is_empty() {
                 "Unknown".to_string()

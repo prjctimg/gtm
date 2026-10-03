@@ -1,4 +1,6 @@
 use crate::app::*;
+use crate::ui::step_viewport;
+use ratatui::layout::Rect;
 
 impl App {
     /// Kind of item the library track-info block is currently describing,
@@ -411,6 +413,138 @@ impl App {
             };
             let _ = ipc_tx.send(msg);
         });
+    }
+
+    /// Switch the album/artist/genre lists between rows and a cover grid.
+    ///
+    /// The setting is per-app, not per-category, and it survives switching
+    /// categories: browsing albums as a grid and then artists is the same
+    /// gesture twice, and having to ask again each time was the friction the
+    /// grid was meant to remove. `true` when the grid is now showing.
+    pub fn toggle_grid(&mut self) -> bool {
+        if self.grid_active() {
+            self.grid.on = false;
+        } else if matches!(self.library_category, 2 | 3 | 10) && self.browse_detail.is_none() {
+            self.grid.on = true;
+        }
+        self.grid.on
+    }
+
+    /// The names the grid draws, one per cell, in list order.
+    ///
+    /// Read from the same helpers the row view reads, so the two cannot drift:
+    /// a grid cell is an album, an artist or a genre because its row was one.
+    pub fn grid_labels(&self) -> Vec<String> {
+        match self.library_category {
+            2 => self.unique_albums().into_iter().map(|(n, _)| n).collect(),
+            3 => self.unique_artists().into_iter().map(|(n, _)| n).collect(),
+            10 => self.unique_genres().into_iter().map(|(n, _)| n).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether the active category draws as a cover grid.
+    ///
+    /// Albums and artists are the lists with covers to browse; genres borrow a
+    /// representative track's artwork, which is a real album sleeve for the
+    /// genre rather than a picture of the genre, but it is the only artwork a
+    /// genre has and a grid of grey cells is not a browse view.
+    ///
+    /// Off entirely without an image protocol: the grid is forty identical
+    /// placeholders in a row, which is strictly less useful than the list it
+    /// replaced.
+    pub fn grid_active(&self) -> bool {
+        self.grid.on
+            && self.browse_detail.is_none()
+            && !no_image_protocol()
+            && matches!(self.library_category, 2 | 3 | 10)
+    }
+
+    /// Where the grid puts its cells in a pane this size, with the selected
+    /// item in view.
+    ///
+    /// The window is stepped rather than recomputed from the cursor alone, by
+    /// the same helper the row lists use: a move inside the window leaves it
+    /// alone, so a single step does not reflow the grid under the cursor.
+    pub fn grid_plan(&self, area: Rect, total: usize) -> GridPlan {
+        let cols = (area.width / GRID_CELL_W).max(1) as usize;
+        // One row is the blank line the row view starts with, and the last is the
+        // stats line drawn under the list.
+        let rows = (area.height.saturating_sub(2) / GRID_CELL_H).max(1) as usize;
+        let page = cols * rows;
+        let sel = self.list_pos().min(total.saturating_sub(1));
+        let (first, _end) = step_viewport(self.grid.first, sel, page, total);
+        GridPlan { first, cols, rows }
+    }
+
+    /// Record a plan and ask for the covers of the cells it shows.
+    ///
+    /// Called from the draw path rather than the cursor path, because the cells
+    /// on screen are a function of the pane's height: a resize brings in cells no
+    /// keypress will ever mention. Bounded by [`GRID_FETCH_BATCH`] per call, so
+    /// a first paint of a wide pane queues a few cells a frame instead of forty
+    /// at once.
+    pub fn grid_fetch(&mut self, plan: &GridPlan) {
+        if !self.grid_active() {
+            return;
+        }
+        self.grid.cols = plan.cols;
+        self.grid.rows = plan.rows;
+        self.grid.first = plan.first;
+        // The representative id of every cell on screen. Recomputed each time,
+        // because the underlying list changes under a rescan without any cursor
+        // move.
+        let ids: Vec<Option<i64>> = (plan.first..plan.first + plan.cols * plan.rows)
+            .map(|pos| self.track_id_at(pos))
+            .collect();
+        if ids != self.grid.ids {
+            self.grid.ids = ids;
+            self.grid.round = self.grid.round.wrapping_add(1);
+        }
+
+        let missing: Vec<i64> = self
+            .grid
+            .ids
+            .iter()
+            .filter_map(|id| *id)
+            .filter(|id| !self.grid.asked.contains(id) && !self.grid.covers.contains_key(id))
+            .take(GRID_FETCH_BATCH)
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        for id in &missing {
+            self.grid.asked.insert(*id);
+        }
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        let round = self.grid.round;
+        tokio::spawn(async move {
+            for id in missing {
+                // Answer on a miss too, so a track with no artwork is not
+                // re-requested on every frame after it.
+                let bytes = match client.art().cover(id).await {
+                    Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
+                    _ => None,
+                };
+                let _ = ipc_tx.send(IpcResult::GridCover(bytes, id, round));
+            }
+        });
+    }
+
+    /// Store a cover the grid asked for, decoding it once.
+    pub(crate) fn grid_put(&mut self, track_id: i64, bytes: Vec<u8>) {
+        let picker = self.np_cover.picker.clone();
+        self.grid
+            .covers
+            .insert(track_id, GridCell::new(bytes, picker.as_ref()));
+        if self.grid.covers.len() > GRID_CACHE_MAX {
+            self.grid.prune_hard();
+        }
+        // One repaint: the cell is on screen and its artwork just arrived. The
+        // periodic repaint would get there within ten frames, which for a
+        // first paint is the whole visible delay.
+        self.data_dirty = true;
     }
 
     /// Preload the cover art for the rows a short scroll ahead of the cursor, so

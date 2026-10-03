@@ -35,6 +35,8 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   Tab         Switch Pane"),
     ("", "   Shift+Tab   Switch Pane (back)"),
     ("", "   Alt+.       Library Categories"),
+    ("", "   V           Cover grid for albums, artists, genres"),
+    ("", "   (in grid)   Arrows move by cell, j/k by row"),
     ("", "   /           Search (context-aware)"),
     ("", "   Alt+Q       Queue"),
     ("", "   Alt+/       Search Library"),

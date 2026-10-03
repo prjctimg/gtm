@@ -124,22 +124,18 @@ impl Pickers {
                 (64, (n as u16 + 8).clamp(14, 30))
             }
             PickerId::Radio => {
-                // One merged panel: height follows the filtered row count;
-                // width fits the longest name across every sub-list (custom
-                // stations, top stations, tags, countries).
-                let n = app.radio_picks().len();
-                let w = app
-                    .radio
-                    .custom
-                    .iter()
-                    .map(|s| s.name.len())
-                    .chain(app.radio.top.iter().map(|s| s.name.len()))
-                    .chain(app.radio.browse_tags.iter().map(|t| t.name.len()))
-                    .chain(app.radio.browse_countries.iter().map(|c| c.name.len()))
-                    .max()
-                    .map_or(64, |v| v as u16 + 48)
-                    .clamp(64, 100);
-                (w, (n as u16 + 9).clamp(16, 36))
+                // One merged panel, sized like the Spotify picker.
+                //
+                // The width used to follow the longest station name in every
+                // sub-list, up to 100 columns. Radio Browser station names are
+                // arbitrarily long and frequently so, so the panel was at its
+                // widest for the rows that needed it least: a station called
+                // "Radio Paradise — Main Mix Channel, 128k AAC" pushed the
+                // list to the edge of a 120-column terminal and the *next*
+                // picker open was a different size. A fixed box with the
+                // highlighted row's text scrolling inside it is the same trick
+                // the footer and the track card already use.
+                (60, 28)
             }
             _ => (56, 22),
         }

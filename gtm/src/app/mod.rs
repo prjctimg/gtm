@@ -212,6 +212,8 @@ pub struct App {
     /// Which presentation setting the unified Look picker is showing, and the
     /// filter on the one category that has one.
     pub look: LookView,
+    /// The cover-grid mode of the album, artist and genre lists.
+    pub grid: GridView,
     pub setup: SetupView,
     pub podcast: PodcastView,
     pub radio: RadioView,
@@ -421,6 +423,14 @@ pub(crate) enum IpcResult {
     RefreshDone(Box<DaemonState>, Option<Vec<u8>>, Option<i64>),
     CoverArt(Option<Vec<u8>>, Option<i64>, u64),
     PopupCoverArt(Option<Vec<u8>>, i64, u64),
+    /// Cover bytes for one cell of the album/artist/genre grid, as
+    /// (bytes, representative track id, grid round).
+    ///
+    /// Separate from `PopupCoverArt` rather than sharing it: the grid keeps
+    /// dozens of covers on screen at once and none of them is "the" preview, so
+    /// a single-slot reply would have every cell overwrite the last one's slot
+    /// and the pane would show one cover in forty places.
+    GridCover(Option<Vec<u8>>, i64, u64),
     QueuePreviewCover(Option<Vec<u8>>, String, u64),
     /// Text read from the system clipboard for a form field, named because the
     /// form may have closed while the paste tool was running.
@@ -776,17 +786,29 @@ impl App {
         }
     }
 
-    /// Background for the Zen surface: the reactive palette washed in a little
-    /// harder than the rest of the app, then lifted a step toward white.
+    /// Background for the Zen surface: the reactive palette, washed in harder than
+    /// the rest of the app.
     ///
     /// The app's own surface is already washed with the palette at
     /// `reactive_theme_intensity`, so on a fullscreen surface with no panes to
     /// tell it apart from, Zen came up looking like the library it covers. The
-    /// lift is what gives the artwork something to sit on, and it widens the
-    /// gap on light themes too, where the foreground is dark.
+    /// extra wash is what separates the two.
+    ///
+    /// There used to be a lift toward white on top of it, and the wash was more
+    /// than twice this deep. Together they made the surface a pale tint of the
+    /// artwork — on a light cover the whole view was near-white with a theme
+    /// foreground drawn on it, which is where the lyric contrast complaint came
+    /// from. Nothing is lifted now: the artwork sits on the wash.
     pub fn zen_bg(&self) -> ratatui::style::Color {
-        const LIFT: f64 = 0.08;
-        const WASH: f64 = 0.55;
+        // Both constants were higher: a 0.55 wash followed by a lift toward
+        // white left the Zen surface a pale tint of the artwork, so on a light
+        // cover the whole view was a wash of near-white with a theme foreground
+        // drawn on it, and the lyric lines lost the contrast they have in the
+        // pane. A quarter of the palette is enough to tell the Zen surface from
+        // the app without lighting it up, and the lift is gone — the artwork
+        // sits on the wash rather than on top of a brightened version of it.
+        const LIFT: f64 = 0.0;
+        const WASH: f64 = 0.25;
         let base = self.surface_bg();
         let washed = match self.reactive_palette.filter(|_| self.reactive_theme) {
             Some(pal) => blend_colors(
@@ -1024,6 +1046,7 @@ impl App {
             },
             charts: ChartsView::default(),
             look: LookView::default(),
+            grid: GridView::default(),
             podcast: PodcastView::default(),
             radio: RadioView::default(),
             cookie_file: None,

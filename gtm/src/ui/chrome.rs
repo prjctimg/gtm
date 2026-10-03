@@ -5,6 +5,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use crate::app::{GRID_CELL_H, GRID_CELL_W};
 use crate::ui::*;
 
 /// Rows of cover art in the one-column bottom-pane track card.
@@ -20,6 +21,18 @@ const DOCK_ART_H: u16 = 6;
 /// and the body it displaces keeps enough width that lines still wrap and the
 /// surface still scrolls.
 const ZEN_LYRICS_ART_H: u16 = 8;
+
+/// Which background the lyric lines are drawn on.
+///
+/// The two callers share every line of the layout and differ only here: the
+/// pane's foregrounds come from the theme, which was authored against the app
+/// surface, while the Zen surface's are re-derived from its own background
+/// because that background is artwork.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LyricSurface {
+    Pane,
+    Zen,
+}
 
 /// Whether an album line is worth a row next to a track's title and artist.
 ///
@@ -514,7 +527,7 @@ impl Render {
             width: area.width.saturating_sub(4 + art_w).max(16),
             height: area.height.saturating_sub(4),
         };
-        Render::lyrics_body(f, body, app, lyrics);
+        Render::lyrics_body(f, body, app, lyrics, LyricSurface::Zen);
     }
 
     /// Zen surface 3: the audio visualizer stretched across the full screen.
@@ -1195,27 +1208,34 @@ impl Render {
         };
         // Sit the first category level with the cover image beside it.
         let list_top = left_list_top(cover_band);
-        // Rows the category list may use: everything, less the top clearance
-        // and, when a card is present, the gap above it. A pane too short for
-        // both drops the list entirely rather than squeezing the card.
+        // Rows the category list takes. The list is served first and the card
+        // takes what is left: the card's artwork is already sized from the box
+        // it is handed, so it gives up rows gracefully, whereas a list cut to
+        // zero does not come back until the cursor leaves the category. That is
+        // the bug this fixes — four categories always have a card, so those are
+        // the four whose list vanished on a pane that could have held both.
         let list_rows: u16 = if has_card {
-            let reserved = list_top + card_gap + 1;
-            if left_inner.height <= reserved {
-                0
-            } else {
-                (left_inner.height - reserved).min(LEFT_LIST_MAX_ROWS)
-            }
+            // A card needs its field block and its separator to be legible;
+            // anything beyond that is artwork, and artwork is what shrinks.
+            let avail = left_inner
+                .height
+                .saturating_sub(list_top)
+                .saturating_sub(card_gap)
+                .saturating_sub(1);
+            let card_floor = INFO_TEXT_H + 1;
+            let for_list = avail.saturating_sub(card_floor).min(LEFT_LIST_MAX_ROWS);
+            for_list.max(LEFT_LIST_MIN_ROWS.min(avail))
         } else {
             left_inner.height.saturating_sub(list_top)
         };
         let track_info_h: u16 = if has_card {
-            let avail_h = left_inner
+            let left = left_inner
                 .height
                 .saturating_sub(list_rows)
                 .saturating_sub(list_top)
-                .saturating_sub(card_gap);
-            let need = info_block_h();
-            need.min(avail_h.max(6))
+                .saturating_sub(card_gap)
+                .saturating_sub(1);
+            info_block_h().min(left)
         } else {
             0
         };
@@ -1315,24 +1335,17 @@ impl Render {
                 .collect();
             f.render_widget(List::new(left_items), left_list_area);
 
-            // Indicator marks the active row within the scrolled window, not
-            // its absolute index, or it drifts off the pane once the list
-            // scrolls past the visible rows. It takes the column the label
-            // reserves as leading space, clear of the icon at column 1.
-            if sel >= scroll_start {
-                let indicator_y = left_list_area.y + (sel - scroll_start) as u16;
-                if indicator_y < left_list_area.y + left_list_area.height {
-                    let indicator_area = Rect {
-                        x: left_list_area.x,
-                        y: indicator_y,
-                        width: 1,
-                        height: 1,
-                    };
-                    let indicator = Paragraph::new("\u{258e}")
-                        .style(Style::default().fg(app.theme.sidebar_active_border));
-                    f.render_widget(indicator, indicator_area);
-                }
-            }
+            // No indicator block on the active row.
+            //
+            // There was a left-quarter block drawn over the first column in
+            // `sidebar_active_border`, a third colour against a row that was
+            // already painted with the selection background. On the focused row
+            // it was drawn on top of the highlight, so it read as a stray block
+            // inside the selection rather than as a marker — the artefact. It
+            // was also redundant in both states: focused, the background already
+            // says which row this is; unfocused, the active row is already in
+            // the accent colour. The leading space the glyph occupied stays, so
+            // the icon keeps its column and the rows do not shift.
             let _ = left_pad_area;
         }
 
@@ -1379,8 +1392,15 @@ impl Render {
         // screen. Not named for the library column's own `list_rows` above.
         let window_rows = || results_area.height.saturating_sub(3 + dock_h) as usize;
 
-        let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5
-        {
+        let (right_lines, _stats_line) = if app.grid_active() {
+            // Drawn as cells below, not as rows: the renderer needs the pane, so
+            // it runs after the header. Two consequences of being empty:
+            // `lib_total_rows` stays zero, so the row hit zones are not
+            // registered over the grid's own, and the stats line below — which
+            // is computed from the category, not from here — keeps counting
+            // albums while there are no rows to count.
+            (Vec::new(), String::new())
+        } else if app.browse_detail.is_some() && app.library_category == 5 {
             let tracks = &app.spotify.playlist_tracks_cache;
             let total_len = app.spotify_playlist_rows();
             let st_line = library_stats_line(app);
@@ -2241,7 +2261,15 @@ impl Render {
                 true,
             );
             fill_pane(f, right_inner, app);
-            Render::evolving(f, right_inner, right_para, "lib", app, false);
+            if app.grid_active() {
+                // The grid draws its own cells and registers its own hit zones,
+                // so the row list is neither drawn nor counted: `lib_total_rows`
+                // is left at zero above precisely so the row hit zones below are
+                // not registered over the top of them.
+                Render::grid(f, right_inner, app);
+            } else {
+                Render::evolving(f, right_inner, right_para, "lib", app, false);
+            }
 
             // Mouse hit zones for the visible library rows: rows start
             // below one leading blank line.
@@ -2472,19 +2500,46 @@ impl Render {
             height: inner.height,
         };
 
-        Render::lyrics_body(f, lyrics_inner, app, lyrics);
+        Render::lyrics_body(f, lyrics_inner, app, lyrics, LyricSurface::Pane);
     }
 
     /// Body of the lyrics pane: wrap the lyric lines, emphasize the active
     /// line (with karaoke word timing when available) and scroll to the
     /// anchor. Shared by the normal lyrics pane and the Zen-mode fullscreen
-    /// lyrics surface so both render identically.
+    /// lyrics surface.
+    ///
+    /// The surfaces differ only in what they sit on. The pane's background is
+    /// the app surface, and the theme's own `fg`/`fg_dim` are picked against
+    /// it. The Zen surface is a wash of the reactive palette, whose luminance
+    /// is whatever the artwork happened to be: a pale cover washed the lines to
+    /// near-invisible while a dark one left them fine, and neither is a theme
+    /// problem to fix. So the Zen surface re-derives its foregrounds from its own
+    /// background rather than inheriting them.
     pub(crate) fn lyrics_body(
         f: &mut ratatui::Frame,
         lyrics_inner: Rect,
         app: &App,
         lyrics: &LrcData,
+        surface: LyricSurface,
     ) {
+        // Read once: the Zen background is a blend, and blending it per line
+        // would paint the same two values sixteen times.
+        let bg = match surface {
+            LyricSurface::Pane => app.surface_bg(),
+            LyricSurface::Zen => app.zen_bg(),
+        };
+        let lit = match surface {
+            LyricSurface::Pane => app.theme.accent,
+            LyricSurface::Zen => readable_fg(app.theme.accent, bg),
+        };
+        let past = match surface {
+            LyricSurface::Pane => app.theme.fg,
+            LyricSurface::Zen => readable_fg(app.theme.fg, bg),
+        };
+        let ahead = match surface {
+            LyricSurface::Pane => app.theme.fg_dim,
+            LyricSurface::Zen => readable_fg(app.theme.fg_dim, bg),
+        };
         let total = lyrics.lines.len();
         let width = lyrics_inner.width.max(1) as usize;
         let synced = lyrics_are_synced(&lyrics.lines);
@@ -2496,21 +2551,26 @@ impl Render {
         let mut cumulative = 0usize;
         for (i, line) in lyrics.lines.iter().enumerate() {
             let text_style = if !synced {
-                Style::default().fg(app.theme.fg)
+                Style::default().fg(past)
             } else {
                 // Past lines stay readable, the active (current) line matching
                 // the playback timestamp is emphasized, future lines fade out.
                 let d = i as isize - anchor as isize;
                 if d == 0 {
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().fg(lit).add_modifier(Modifier::BOLD)
                 } else if d < 0 {
-                    Style::default().fg(app.theme.fg)
+                    Style::default().fg(past)
                 } else {
-                    Style::default()
-                        .fg(app.theme.fg_dim)
-                        .add_modifier(Modifier::DIM)
+                    // The pane dims what is ahead of the playhead; Zen does not.
+                    // `DIM` halves whatever the terminal already resolved, and a
+                    // foreground chosen for contrast still lands under the bar
+                    // once it is halved — which is how the future lines came to
+                    // be the unreadable ones rather than the faint ones.
+                    let s = Style::default().fg(ahead);
+                    match surface {
+                        LyricSurface::Pane => s.add_modifier(Modifier::DIM),
+                        LyricSurface::Zen => s,
+                    }
                 }
             };
             // No timestamp gutter. Every synced line carried a `[0:19-0:24]`
@@ -2519,20 +2579,19 @@ impl Render {
             // through. The line being sung is already marked; the timing is in
             // the source, and the manual offset still nudges the matching.
             // Karaoke: the active line lights up word-by-word when the source
-            // carries per-word timings (enhanced LRC). Future words stay dim.
+            // carries per-word timings (enhanced LRC). Words not yet sung sit
+            // at the future-lines colour.
             let rendered = if i == anchor && synced && !line.words.is_empty() {
                 let pos = app.raw_position + offset;
                 let mut spans: Vec<Span> = Vec::with_capacity(line.words.len() + 1);
                 for w in &line.words {
-                    let lit = pos >= w.time;
+                    let sung = pos >= w.time;
                     spans.push(Span::styled(
                         w.text.clone(),
-                        if lit {
-                            Style::default()
-                                .fg(app.theme.accent)
-                                .add_modifier(Modifier::BOLD)
+                        if sung {
+                            Style::default().fg(lit).add_modifier(Modifier::BOLD)
                         } else {
-                            Style::default().fg(app.theme.fg_dim)
+                            Style::default().fg(ahead)
                         },
                     ));
                 }
@@ -2606,7 +2665,7 @@ impl Render {
             f.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     "not time synced",
-                    Style::default().fg(app.theme.fg_dim),
+                    Style::default().fg(ahead),
                 ))),
                 h,
             );
@@ -2794,6 +2853,126 @@ impl Render {
                 },
             );
             y += 1;
+        }
+    }
+
+    /// The album, artist and genre lists as a grid of covers.
+    ///
+    /// A mode of the same list rather than a second view: the cursor, the
+    /// drill-down, the mouse zones, the selection and the stats line are the
+    /// ones the row view already has, and only the drawing differs. Rows of
+    /// names are how a thousand albums are *read*; a grid of sleeves is how
+    /// they are *recognised*, and there was no second screen to recognise them
+    /// on.
+    ///
+    /// Covers are resolved through the same representative track the info card
+    /// uses, so a cell and the card below it show the same artwork.
+    pub(crate) fn grid(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        // A pane too small for one cell draws nothing and fetches nothing. On a
+        // narrow layout the results column is `Length(0)` while the left pane
+        // holds the cursor, so this is the common case, not a corner one.
+        if area.width < GRID_CELL_W || area.height < GRID_CELL_H {
+            return;
+        }
+        let labels = app.grid_labels();
+        let total = labels.len();
+        if total == 0 {
+            f.render_widget(
+                Paragraph::new(empty_hint_lines(
+                    app,
+                    "Nothing to show here yet",
+                    "Hint: import tagged audio files, then browse them here",
+                )),
+                area,
+            );
+            return;
+        }
+        let plan = app.grid_plan(area, total);
+        // Before the cells are read: this is what fills `grid.ids` with the
+        // window's representative tracks and queues the missing covers.
+        app.grid_fetch(&plan);
+        let sel = app.list_pos().min(total - 1);
+        let cols = plan.cols;
+        let cell_h = GRID_CELL_H;
+        let cover_w = GRID_CELL_W - 1;
+        let cover_h = GRID_CELL_H - 2;
+
+        for (cell, id) in app.grid.ids.iter().enumerate() {
+            let pos = plan.first + cell;
+            let Some(name) = labels.get(pos) else {
+                continue;
+            };
+            let x = area.x + (cell % cols) as u16 * GRID_CELL_W;
+            let y = area.y + (cell / cols) as u16 * cell_h;
+            if y + cell_h > area.y + area.height {
+                break;
+            }
+            let is_sel = pos == sel && !app.library_pane_focus;
+            let cell_area = Rect {
+                x,
+                y,
+                width: cover_w,
+                height: cell_h,
+            };
+            // Selection goes under the artwork rather than over it: painting a
+            // highlight rect on top of an image protocol's cells blanks the
+            // image. Drawn with a `Block` and not a `Paragraph` — a paragraph
+            // with no lines styles nothing at all, which would have left the
+            // selected cell's only highlight invisible.
+            if is_sel {
+                f.render_widget(
+                    Block::default().style(
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg),
+                    ),
+                    cell_area,
+                );
+            }
+            let cover_area = Rect {
+                x,
+                y,
+                width: cover_w,
+                height: cover_h,
+            };
+            match id.and_then(|id| app.grid.covers.get_mut(&id)) {
+                Some(cell_art) => Render::cover(
+                    f,
+                    cover_area,
+                    cell_art.proto.as_mut(),
+                    Some(&cell_art.bytes),
+                    app.theme.fg_dim,
+                    None,
+                ),
+                None => Render::cover(
+                    f,
+                    cover_area,
+                    None,
+                    None,
+                    app.theme.fg_dim,
+                    Some(" \u{25a1} "),
+                ),
+            }
+            let label_area = Rect {
+                x,
+                y: y + cover_h,
+                width: cover_w,
+                height: 1,
+            };
+            let style = if is_sel {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            let label = scroll_text(name, cover_w as usize, app.footer_title_scroll, is_sel);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(label, style))),
+                label_area,
+            );
+            app.mouse_map.register(cell_area, MouseZone::ListItem(pos));
         }
     }
 

@@ -89,6 +89,8 @@ pub enum KeyboardAction {
     FetchLyrics,
 
     // Library motions (vim-style)
+    /// Switch the album, artist and genre lists between rows and a cover grid.
+    ToggleGrid,
     ToggleMultiselect,
     AddToQueue,
     AddToPlaylist,
@@ -266,6 +268,7 @@ pub fn default_keybindings() -> Keybindings {
                 KeyboardAction::PageDown,
                 NORMAL
             ),
+            b!(KeyCode::Char('V'), KeyboardAction::ToggleGrid, LIST),
             b!(KeyCode::Home, KeyboardAction::Top, LIST),
             b!(KeyCode::End, KeyboardAction::Bottom, LIST),
             b!(KeyCode::Char(' '), KeyboardAction::PlayPause, GLOBAL),

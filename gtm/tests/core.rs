@@ -3397,7 +3397,7 @@ fn zen_cycles_now_playing_lyrics_and_the_visualizer() {
         assert!(chrome.contains(arm), "zen does not dispatch {arm}");
     }
     assert!(
-        chrome.contains("Render::lyrics_body(f, body, app, lyrics);"),
+        chrome.contains("Render::lyrics_body(f, body, app, lyrics, LyricSurface::Zen);"),
         "the zen lyrics do not share the pane's body"
     );
     // And Zen is painted on its own background, lifted off the app surface out
@@ -3959,5 +3959,403 @@ fn a_state_change_refreshes_every_widget() {
     assert!(
         run[resized..(resized + 700).min(run.len())].contains("self.mark_all_dirty()"),
         "a resize re-derives every pane's geometry but only forces one frame"
+    );
+}
+
+/// The Look picker is one list over one preview, as it was before the merge.
+///
+/// Merging five overlays into one added a category strip: a row per category,
+/// five rows of every picker's height, to switch between five categories that
+/// `Tab` already switches between. The category is the block title now.
+#[test]
+fn the_look_picker_has_no_category_list() {
+    let look = include_str!("../src/ui/pickers/look.rs");
+    let at = look
+        .find("pub(crate) fn render_look")
+        .expect("render_look is gone");
+    let block = &look[at..(at + 4000).min(look.len())];
+
+    assert!(
+        !block.contains("look.icon()"),
+        "the category strip is back: the categories are drawn as rows again"
+    );
+    assert!(
+        !block.contains("Look::ALL"),
+        "the render walks the categories again, so they are drawn somewhere"
+    );
+    assert!(
+        look.contains("fn look_hint(cat: Look)"),
+        "the hint no longer says what the picker's keys do"
+    );
+    assert!(
+        look.contains(
+            "Look::Theme => \"type to filter \\u{b7} left/right pick \\u{b7} tab category\","
+        ),
+        "the hint lost its category-switching half"
+    );
+    // The strip's own marker column, kept only to line labels up under it.
+    assert!(
+        !block.contains("let mark = \"   \";")
+            && !block.contains("let cur = if item.current && !selected"),
+        "the values carry the strip's gutter or check mark again"
+    );
+}
+
+/// `Tab` cycles the Look picker's categories, so nothing needs to draw them.
+#[test]
+fn the_look_picker_cycles_its_categories() {
+    let keys = include_str!("../src/app/keys.rs");
+    let state = include_str!("../src/app/state.rs");
+
+    let at = keys
+        .find("if self.pickers.top().is_some_and(|o| o.id == PickerId::Look)")
+        .expect("the Look picker no longer claims its own keys");
+    let block = &keys[at..(at + 700).min(keys.len())];
+    assert!(
+        block.contains("KeyCode::Tab | KeyCode::BackTab"),
+        "Tab or Shift+Tab no longer reaches the Look picker"
+    );
+    assert!(
+        block.contains("self.look_switch(!shift)"),
+        "Tab no longer moves between categories; it does nothing or something else"
+    );
+    assert!(
+        block.contains("let shift = key.modifiers.contains(KeyModifiers::SHIFT);"),
+        "Shift+Tab and Tab are no longer told apart, so one of them cycles back"
+    );
+    // And there is a cycle to run, declared once, not five hand-written arms.
+    assert!(
+        state.contains("pub(crate) fn next(self) -> Look")
+            && state.contains("pub(crate) fn prev(self) -> Look"),
+        "the category cycle was replaced by something that cannot be walked both ways"
+    );
+}
+
+/// The left pane's track card must describe the row under the cursor.
+///
+/// It resolved `popup_track_id` against `tracks_cache`, which only holds local
+/// library ids. "All Tracks" is a union of remote Spotify playlists whose rows
+/// all carry `id == 0` and no path, so the lookup matched nothing — or an
+/// unrelated local track — and the card described a different song than the
+/// highlighted row.
+#[test]
+fn the_track_card_describes_the_highlighted_row() {
+    let squish = |s: &str| s.split_whitespace().collect::<String>();
+    let text = include_str!("../src/ui/text.rs");
+    let at = text
+        .find("pub(crate) fn track_info_fields")
+        .expect("track_info_fields is gone");
+    let block = &text[at..(at + 2500).min(text.len())];
+
+    assert!(
+        !squish(block).contains(&squish(
+            "let track = app.popup_track_id.and_then(|id| app.tracks_cache.iter().find(|t| t.id == id))?;"
+        )),
+        "the card is back to resolving a local id, which remote rows do not have"
+    );
+    assert!(
+        squish(block).contains(&squish("let rows = app.filtered_tracks();")),
+        "the card no longer reads the list it is describing"
+    );
+    assert!(
+        block.contains("rows.get(app.list_pos())"),
+        "the card reads the list but not the highlighted row of it"
+    );
+}
+
+/// Both the category list and the preview card have to be on screen.
+///
+/// The card was reserved at its full sixteen rows before the list was given
+/// anything, and four categories carry a card from the moment they are
+/// highlighted. On a pane that could hold both, the list was computed down to
+/// zero rows and the categories vanished — along with the only route out of the
+/// category you were in.
+#[test]
+fn the_left_pane_keeps_both_the_list_and_the_card() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let text = include_str!("../src/ui/text.rs");
+
+    assert!(
+        text.contains("pub(crate) const LEFT_LIST_MIN_ROWS"),
+        "the category list has no floor, so a card can take all of it"
+    );
+    let at = chrome
+        .find("let list_rows: u16 = if has_card")
+        .expect("the left pane's row budget moved");
+    let block = &chrome[at..(at + 900).min(chrome.len())];
+    assert!(
+        block.contains("LEFT_LIST_MIN_ROWS"),
+        "the list is sized without a floor; the card can still take every row"
+    );
+    assert!(
+        !block.contains("let reserved = list_top + card_gap + 1;"),
+        "the old budget is back: the card is reserved at full height first"
+    );
+    // The card then takes what is left, which is how the artwork shrinks
+    // instead of the list disappearing.
+    assert!(
+        block.contains("info_block_h().min(left)"),
+        "the card is no longer sized from what the list left over"
+    );
+}
+
+/// The zen lyrics have to be readable on the background they are actually on.
+///
+/// The Zen surface is a wash of the reactive palette, so its luminance is
+/// whatever the artwork was. The theme's own `fg`/`fg_dim` are authored against
+/// the app surface, and the pane's `DIM` on future lines halves whatever the
+/// terminal resolved, which is how the lines ahead of the playhead became the
+/// unreadable ones.
+#[test]
+fn zen_lyrics_re_derive_their_foreground() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let app = include_str!("../src/app/mod.rs");
+
+    assert!(
+        chrome.contains("pub(crate) enum LyricSurface"),
+        "the two lyrics surfaces are no longer told apart"
+    );
+    let at = chrome
+        .find("pub(crate) fn lyrics_body")
+        .expect("lyrics_body is gone");
+    let block = &chrome[at..(at + 2200).min(chrome.len())];
+    for (need, why) in [
+        (
+            "readable_fg(app.theme.accent, bg)",
+            "the sung line is still the theme's accent, unchecked against its own background",
+        ),
+        (
+            "readable_fg(app.theme.fg, bg)",
+            "past lines are still the theme's foreground, unchecked",
+        ),
+        (
+            "readable_fg(app.theme.fg_dim, bg)",
+            "future lines are still the theme's dim foreground, unchecked",
+        ),
+    ] {
+        assert!(block.contains(need), "{why}");
+    }
+    assert!(
+        block.contains("LyricSurface::Pane => s.add_modifier(Modifier::DIM)"),
+        "the future lines lost their DIM on the pane, which changes the view it already had"
+    );
+    assert!(
+        block.contains("LyricSurface::Zen => s"),
+        "Zen dims its future lines again, and half a contrast ratio is not a foreground"
+    );
+    // And the wash itself: too much white was most of the complaint.
+    let at = app.find("pub fn zen_bg(&self)").expect("zen_bg is gone");
+    let block = &app[at..(at + 700).min(app.len())];
+    assert!(
+        block.contains("const WASH: f64 = 0.25;"),
+        "the reactive wash is back at more than a quarter of the palette"
+    );
+    assert!(
+        block.contains("const LIFT: f64 = 0.0;"),
+        "the surface is lifted toward white again"
+    );
+}
+
+/// The radio picker is a fixed box with scrolling titles, like Spotify's.
+///
+/// It used to size itself to the longest station name in every sub-list, up to
+/// a hundred columns: widest exactly when there was least need, and a
+/// different size from the picker opened next to it.
+#[test]
+fn the_radio_picker_matches_the_spotify_picker() {
+    let pickers = include_str!("../src/ui/pickers/mod.rs");
+    let radio = include_str!("../src/providers/radio/picker.rs");
+
+    let at = pickers
+        .find("PickerId::Radio =>")
+        .expect("the radio picker's size moved");
+    let block = &pickers[at..(at + 900).min(pickers.len())];
+    let spotify = pickers
+        .find("PickerId::SpotifySearch => (60, 28),")
+        .expect("the Spotify picker's size changed");
+    assert!(
+        block.contains("(60, 28)"),
+        "the radio picker is not the Spotify picker's size any more"
+    );
+    assert!(
+        spotify < at || block.contains("(60, 28)"),
+        "the radio picker is not sized like the Spotify picker"
+    );
+    assert!(
+        !block.contains("browse_countries"),
+        "the width is measured from the station names again"
+    );
+    // Long titles move inside the box instead of widening it.
+    let at = radio
+        .find("pub(crate) fn render_radio")
+        .expect("render_radio is gone");
+    let block = &radio[at..(at + 4000).min(radio.len())];
+    assert!(
+        block.contains("scroll_text(&text, avail, app.footer_title_scroll, i == sel)"),
+        "a long station name is truncated where the Spotify picker scrolls it"
+    );
+    // The hint was written for a panel up to 100 wide and ran off the bottom of
+    // a 60-column one.
+    // The hint was written for a panel up to 100 columns wide and ran off the
+    // bottom of a 60-column one. All five keys still fit, so nothing was lost
+    // but the spacing.
+    assert!(
+        !radio.contains("Tab: filter {}   Enter: play   s: save   x: remove   r: refresh"),
+        "the radio hint is longer than the 56 columns the panel now has"
+    );
+    assert!(
+        radio.contains("s: save \\u{b7} x: remove \\u{b7} r: refresh"),
+        "the radio hint dropped a key it still has room for"
+    );
+}
+
+/// The grid must show the selected item's artwork and be navigable by cell.
+///
+/// It is a mode of the list rather than a new view, so the cursor, the
+/// drill-down and the stats line are the ones the row view already had; what it
+/// adds is the covers and the cell-sized steps.
+#[test]
+fn the_grid_browses_covers_and_moves_by_cell() {
+    let cover = include_str!("../src/app/cover.rs");
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let keys = include_str!("../src/app/keys.rs");
+    let state = include_str!("../src/app/state.rs");
+    let search = include_str!("../src/app/search.rs");
+    let keymap = include_str!("../src/keymap.rs");
+
+    // Three lists, one renderer, both views.
+    for cat in ["2", "3", "10"] {
+        assert!(
+            cover.contains(&format!("| {cat} =>")),
+            "the grid is not offered for category {cat}"
+        );
+    }
+    assert!(
+        chrome.contains("pub(crate) fn grid(f: &mut ratatui::Frame, area: Rect, app: &mut App)"),
+        "the grid has no renderer"
+    );
+    let at = chrome
+        .find("Render::grid(f, right_inner, app);")
+        .expect("the results pane never draws the grid");
+    assert!(
+        chrome[at.saturating_sub(120)..at].contains("if app.grid_active()"),
+        "the results pane draws the grid without asking whether the grid is on"
+    );
+    // Labels come from the same helpers the rows come from, so a cell cannot
+    // drift from its row.
+    for helper in [
+        "self.unique_albums()",
+        "self.unique_artists()",
+        "self.unique_genres()",
+    ] {
+        assert!(
+            cover.contains(helper),
+            "the grid's labels do not come from {helper}, so a cell and its row can disagree"
+        );
+    }
+    // A representative track behind every cell, so a cell has a cover to ask
+    // for. Genres had none and fell through to indexing the track list, which
+    // is how a genre cell showed an unrelated album's sleeve.
+    assert!(
+        search.contains("if self.library_category == 10 {")
+            && search.contains("self.unique_genres().get(pos)"),
+        "a genre cell still resolves no representative track"
+    );
+    // Steps: rows for j/k, cells for the arrows.
+    assert!(
+        keys.contains("let step = if self.grid_active() {"),
+        "j/k do not move by a row of cells in the grid"
+    );
+    assert!(
+        keys.contains("matches!(key.code, KeyCode::Left | KeyCode::Right)"),
+        "the arrows do not step sideways, so the grid is a list with pictures on it"
+    );
+    // The window, not the whole list: resolving a cell scans the library, and
+    // doing that per item per frame is a million comparisons a frame.
+    assert!(
+        state.contains("pub(crate) const GRID_CELL_W: u16 = 14;")
+            && state.contains("pub(crate) const GRID_CELL_H: u16 = 8;"),
+        "the cell geometry is no longer stated once"
+    );
+    assert!(
+        cover.contains("(plan.first..plan.first + plan.cols * plan.rows)"),
+        "the grid resolves a track for every item in the list rather than the ones on screen"
+    );
+    assert!(
+        cover.contains("GRID_FETCH_BATCH"),
+        "a first paint asks for every cell at once"
+    );
+    // And it is switchable.
+    assert!(
+        keymap.contains("KeyboardAction::ToggleGrid"),
+        "no key switches the list to a grid"
+    );
+    assert!(
+        !keys.contains("Char('V')"),
+        "the grid's key is taken, so there is no way to reach the grid"
+    );
+}
+
+/// The footer counts what the list above it holds.
+///
+/// Genres had no arm at all, so the stats line fell through to the track
+/// counting one and read "812 tracks | 3h 12m" under a list of forty genres.
+#[test]
+fn the_stats_line_counts_the_list_it_sits_under() {
+    let text = include_str!("../src/ui/text.rs");
+    let at = text
+        .find("pub(crate) fn library_stats_line")
+        .expect("library_stats_line is gone");
+    let block = &text[at..(at + 1600).min(text.len())];
+
+    for (cat, noun) in [("2", "album"), ("3", "artist"), ("10", "genre")] {
+        assert!(
+            block.contains(&format!("plural(n, \"{noun}\"")) || block.contains(&noun),
+            "category {cat} has no count of its own, so it falls through to the track one"
+        );
+    }
+    assert!(
+        block.contains("plural(n, \"genre\", \"genres\")"),
+        "the genre list still counts tracks"
+    );
+}
+
+/// The grid must refuse, out loud, where it cannot work.
+///
+/// Two refusals matter. It has no meaning on a list with nothing to show as a
+/// grid, and it has no *use* without an image protocol: forty identical
+/// placeholders in a row is strictly worse than the list it replaced.
+#[test]
+fn the_grid_refuses_where_it_cannot_work() {
+    let keys = include_str!("../src/app/keys.rs");
+    let cover = include_str!("../src/app/cover.rs");
+    let chrome = include_str!("../src/ui/chrome.rs");
+
+    let at = keys
+        .find("Some(KeyboardAction::ToggleGrid) =>")
+        .expect("the grid toggle moved");
+    let block = &keys[at..(at + 1800).min(keys.len())];
+    assert!(
+        block.contains("!matches!(self.library_category, 2 | 3 | 10)"),
+        "the grid is offered on a list with no covers to show"
+    );
+    assert!(
+        block.contains("The cover grid needs image rendering"),
+        "the grid is offered with images turned off"
+    );
+    assert!(
+        cover.contains("&& !no_image_protocol()"),
+        "the grid draws anyway without an image protocol: forty identical placeholders"
+    );
+    // And it does not fetch covers for a pane that cannot show a cell. On the
+    // narrow layout the results column is `Length(0)` whenever the left pane
+    // holds the cursor, so that is the common case, not a corner one.
+    let at = chrome
+        .find("pub(crate) fn grid(f: &mut ratatui::Frame, area: Rect, app: &mut App)")
+        .expect("the grid renderer is gone");
+    let block = &chrome[at..(at + 400).min(chrome.len())];
+    assert!(
+        block.contains("if area.width < GRID_CELL_W || area.height < GRID_CELL_H {"),
+        "the grid renders into a pane too small to hold a cell"
     );
 }

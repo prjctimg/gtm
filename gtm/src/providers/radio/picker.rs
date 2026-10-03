@@ -34,9 +34,14 @@ impl Pickers {
             ),
         };
         // The trailing Esc token is auto-lifted to the panel's top-right
-        // corner by picker_panel.
+        // corner by picker_panel. The rest has to fit the panel's inner width,
+        // which is 56 columns at the Spotify picker's size: the hint was written
+        // for a panel up to 100 wide, so it ran off the bottom edge of the one
+        // it is now given. All five keys still fit — the filter label and the
+        // separators were what pushed it over, so `Enter` is the enter glyph and
+        // the spacing is single.
         let hint = format!(
-            "Tab: filter {}   Enter: play   s: save   x: remove   r: refresh   Esc: close",
+            "Tab: {} \u{b7} \u{23ce} play \u{b7} s: save \u{b7} x: remove \u{b7} r: refresh",
             app.radio.filter.label()
         );
 
@@ -146,10 +151,24 @@ impl Pickers {
             } else {
                 "   "
             };
-            let row = if i == sel && !is_header {
-                format!("{prefix}{text}{}", " ".repeat(row_pad(&text, inner.width)))
-            } else {
+            let row = if is_header {
                 format!("{prefix}{text}")
+            } else {
+                // The panel is a fixed 60 columns now, so a long station name
+                // scrolls inside it instead of widening it. Only the
+                // highlighted row moves; the rest truncate with an ellipsis, so
+                // the list still reads as a column of names at rest.
+                let avail = inner.width.saturating_sub(prefix.len() as u16) as usize;
+                let body = scroll_text(&text, avail, app.footer_title_scroll, i == sel);
+                let row = format!("{prefix}{body}");
+                if i == sel {
+                    // `scroll_text` counts characters, and the row leads with
+                    // an emoji that occupies two cells, so the padded string
+                    // can still be a column short of the pane.
+                    format!("{row}{}", " ".repeat(row_pad(&row, inner.width)))
+                } else {
+                    row
+                }
             };
             lines.push(Line::from(Span::styled(row, style)));
             let row_rect = Rect {

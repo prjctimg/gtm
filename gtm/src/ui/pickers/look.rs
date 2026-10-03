@@ -21,8 +21,13 @@ impl Pickers {
     /// These were five overlays behind five keys, and each drew the same thing: a
     /// list, the current choice marked, and a preview of the value under the
     /// cursor. Only the list and the preview differed, so the difference is two
-    /// functions here rather than five renderers — and the category is a visible
-    /// row, so what `Tab` is about to switch to is on screen.
+    /// functions here rather than five renderers.
+    ///
+    /// They also had no category list of their own — each overlay opened on its
+    /// own values. Merging them added one, and it took a row of every picker's
+    /// height to do it: five rows to switch between five categories that `Tab`
+    /// already switches between. So it is gone again, and the current category
+    /// is the block title.
     ///
     /// `Left`/`Right` change the value as the cursor moves, so the preview shows
     /// the value about to be applied rather than one already applied.
@@ -34,19 +39,11 @@ impl Pickers {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        // Category strip, then values, then preview. Fixed heights, so the value
-        // list does not move as the preview grows.
-        let cat_h = Look::ALL.len() as u16;
-        let cat_area = Rect {
-            height: cat_h.min(inner.height),
-            ..inner
-        };
-        let rest = Rect {
-            y: inner.y + cat_h.min(inner.height),
-            height: inner.height.saturating_sub(cat_h),
-            ..inner
-        };
-
+        // Values, then preview. No category strip: the five presets this was
+        // merged from had none, and re-introducing one as a row of its own is
+        // what the merge was supposed to avoid. The category is the block title
+        // and `Tab`/`Shift-Tab` cycle it, so the picker is back to one list over
+        // one preview — the shape it had before it became one component.
         let items = Self::look_items(app, cat);
         let total = items.len();
         let sel = app
@@ -58,8 +55,8 @@ impl Pickers {
         // The search line only the one category that filters has, and it is part
         // of the list, so it takes its row out of the visible count.
         let header_h: u16 = if cat == Look::Theme { 1 } else { 0 };
-        let preview_h = 5u16.min(rest.height);
-        let list_h = rest.height.saturating_sub(preview_h);
+        let preview_h = 5u16.min(inner.height);
+        let list_h = inner.height.saturating_sub(preview_h);
         let visible = (list_h.saturating_sub(header_h) as usize).max(1);
         let (scroll_start, scroll_end) = if total == 0 {
             (0, 0)
@@ -71,32 +68,9 @@ impl Pickers {
             (0, total)
         };
 
-        for (i, look) in Look::ALL.iter().enumerate() {
-            let active = *look == cat;
-            let style = if active {
-                Style::default()
-                    .fg(app.theme.selection_fg_readable())
-                    .bg(app.theme.selection_bg)
-            } else {
-                Style::default().fg(app.theme.fg_dim)
-            };
-            let mark = if active { " \u{25b6} " } else { "   " };
-            f.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    format!("{mark}{} {}", look.icon(), look.label()),
-                    style,
-                ))),
-                Rect {
-                    y: cat_area.y + i as u16,
-                    height: 1,
-                    ..cat_area
-                },
-            );
-        }
-
         let list_area = Rect {
             height: list_h,
-            ..rest
+            ..inner
         };
         let mut row_y = list_area.y;
         if header_h > 0 {
@@ -141,17 +115,18 @@ impl Pickers {
             } else {
                 Style::default().fg(app.theme.fg)
             };
-            let mark = "   ";
+            // No leading gutter. It only existed to line the value labels up
+            // under the category strip's own marker column, and with the strip
+            // gone it is three columns of nothing in front of every name.
             let cur = if item.current && !selected {
                 "  \u{2713}"
             } else {
                 ""
             };
-            let mut spans = vec![Span::styled(format!("{mark}{}{cur}", item.label), style)];
+            let mut spans = vec![Span::styled(format!("{}{cur}", item.label), style)];
             // Themes are the one category whose values are not names, so they get
-            // the colours drawn beside the name: dropping these to make room for
-            // the categories would leave the only theme list in the app as the
-            // only one that cannot be chosen by looking at it.
+            // the colours drawn beside the name: it is the only way to pick one
+            // by looking at it.
             if cat == Look::Theme
                 && let Some(t) = app.themes.get(item.source)
             {
@@ -192,9 +167,9 @@ impl Pickers {
 
         if preview_h >= 3 {
             let preview = Rect {
-                y: rest.y + list_h,
+                y: inner.y + list_h,
                 height: preview_h,
-                ..rest
+                ..inner
             };
             f.render_widget(
                 Paragraph::new(Self::look_rule(app, cat, sel)),
@@ -225,7 +200,7 @@ impl Pickers {
     fn look_hint(cat: Look) -> &'static str {
         match cat {
             Look::Theme => "type to filter \u{b7} left/right pick \u{b7} tab category",
-            _ => "left/right pick \u{b7} enter apply \u{b7} tab category",
+            _ => "left/right pick \u{b7} enter apply \u{b7} tab/shift+tab category",
         }
     }
 

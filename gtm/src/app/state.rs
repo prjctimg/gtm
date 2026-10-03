@@ -1,4 +1,5 @@
 use crate::app::*;
+use crate::ui::StatefulProtocol;
 
 /// Kind of item the library track-info block is currently describing.  The
 /// widget is context aware of the active list type: tracks show
@@ -321,6 +322,118 @@ pub struct ChartsView {
     pub selected_chart: Option<usize>,
 }
 
+/// One decoded cover, kept beside its bytes.
+///
+/// `Render::cover` wants a protocol, not bytes, and the protocol is the
+/// expensive half: decoding an image on every frame is what makes a preview
+/// flicker rather than hold still, so a cell decodes once and keeps the result
+/// for as long as it is on screen.
+pub struct GridCell {
+    pub bytes: Vec<u8>,
+    pub proto: Option<StatefulProtocol>,
+}
+
+impl GridCell {
+    /// Decode the bytes once. Called on the reply, not on the draw.
+    ///
+    /// The picker is passed in rather than reached for because it lives on the
+    /// now-playing cover state, which the caller is already borrowing from: a
+    /// cell cannot ask for it without a second mutable borrow of the app.
+    pub fn new(bytes: Vec<u8>, picker: Option<&Picker>) -> Self {
+        let proto = picker.and_then(|p| {
+            image::load_from_memory(&bytes)
+                .ok()
+                .map(|img| p.new_resize_protocol(img))
+        });
+        Self { bytes, proto }
+    }
+}
+
+/// The cover-grid view of the album, artist and genre lists.
+///
+/// The lists themselves are text rows because a thousand albums are a thousand
+/// names; a grid is how you *browse* a shelf of covers, and there is no second
+/// screen to browse them on. So it is a mode of the same list, switched with a
+/// key, rather than a new view — the cursor, the selection, the drill-down and
+/// the stats line are the ones the row view already has.
+#[derive(Default)]
+pub struct GridView {
+    /// Whether the categories that have artwork draw a grid.
+    pub on: bool,
+    /// Cells across, and cells down, as of the last frame's pane. The cursor
+    /// moves by a row of cells rather than by one, so this has to be the
+    /// geometry the last paint used rather than one guessed at keypress time:
+    /// a terminal resized since the last keypress has a different answer.
+    pub cols: usize,
+    pub rows: usize,
+    /// Index of the item in the top-left cell.
+    pub first: usize,
+    /// Representative track behind each on-screen cell, in cell order. `None`
+    /// where the item has no track behind it; those cells draw a placeholder.
+    ///
+    /// Only the window, not the list: resolving an item's representative track
+    /// scans the library, so doing it for a thousand albums on every frame was
+    /// a million string comparisons a frame for cells nobody could see.
+    pub ids: Vec<Option<i64>>,
+    /// Decoded artwork, keyed by track id.
+    pub covers: std::collections::HashMap<i64, GridCell>,
+    /// Ids already asked for, so a cell is fetched once per session rather than
+    /// once per frame. A miss stays in here too: the daemon has no cover for
+    /// that track, and asking again every frame would be a request per frame.
+    pub asked: std::collections::HashSet<i64>,
+    /// Bumped when the window or the list changes, so a reply for a cell that
+    /// has scrolled away is dropped rather than painted under a different item.
+    pub round: u64,
+}
+
+/// Columns of artwork in one grid cell, and the rows it takes with its label.
+pub(crate) const GRID_CELL_W: u16 = 14;
+pub(crate) const GRID_CELL_H: u16 = 8;
+
+/// How the grid lays out in a given pane, and which items it shows.
+///
+/// Computed by the renderer and handed back to the rest of the app, because
+/// every other part of the grid — the cursor's row step, which cells to fetch —
+/// is a function of the pane's size and nothing else knows it.
+pub struct GridPlan {
+    pub first: usize,
+    pub cols: usize,
+    pub rows: usize,
+}
+
+impl GridView {
+    /// Enforce [`GRID_CACHE_MAX`] by dropping entries until the cache fits.
+    ///
+    /// `HashMap` has no order, so "oldest" is not available and the entries that
+    /// go are arbitrary. That is acceptable because a cover dropped while its
+    /// cell is on screen is re-requested through the normal path rather than
+    /// staying blank: `asked` is cleared alongside it.
+    pub fn prune_hard(&mut self) {
+        while self.covers.len() > GRID_CACHE_MAX {
+            let Some(victim) = self.covers.keys().next().copied() else {
+                break;
+            };
+            self.covers.remove(&victim);
+            self.asked.remove(&victim);
+        }
+    }
+}
+
+/// How many cells' covers may be requested per frame.
+///
+/// The daemon serves each from its disk cache, so this is not a rate limit but
+/// a bound on the work one frame can queue: a wide pane holds forty cells and
+/// asking for all of them at once put forty replies in flight behind the first
+/// redraw.
+pub(crate) const GRID_FETCH_BATCH: usize = 6;
+
+/// Cells retained at once.
+///
+/// A wide pane holds around forty, so this is roughly two screens: a scroll back
+/// over anything you just looked at is a cache hit, and a session that walks a
+/// thousand albums does not keep a thousand decoded images alive.
+pub(crate) const GRID_CACHE_MAX: usize = 96;
+
 /// State of the unified presentation picker.
 ///
 /// The row under the cursor stays on the picker itself rather than here, so
@@ -376,14 +489,6 @@ pub enum Look {
 }
 
 impl Look {
-    pub(crate) const ALL: [Look; 5] = [
-        Look::Layout,
-        Look::Theme,
-        Look::Visualizer,
-        Look::Progress,
-        Look::Footer,
-    ];
-
     pub(crate) fn label(self) -> &'static str {
         match self {
             Look::Layout => "Zen Layout",
@@ -391,17 +496,6 @@ impl Look {
             Look::Visualizer => "Visualizer",
             Look::Progress => "Progress Bar",
             Look::Footer => "Footer",
-        }
-    }
-
-    /// The icon shown on the category row, so the list is scannable.
-    pub(crate) fn icon(self) -> &'static str {
-        match self {
-            Look::Layout => "\u{f05a4}",
-            Look::Theme => "\u{f035a}",
-            Look::Visualizer => "\u{f0570}",
-            Look::Progress => "\u{f0493}",
-            Look::Footer => "\u{f0f0}",
         }
     }
 

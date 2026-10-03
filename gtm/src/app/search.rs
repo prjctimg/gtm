@@ -280,6 +280,14 @@ impl App {
         // the previous one's playlist art behind.
         self.clear_row_cover();
         self.clear_list_cover();
+        // The grid's window belongs to the list it was computed for: same
+        // scroll offset into albums is a different set of cells in artists, and
+        // a drill-down has no grid at all. The covers themselves are kept —
+        // they are per track, not per category, so an album visited once is not
+        // re-fetched the second time it is looked at.
+        self.grid.first = 0;
+        self.grid.ids.clear();
+        self.grid.round = self.grid.round.wrapping_add(1);
         // Entering the Podcasts category must land on the feed list, not on
         // whatever feed was drilled into last time — the episode list belongs
         // to the feed it was opened from, and re-entering the category is a
@@ -919,6 +927,27 @@ impl App {
                 return self.filtered_tracks().get(pos).map(|t| t.id);
             }
             return None;
+        }
+        // Genres: no track of their own, so the grid borrows one track from the
+        // genre. Its artwork is an album sleeve for something in the genre,
+        //        which is the only picture a genre has. Checked before the match rather
+        // than inside it, because that match is on the row's *kind* and a genre
+        //        row is an ordinary track row as far as the kind is concerned — which is
+        //        exactly why it resolved to whatever row sat at that index.
+        if self.library_category == 10 {
+            let name = self.unique_genres().get(pos)?.0.clone();
+            return self
+                .tracks_cache
+                .iter()
+                .find(|t| {
+                    let genre: &str = if t.genre.is_empty() {
+                        "Unknown Genre"
+                    } else {
+                        &t.genre
+                    };
+                    genre == name
+                })
+                .map(|t| t.id);
         }
         match self.track_info_kind() {
             TrackInfoKind::Track => self.filtered_tracks().get(pos).map(|t| t.id),

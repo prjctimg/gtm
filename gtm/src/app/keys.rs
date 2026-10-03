@@ -347,6 +347,30 @@ impl App {
                     );
                     return true;
                 }
+                // Arrow keys step sideways in the grid, and only there.
+                //
+                // Nothing else claims Left/Right in a list, and a grid where you
+                // cannot step sideways is a list with pictures on it. Handled
+                // before the dispatch so a user binding on the same key cannot
+                // take it: the grid's own navigation is not optional once the
+                // grid is up, and the alternative is a mode that silently stops
+                // responding to the arrows.
+                if self.grid_active()
+                    && !self.library_pane_focus
+                    && !self.lyrics.pane_focus
+                    && matches!(key.code, KeyCode::Left | KeyCode::Right)
+                {
+                    let max_list = self.library_list_len().saturating_sub(1);
+                    let step = if key.code == KeyCode::Left {
+                        -1isize
+                    } else {
+                        1isize
+                    };
+                    let next = (self.list_pos() as isize + step).clamp(0, max_list as isize);
+                    self.set_list_pos(next as usize);
+                    self.update_track_popup();
+                    return true;
+                }
                 match self.keybindings.dispatch(key, KeyContext::Normal) {
                     Some(KeyboardAction::Quit) => {
                         if self.browse_detail.is_some() {
@@ -907,7 +931,16 @@ impl App {
                                 self.reset_library_view(new_cat, None);
                             }
                         } else {
-                            self.set_list_pos(self.list_pos().saturating_sub(1));
+                            // A grid moves by a row of cells, not by one. The
+                            // step is the column count from the last paint,
+                            // because the pane's width is the only thing that
+                            // decides how many cells fit in it.
+                            let step = if self.grid_active() {
+                                self.grid.cols.max(1)
+                            } else {
+                                1
+                            };
+                            self.set_list_pos(self.list_pos().saturating_sub(step));
                             self.update_track_popup();
                             self.prefetch_playlist_lyrics();
                             self.fetch_row_cover();
@@ -941,7 +974,12 @@ impl App {
                             }
                         } else {
                             let max_list = self.library_list_len().saturating_sub(1);
-                            self.set_list_pos((self.list_pos() + 1).min(max_list));
+                            let step = if self.grid_active() {
+                                self.grid.cols.max(1)
+                            } else {
+                                1
+                            };
+                            self.set_list_pos((self.list_pos() + step).min(max_list));
                             self.update_track_popup();
                             self.preload_row_covers();
                             self.prefetch_playlist_lyrics();
@@ -1432,6 +1470,57 @@ impl App {
                                 }
                             }
                         }
+                    }
+                    Some(KeyboardAction::ToggleGrid) => {
+                        // Refuses, out loud, on a list with nothing to show as
+                        // a grid — pressing a key that does nothing is worse
+                        // than one that says why.
+                        if !matches!(self.library_category, 2 | 3 | 10) {
+                            self.notify_typed(
+                                "System",
+                                "The grid is for albums, artists and genres",
+                                NotificationKind::Info,
+                                false,
+                                NotifType::Library,
+                            );
+                            return true;
+                        }
+                        if self.browse_detail.is_some() {
+                            self.notify_typed(
+                                "System",
+                                "Backspace out of this list to use the grid",
+                                NotificationKind::Info,
+                                false,
+                                NotifType::Library,
+                            );
+                            return true;
+                        }
+                        if no_image_protocol() {
+                            self.notify_typed(
+                                "System",
+                                "The cover grid needs image rendering",
+                                NotificationKind::Info,
+                                false,
+                                NotifType::Library,
+                            );
+                            return true;
+                        }
+                        let on = self.toggle_grid();
+                        // The window is a function of the pane, and the pane has
+                        // not changed — but the *cells* have, so the list is
+                        // re-scanned and the covers re-fetched from the new
+                        // first cell.
+                        self.grid.first = 0;
+                        self.grid.ids.clear();
+                        self.grid.round = self.grid.round.wrapping_add(1);
+                        self.set_last_action(
+                            if on {
+                                "Cover grid: on"
+                            } else {
+                                "Cover grid: off"
+                            },
+                            &key,
+                        );
                     }
                     Some(KeyboardAction::ToggleMultiselect) => {
                         if !self.library_pane_focus {
