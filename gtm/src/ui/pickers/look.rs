@@ -141,7 +141,7 @@ impl Pickers {
             } else {
                 Style::default().fg(app.theme.fg)
             };
-            let mark = if selected { " > " } else { "   " };
+            let mark = "   ";
             let cur = if item.current && !selected {
                 "  \u{2713}"
             } else {

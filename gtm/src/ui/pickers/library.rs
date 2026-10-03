@@ -189,7 +189,7 @@ impl Pickers {
                 match app.playlist_cache.get(i - 1) {
                     Some(pl) => format!(
                         "{}{} ({} {})",
-                        if is_sel { " > " } else { "   " },
+                        "   ",
                         pl.name,
                         pl.track_count,
                         plural(pl.track_count as usize, "track", "tracks")
@@ -332,7 +332,7 @@ impl Pickers {
         for (i, name) in field_names.iter().enumerate() {
             let value = app.metadata.fields.get(i).map(|s| s.as_str()).unwrap_or("");
             let is_active = i == app.metadata.field_idx;
-            let prefix = if is_active { " > " } else { "   " };
+            let prefix = "   ";
             let style = if is_active {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())

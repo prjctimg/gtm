@@ -71,7 +71,7 @@ impl Pickers {
             let track = &app.queue.cache[i];
             let is_current = i == app.queue.cursor;
             let is_sel = i == sel;
-            let prefix = if is_sel { " > " } else { "   " };
+            let prefix = "   ";
             // A live stream has no end and no length, so it must not wear the
             // same music note and a `[00:00]` as a local file whose length is
             // merely unknown — those are different things, and the queue is
@@ -206,7 +206,7 @@ impl Pickers {
                 } else {
                     format!(" [{age}]")
                 };
-                let prefix = if i == sel { " > " } else { "   " };
+                let prefix = "   ";
                 let icon = if i == on_air { "\u{25b6} " } else { "   " };
                 (
                     format!("{prefix}{icon}{}{age}", track.query()),
@@ -397,7 +397,7 @@ impl Pickers {
         }
         for (k, text) in rows[s..e].iter().enumerate() {
             let i = s + k;
-            let prefix = if i == sel { " > " } else { "   " };
+            let prefix = "   ";
             let style = if i == sel {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())

@@ -3231,9 +3231,11 @@ fn now_playing_starts_at_the_results_column() {
     }
 
     // The band is narrower than it was, so the cover has to give up the columns
-    // the title, artist, album and progress need.
+    // the title, artist, album and progress need. The reserve is 16 rather than
+    // 20: 20 sent two thirds of a narrow band's height to the title block, and
+    // at a 1:2 aspect those two columns are a whole extra row of artwork.
     assert!(
-        chrome.contains("let cover_h = cover_h.min(inner.width.saturating_sub(20) / 2).max(3);"),
+        chrome.contains("let cover_h = cover_h.min(inner.width.saturating_sub(16) / 2).max(3);"),
         "the now-playing cover is not capped by the width left for the details"
     );
 }

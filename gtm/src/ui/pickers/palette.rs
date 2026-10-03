@@ -101,10 +101,7 @@ impl Pickers {
             let ci = cmd.unwrap_or(0);
             let (name, key) = (&commands[ci].icon, commands[ci].keys);
             let is_sel = Some(i) == sel_display;
-            let full = format!(
-                " {prefix}{name}  [{key}]",
-                prefix = if is_sel { " > " } else { "   " }
-            );
+            let full = format!(" {prefix}{name}  [{key}]", prefix = "   ");
             let pad = row_pad(&full, row_w);
             let style = if is_sel {
                 Style::default()

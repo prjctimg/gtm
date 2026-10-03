@@ -81,7 +81,7 @@ impl Pickers {
             .take(scroll_end - scroll_start)
         {
             let is_sel = i == sel;
-            let prefix = if is_sel { " > " } else { "   " };
+            let prefix = "   ";
             let style = if is_sel {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())
@@ -506,7 +506,7 @@ impl Pickers {
                         .add_modifier(Modifier::BOLD),
                 ))
             } else {
-                let prefix = if is_sel { " > " } else { "   " };
+                let prefix = "   ";
                 let style = if is_sel {
                     Style::default()
                         .fg(app.theme.selection_fg_readable())
@@ -589,7 +589,7 @@ impl Pickers {
                 None => i == 0,
                 Some(cur) => rows.get(i) == Some(cur),
             };
-            let prefix = if is_sel { " > " } else { "   " };
+            let prefix = "   ";
             let marker = if is_cur { "  (current)" } else { "" };
             let style = if is_sel {
                 Style::default()

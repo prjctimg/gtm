@@ -90,7 +90,7 @@ impl Pickers {
             } else {
                 "\u{f008} "
             };
-            let prefix = if i == sel { " > " } else { "   " };
+            let prefix = "   ";
             let display = match r.artist.as_deref() {
                 Some(a) => format!("{a} - {}", r.title),
                 None => r.title.clone(),
@@ -191,7 +191,7 @@ impl Pickers {
 
         let mut lines: Vec<Line> = vec![search_line];
         for (i, pick) in picks.iter().enumerate().take(scroll_end).skip(scroll_start) {
-            let prefix = if i == sel { " > " } else { "   " };
+            let prefix = "   ";
             let style = if i == sel {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())

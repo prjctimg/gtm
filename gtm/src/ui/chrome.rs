@@ -820,7 +820,7 @@ impl Render {
         // category list aligns to, so the two blocks read as one unit: the
         // cover is what the list is browsing.
         let cover_band: u16 = if is_small_height {
-            (np_height.saturating_sub(3)).clamp(2, 5)
+            (np_height.saturating_sub(3)).clamp(2, 7)
         } else {
             np_height.saturating_sub(3).min(12)
         };
@@ -904,7 +904,7 @@ impl Render {
                 // list can align to it; here it is only bounded by what the
                 // band actually has room for.
                 let cover_h = if is_small_height {
-                    avail_h.clamp(2, 5)
+                    avail_h.clamp(2, 7)
                 } else {
                     avail_h.min(cover_band)
                 };
@@ -915,7 +915,13 @@ impl Render {
                 // artist, album and progress eight columns between them — so it
                 // gives up the columns the text needs first, down to a 3-row
                 // thumbnail.
-                let cover_h = cover_h.min(inner.width.saturating_sub(20) / 2).max(3);
+                //
+                // The reserve is 16 columns, not 20. Two thirds of the band's
+                // height on a narrow terminal was going to the title block rather
+                // than the artwork: 20 columns is enough for the longest detail
+                // line at the sizes this renders, and the two columns it gave
+                // back are a whole extra row of art at a 1:2 aspect.
+                let cover_h = cover_h.min(inner.width.saturating_sub(16) / 2).max(3);
                 let cover_w = cover_h * 2;
 
                 // A live stream reports the track on air over ICY (or through
@@ -1069,7 +1075,7 @@ impl Render {
                     // Compact layout still keeps the cover left with the
                     // details to its right (scaled to a slim column) whenever
                     // there is any horizontal room at all.
-                    let slim_cover_h = inner.height.saturating_sub(2).clamp(2, 4);
+                    let slim_cover_h = inner.height.saturating_sub(2).clamp(2, 6);
                     let slim_cover_w = slim_cover_h * 2;
                     let hchunks = Layout::default()
                         .direction(Direction::Horizontal)
@@ -1409,14 +1415,20 @@ impl Render {
             for (ai, (action, key_hint)) in action_help.iter().enumerate() {
                 let real_i = ai;
                 let is_sel = real_i == sel && !left_focus;
+                // `fg`, not `fg_bright`: this is the only list in the pane whose
+                // unselected rows used the brighter accent, so All Tracks read as
+                // a different kind of row from every category beside it. The
+                // Spotify list sets no colour at all on an unselected row and
+                // lets the pane's own foreground through, which is the same
+                // value `fg` names.
                 let style = if is_sel {
                     Style::default()
                         .fg(app.theme.selection_fg_readable())
                         .bg(app.theme.selection_bg)
                 } else {
-                    Style::default().fg(app.theme.fg_bright)
+                    Style::default().fg(app.theme.fg)
                 };
-                let prefix = if is_sel { " > " } else { "   " };
+                let prefix = "   ";
                 let content = format!("{prefix}{action}");
                 let pad = row_pad(&content, results_area.width);
                 let hint_style = if is_sel {
@@ -1455,7 +1467,7 @@ impl Render {
                         .duration_ms
                         .map(|d| format_duration_short(d / 1000))
                         .unwrap_or_default();
-                    let prefix = if is_sel { " > " } else { "   " };
+                    let prefix = "   ";
                     let name_pad = avail.saturating_sub(10);
                     let style = if is_sel {
                         Style::default()
@@ -1569,7 +1581,7 @@ impl Render {
             for (i, (name, _count)) in albums[app.list_scroll..end].iter().enumerate() {
                 let real_i = app.list_scroll + i;
                 let is_sel = real_i == sel && !left_focus;
-                let prefix = if is_sel { " > " } else { "   " };
+                let prefix = "   ";
                 let style = if is_sel {
                     Style::default()
                         .fg(app.theme.selection_fg_readable())
@@ -1603,7 +1615,7 @@ impl Render {
             for (i, (name, _count)) in artists[app.list_scroll..end].iter().enumerate() {
                 let real_i = app.list_scroll + i;
                 let is_sel = real_i == sel && !left_focus;
-                let prefix = if is_sel { " > " } else { "   " };
+                let prefix = "   ";
                 let style = if is_sel {
                     Style::default()
                         .fg(app.theme.selection_fg_readable())
@@ -1641,7 +1653,7 @@ impl Render {
             for (i, pl) in playlists[app.list_scroll..end].iter().enumerate() {
                 let real_i = app.list_scroll + i;
                 let is_sel = real_i == sel && !left_focus;
-                let prefix = if is_sel { " > " } else { "   " };
+                let prefix = "   ";
                 let style = if is_sel {
                     Style::default()
                         .fg(app.theme.selection_fg_readable())
@@ -1685,7 +1697,7 @@ impl Render {
                 for (i, pl) in playlists[app.list_scroll..end].iter().enumerate() {
                     let real_i = app.list_scroll + i;
                     let is_sel = real_i == sel && !left_focus;
-                    let prefix = if is_sel { " > " } else { "   " };
+                    let prefix = "   ";
                     let style = if is_sel {
                         Style::default()
                             .fg(app.theme.selection_fg_readable())
@@ -1731,7 +1743,7 @@ impl Render {
                 for (i, s) in stations[app.list_scroll..end].iter().enumerate() {
                     let real_i = app.list_scroll + i;
                     let is_sel = real_i == sel && !left_focus;
-                    let prefix = if is_sel { " > " } else { "   " };
+                    let prefix = "   ";
                     let style = if is_sel {
                         Style::default()
                             .fg(app.theme.selection_fg_readable())
@@ -1773,7 +1785,7 @@ impl Render {
                 for (i, (name, _count)) in genres[app.list_scroll..end].iter().enumerate() {
                     let real_i = app.list_scroll + i;
                     let is_sel = real_i == sel && !left_focus;
-                    let prefix = if is_sel { " > " } else { "   " };
+                    let prefix = "   ";
                     let style = if is_sel {
                         Style::default()
                             .fg(app.theme.selection_fg_readable())
@@ -1808,7 +1820,7 @@ impl Render {
             for (i, (dir, _count)) in folders[app.list_scroll..end].iter().enumerate() {
                 let real_i = app.list_scroll + i;
                 let is_sel = real_i == sel && !left_focus;
-                let prefix = if is_sel { " > " } else { "   " };
+                let prefix = "   ";
                 let style = if is_sel {
                     Style::default()
                         .fg(app.theme.selection_fg_readable())
@@ -1859,7 +1871,7 @@ impl Render {
                     for (i, src) in sources[app.list_scroll..end].iter().enumerate() {
                         let real_i = app.list_scroll + i;
                         let is_sel = real_i == sel && !left_focus;
-                        let prefix = if is_sel { " > " } else { "   " };
+                        let prefix = "   ";
                         let style = if is_sel {
                             Style::default()
                                 .fg(app.theme.selection_fg_readable())
@@ -1906,7 +1918,7 @@ impl Render {
                     for (i, ch) in charts[app.list_scroll..end].iter().enumerate() {
                         let real_i = app.list_scroll + i;
                         let is_sel = real_i == sel && !left_focus;
-                        let prefix = if is_sel { " > " } else { "   " };
+                        let prefix = "   ";
                         let style = if is_sel {
                             Style::default()
                                 .fg(app.theme.selection_fg_readable())
@@ -1960,7 +1972,7 @@ impl Render {
                         let display_label =
                             scroll_text(&label, avail, app.footer_title_scroll, is_sel);
                         let artists = &track.artists;
-                        let prefix = if is_sel { " > " } else { "   " };
+                        let prefix = "   ";
                         let checkbox = if is_multiselected { "☑ " } else { "" };
                         let style = if is_sel {
                             Style::default()
@@ -2024,7 +2036,7 @@ impl Render {
                         } else {
                             Style::default().fg(app.theme.fg)
                         };
-                        let prefix = if is_sel { " > " } else { "   " };
+                        let prefix = "   ";
                         let dur = ep
                             .duration_secs
                             .map(|s| format!("  [{}:{:02}]", s / 60, s % 60))
@@ -2068,7 +2080,7 @@ impl Render {
                         } else {
                             Style::default().fg(app.theme.fg)
                         };
-                        let prefix = if is_sel { " > " } else { "   " };
+                        let prefix = "   ";
                         let count = if feed.episodes > 0 {
                             format!("  [{}]", feed.episodes)
                         } else {
@@ -2634,7 +2646,7 @@ impl Render {
                 let real_i = win_start + real_i;
                 let is_sel = real_i == sel;
                 let is_multiselected = app.multiselect_mode && app.row_is_selected(&track.path);
-                let prefix = if is_sel { " > " } else { "   " };
+                let prefix = "   ";
                 let label = track.display_title();
                 let display = scroll_text(&label, avail_disp, app.footer_title_scroll, is_sel);
                 let checkbox = if is_multiselected { "☑ " } else { "" };
