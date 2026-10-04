@@ -1542,28 +1542,21 @@ impl Render {
             } else {
                 for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
                     let real_i = app.list_scroll + i;
-                    let is_current =
-                        app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
                     let is_sel = real_i == sel && !left_focus;
                     let is_multiselected = app.multiselect_mode && app.row_is_selected(&track.path);
                     let label = track.title.clone();
                     let avail = pane_w.saturating_sub(2);
                     let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
-                    let prefix = if is_current { "\u{25b6} " } else { "  " };
                     let checkbox = if is_multiselected { "☑ " } else { "" };
-                    let row = format!("{}{}{}", prefix, checkbox, display_label);
+                    let row = format!("{}{}{}", "   ", checkbox, display_label);
                     let style = if is_sel {
                         Style::default()
                             .fg(app.theme.selection_fg_readable())
                             .bg(app.theme.selection_bg)
-                    } else if is_current {
-                        Style::default()
-                            .fg(app.theme.accent)
-                            .add_modifier(Modifier::BOLD)
                     } else if is_multiselected {
                         Style::default().bg(app.theme.warning).fg(app.theme.bg)
                     } else {
-                        Style::default()
+                        Style::default().fg(app.theme.fg)
                     };
                     let row = if is_sel {
                         let pad = row_pad(&row, results_area.width);
@@ -2156,28 +2149,21 @@ impl Render {
             } else {
                 for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
                     let real_i = app.list_scroll + i;
-                    let is_current =
-                        app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
                     let is_sel = real_i == sel && !left_focus;
                     let is_multiselected = app.multiselect_mode && app.row_is_selected(&track.path);
                     let label = track.title.clone();
                     let avail = pane_w.saturating_sub(2);
                     let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
-                    let prefix = if is_current { "\u{25b6} " } else { "  " };
                     let checkbox = if is_multiselected { "☑ " } else { "" };
-                    let row = format!("{}{}{}", prefix, checkbox, display_label);
+                    let row = format!("{}{}{}", "   ", checkbox, display_label);
                     let style = if is_sel {
                         Style::default()
                             .fg(app.theme.selection_fg_readable())
                             .bg(app.theme.selection_bg)
-                    } else if is_current {
-                        Style::default()
-                            .fg(app.theme.accent)
-                            .add_modifier(Modifier::BOLD)
                     } else if is_multiselected {
                         Style::default().bg(app.theme.warning).fg(app.theme.bg)
                     } else {
-                        Style::default()
+                        Style::default().fg(app.theme.fg)
                     };
                     let row = if is_sel {
                         let pad = row_pad(&row, results_area.width);
