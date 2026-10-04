@@ -2483,7 +2483,14 @@ impl Daemon {
             }
         });
 
-        let mut poll_interval = tokio::time::interval(Duration::from_millis(16));
+        // The audio callback is polled at a rate that can see the end of a
+        // track. When nothing is playing there is no callback to miss — the
+        // deferred mixer has no device open at all — so the loop backs off to
+        // a quarter second and the idle daemon stops waking 62 times a second
+        // to discover it is still idle.
+        const POLL_PLAYING: Duration = Duration::from_millis(16);
+        const POLL_IDLE: Duration = Duration::from_millis(250);
+        let mut poll_interval = tokio::time::interval(POLL_PLAYING);
         let mut save_interval = tokio::time::interval(Duration::from_secs(60));
         let mut last_spectrum_tx = tokio::time::Instant::now();
         let mut last_wave_tx = tokio::time::Instant::now();
@@ -2491,6 +2498,11 @@ impl Daemon {
         loop {
             tokio::select! {
                 _ = poll_interval.tick() => {
+                    let playing = {
+                        let state = self.inner.state.read().await;
+                        state.status == PlaybackStatus::Playing
+                    };
+                    poll_interval = tokio::time::interval(if playing { POLL_PLAYING } else { POLL_IDLE });
                     let result = { self.inner.mixer.lock().await.poll() };
                     Self::handle_audio_event(&self.inner, result).await;
                     // Record a listen the first poll tick that observes a
