@@ -106,7 +106,7 @@ To turn it off, empty the `Alt+X` field and press Enter, or remove
 | `Alt+S` | Cycle library sort order |
 | `Alt+O` | Play an HTTP(S) stream URL |
 | `Alt+p` | Podcast feeds |
-| `Alt+b` | Progress bar style |
+| `Alt+P` | Progress bar style |
 | `Alt+1` | Toggle mono |
 | `Alt+/` | Search the library |
 | `Alt+l` | Add the current track to a Spotify playlist |
