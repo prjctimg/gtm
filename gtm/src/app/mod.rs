@@ -209,9 +209,6 @@ pub struct App {
     pub playlist_tracks: Vec<TrackInfo>,
     pub spotify: SpotifyView,
     pub charts: ChartsView,
-    /// Which presentation setting the unified Look picker is showing, and the
-    /// filter on the one category that has one.
-    pub look: LookView,
     /// The cover-grid mode of the album, artist and genre lists.
     pub grid: GridView,
     pub setup: SetupView,
@@ -1045,7 +1042,6 @@ impl App {
                 list_shown: None,
             },
             charts: ChartsView::default(),
-            look: LookView::default(),
             grid: GridView::default(),
             podcast: PodcastView::default(),
             radio: RadioView::default(),
@@ -1336,11 +1332,19 @@ impl App {
             PickerId::Crossfade => 5,
             // Read-only: nothing to select, so no cursor to move.
             PickerId::TrackInfo => 0,
+            PickerId::VisualizerPreset => VisualizerPreset::all().len().saturating_sub(1),
+            PickerId::FooterPreset => self.footer_presets.len().saturating_sub(1),
+            PickerId::ProgressStyle => ProgressStyle::all().len().saturating_sub(1),
             PickerId::Notifications => self.notification_history.len().saturating_sub(1),
             PickerId::NotificationSettings => NotifType::ALL.len().saturating_sub(1),
             PickerId::PlaylistSelect => self.playlist_cache.len(),
             PickerId::PlaylistTrackSelect => self.tracks_cache.len().saturating_sub(1),
-            PickerId::Look => self.look_count().saturating_sub(1),
+            PickerId::ThemePicker => self
+                .themes
+                .iter()
+                .filter(|entry| fuzzy_match(&query, &entry.name))
+                .count()
+                .saturating_sub(1),
             PickerId::CommandPalette => CommandPalette::commands(&self.icon_style)
                 .iter()
                 .filter(|c| fuzzy_match(&query, c.icon))
@@ -1377,11 +1381,18 @@ impl App {
             PickerId::SleepTimer => 9,
             PickerId::Crossfade => 6,
             PickerId::TrackInfo => 0,
+            PickerId::VisualizerPreset => VisualizerPreset::all().len(),
+            PickerId::FooterPreset => self.footer_presets.len(),
+            PickerId::ProgressStyle => ProgressStyle::all().len(),
             PickerId::Notifications => self.notification_history.len(),
             PickerId::NotificationSettings => NotifType::ALL.len(),
             PickerId::PlaylistSelect => self.playlist_cache.len() + 1,
             PickerId::PlaylistTrackSelect => self.tracks_cache.len(),
-            PickerId::Look => self.look_count(),
+            PickerId::ThemePicker => self
+                .themes
+                .iter()
+                .filter(|entry| fuzzy_match(&query, &entry.name))
+                .count(),
             PickerId::CommandPalette => CommandPalette::commands(&self.icon_style)
                 .iter()
                 .filter(|c| fuzzy_match(&query, c.icon))
@@ -1714,7 +1725,10 @@ impl App {
                         top.query.push_str(text.trim());
                     }
                 }
-                PickerId::YTSearch | PickerId::SearchLibrary | PickerId::CommandPalette => {
+                PickerId::YTSearch
+                | PickerId::SearchLibrary
+                | PickerId::CommandPalette
+                | PickerId::ThemePicker => {
                     top.query.push_str(text);
                     if top.id == PickerId::YTSearch {
                         self.yt_results_cache.clear();
@@ -1722,12 +1736,6 @@ impl App {
                         self.yt_search_debounce =
                             Some(std::time::Instant::now() + Duration::from_millis(500));
                     }
-                }
-                // Only the theme category filters, and it keeps its own query so
-                // switching categories does not inherit another's text.
-                PickerId::Look if self.look.cat() == Look::Theme => {
-                    self.look.query.push_str(text);
-                    self.look_row_reset();
                 }
                 _ => {}
             }
@@ -1738,7 +1746,6 @@ impl App {
 pub mod cmd;
 pub mod cover;
 pub mod keys;
-pub mod look;
 pub mod lyrics;
 pub mod notify;
 pub mod prefs;
@@ -1765,7 +1772,6 @@ pub(crate) use charts::*;
 pub(crate) use cover::*;
 pub(crate) use keys::*;
 pub(crate) use lastfm::*;
-pub(crate) use look::*;
 pub(crate) use lyrics::*;
 pub(crate) use notify::*;
 pub(crate) use podcast::*;

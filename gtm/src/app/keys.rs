@@ -3,11 +3,8 @@ use crate::app::*;
 /// Map a picker overlay to the extension that owns it, if any. Used to gate
 /// keybindings/palette entries whose surface was moved out of core.
 pub(crate) fn overlay_extension(id: PickerId) -> Option<ExtensionId> {
-    // `PickerId::Look` is deliberately absent. It is the only picker that spans
-    // an optional extension *and* four settings that do not need it, so gating it
-    // on the visualizer would take the theme list, the progress bar and the
-    // footer away from anyone who turned the visualizer off.
     Some(match id {
+        PickerId::VisualizerPreset => ExtensionId::Visualizer,
         PickerId::Notifications => ExtensionId::FloatingNotifications,
         PickerId::NotificationSettings => ExtensionId::NotificationOverlay,
         _ => return None,
@@ -398,17 +395,6 @@ impl App {
                     }
                     Some(KeyboardAction::PrevPane) => {
                         self.cycle_pane_focus(false);
-                        self.dismiss_track_popup();
-                    }
-                    Some(KeyboardAction::OpenLook(cat)) => {
-                        self.open_look_on(cat);
-                        self.dismiss_track_popup();
-                    }
-                    // Resolved to a category here: `OpenOverlay` has nowhere to
-                    // put one, and landing on whichever category happened to be
-                    // open last would make the key non-deterministic.
-                    Some(KeyboardAction::OpenOverlay(PickerId::Look)) => {
-                        self.open_look_on(Look::Layout);
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::OpenOverlay(id)) => {
@@ -2027,29 +2013,6 @@ impl App {
 
         let tx = self.cmd_tx();
 
-        // The Look picker carries the category on Tab and the value on the
-        // arrows, so it takes both before anything else claims them. Handled
-        // first because the generic Up/Down arms below would otherwise move the
-        // value while Tab silently did nothing.
-        if self.pickers.top().is_some_and(|o| o.id == PickerId::Look) {
-            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-            match key.code {
-                KeyCode::Tab | KeyCode::BackTab => {
-                    self.look_switch(!shift);
-                    return;
-                }
-                KeyCode::Left => {
-                    self.look_move(-1);
-                    return;
-                }
-                KeyCode::Right => {
-                    self.look_move(1);
-                    return;
-                }
-                _ => {}
-            }
-        }
-
         // The library picker (Alt+.) is a list with a search box over the
         // user's configured lists. Typing therefore has to reach the query,
         // which rules out the `j`/`k` vim bindings the other list pickers use
@@ -3138,7 +3101,9 @@ impl App {
                     self.cycle_notification_mode(if key.code == KeyCode::Right { 1 } else { -1 });
                 } else if matches!(
                     top_id,
-                    Some(PickerId::Equalizer) | Some(PickerId::PlaylistSelect)
+                    Some(PickerId::Equalizer)
+                        | Some(PickerId::ThemePicker)
+                        | Some(PickerId::PlaylistSelect)
                 ) {
                     self.close_picker();
                 }
@@ -3214,7 +3179,16 @@ impl App {
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                let has_input = self.picker_takes_text();
+                let has_input = matches!(
+                    self.pickers.top().map(|o| o.id),
+                    Some(PickerId::YTSearch)
+                        | Some(PickerId::SearchLibrary)
+                        | Some(PickerId::CommandPalette)
+                        | Some(PickerId::ThemePicker)
+                        | Some(PickerId::SpotifySearch)
+                        | Some(PickerId::SpotifyLink)
+                        | Some(PickerId::SpotifyDest)
+                );
                 let is_metadata = matches!(
                     self.pickers.top().map(|o| o.id),
                     Some(PickerId::EditMetadata)
@@ -3239,10 +3213,15 @@ impl App {
                     } else {
                         top.selected = top.selected.saturating_sub(1);
                     }
+                    let is_theme = top.id == PickerId::ThemePicker;
+                    let selected = top.selected;
+                    if is_theme {
+                        self.apply_theme_index(selected);
+                    }
                 }
                 self.clamp_picker_selection();
                 self.apply_eq_nav().await;
-                self.picker_nav_preview();
+                self.apply_preset_preview();
                 // Refresh picker preview cover for SearchLibrary when selection changes
                 if self
                     .pickers
@@ -3262,7 +3241,16 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let has_input = self.picker_takes_text();
+                let has_input = matches!(
+                    self.pickers.top().map(|o| o.id),
+                    Some(PickerId::YTSearch)
+                        | Some(PickerId::SearchLibrary)
+                        | Some(PickerId::CommandPalette)
+                        | Some(PickerId::ThemePicker)
+                        | Some(PickerId::SpotifySearch)
+                        | Some(PickerId::SpotifyLink)
+                        | Some(PickerId::SpotifyDest)
+                );
                 let is_metadata = matches!(
                     self.pickers.top().map(|o| o.id),
                     Some(PickerId::EditMetadata)
@@ -3288,10 +3276,15 @@ impl App {
                     } else {
                         top.selected += 1;
                     }
+                    let is_theme = top.id == PickerId::ThemePicker;
+                    let selected = top.selected;
+                    if is_theme {
+                        self.apply_theme_index(selected);
+                    }
                 }
                 self.clamp_picker_selection();
                 self.apply_eq_nav().await;
-                self.picker_nav_preview();
+                self.apply_preset_preview();
                 // Refresh picker preview cover for SearchLibrary when selection changes
                 if self
                     .pickers
@@ -3552,19 +3545,58 @@ impl App {
                             }
                             self.pickers.close_top();
                         }
+                        PickerId::VisualizerPreset => {
+                            let presets = VisualizerPreset::all();
+                            if let Some(top) = self.pickers.top() {
+                                let idx = top.selected.min(presets.len() - 1);
+                                self.visualizer.preset = presets[idx];
+                                save_prefs(&self.current_prefs());
+                                self.footer_notification = Some((
+                                    format!("Visualizer: {}", self.visualizer.preset.name()),
+                                    std::time::Instant::now() + std::time::Duration::from_secs(2),
+                                ));
+                            }
+                            self.pickers.close_top();
+                        }
                         PickerId::AudioDevice => {
                             let index = self.pickers.top().map_or(0, |t| t.selected);
                             self.apply_audio_device(index);
                         }
-                        PickerId::Look => {
-                            // Every value was applied as the cursor moved, so
-                            // Enter only has to say what was set and close.
-                            // `look_apply` is what persists it.
-                            let msg = self.look_apply();
-                            self.footer_notification = Some((
-                                msg,
-                                std::time::Instant::now() + std::time::Duration::from_secs(2),
-                            ));
+                        PickerId::ProgressStyle => {
+                            let styles = ProgressStyle::all();
+                            if let Some(top) = self.pickers.top() {
+                                let idx = top.selected.min(styles.len() - 1);
+                                self.progress_style = styles[idx];
+                                save_prefs(&self.current_prefs());
+                                self.notify_typed(
+                                    "System",
+                                    format!("Progress: {}", self.progress_style.name()),
+                                    NotificationKind::Info,
+                                    true,
+                                    NotifType::Playback,
+                                );
+                            }
+                            self.pickers.close_top();
+                        }
+                        PickerId::FooterPreset => {
+                            if let Some(top) = self.pickers.top() {
+                                let idx = top
+                                    .selected
+                                    .min(self.footer_presets.len().saturating_sub(1));
+                                self.apply_preset_index(idx);
+                                let name = self
+                                    .footer_presets
+                                    .get(self.footer_preset)
+                                    .map(|p| p.name.to_string())
+                                    .unwrap_or_else(|| "Default".into());
+                                self.notify_typed(
+                                    "System",
+                                    format!("Footer preset: {name}"),
+                                    NotificationKind::Info,
+                                    true,
+                                    NotifType::Playback,
+                                );
+                            }
                             self.pickers.close_top();
                         }
                         PickerId::NotificationSettings => {
@@ -3681,8 +3713,11 @@ impl App {
                                 } else if action == "sleeptimer" {
                                     self.sleep_timer.focus = 0;
                                     self.pickers.open(PickerId::SleepTimer);
-                                } else if action == "look" {
-                                    self.open_look_on(Look::Layout);
+                                } else if action == "themepicker" {
+                                    self.pickers.open_with_selection(
+                                        PickerId::ThemePicker,
+                                        self.theme_index,
+                                    );
                                 } else if action == "about" {
                                     self.pickers.open(PickerId::About);
                                 } else if action == "notifications" {
@@ -3707,6 +3742,10 @@ impl App {
                                     self.lyrics.show = true;
                                     self.lyrics.pane_focus = true;
                                     self.send_high(TuiCommand::FetchLyrics);
+                                } else if action == "progress style" {
+                                    self.pickers.open(PickerId::ProgressStyle);
+                                } else if action == "visualizer preset" {
+                                    self.open_visualizer_picker();
                                 } else if action == "stop" {
                                     self.send_high(TuiCommand::Stop);
                                 } else if action == "seek forward" {
@@ -4103,6 +4142,24 @@ impl App {
                             ));
                             self.pickers.close_top();
                         }
+                        PickerId::ThemePicker => {
+                            let idx = top.selected;
+                            self.apply_theme_index(idx);
+                            let name = &self.themes[idx].name;
+                            let light = if self.themes[idx].light {
+                                " (light)"
+                            } else {
+                                ""
+                            };
+                            self.notify_titled(
+                                "Theme",
+                                format!("Theme: {}{}", name, light),
+                                NotificationKind::Info,
+                                true,
+                                NotifType::Prefs,
+                            );
+                            self.pickers.close_top();
+                        }
                         PickerId::SearchLibrary => {
                             let picks = self.search_library_picks();
                             if !picks.is_empty() {
@@ -4287,21 +4344,12 @@ impl App {
                 }
             }
             KeyCode::Char(c) if !ctrl_or_alt => {
-                // Look's filter is per category and lives on `LookView`, so it
-                // is handled here rather than falling into the shared query.
-                if self.pickers.top().is_some_and(|o| o.id == PickerId::Look)
-                    && self.look.cat() == Look::Theme
-                {
-                    self.look.query.push(c);
-                    // Filter keystrokes clamp the cursor but do not preview:
-                    // narrowing the list is not choosing from it, and previewing
-                    // every prefix would repaint the whole app once per letter.
-                    self.look_row_reset();
-                    return;
-                }
                 if let Some(top) = self.pickers.top_mut() {
                     match top.id {
-                        PickerId::YTSearch | PickerId::SearchLibrary | PickerId::CommandPalette => {
+                        PickerId::YTSearch
+                        | PickerId::SearchLibrary
+                        | PickerId::CommandPalette
+                        | PickerId::ThemePicker => {
                             top.query.push(c);
                             if top.id == PickerId::YTSearch {
                                 // Invalidate stale results immediately so the
@@ -4408,13 +4456,6 @@ impl App {
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.pop();
                         }
-                        // Look's filter lives on `LookView`, not on the
-                        // picker, so it cannot fall through to `top.query` like
-                        // every other text picker.
-                        PickerId::Look if self.look.cat() == Look::Theme => {
-                            self.look.query.pop();
-                            self.look_row_reset();
-                        }
                         _ => {
                             top.query.pop();
                             if top.id == PickerId::YTSearch {
@@ -4438,6 +4479,31 @@ impl App {
             let idx = top.selected.min(EQ_PRESETS.len() - 1);
             self.send_high(TuiCommand::SetEqPreset(EQ_PRESETS[idx]));
             self.state.audio.eq_preset = EQ_PRESETS[idx];
+        }
+    }
+
+    pub(crate) fn apply_preset_preview(&mut self) {
+        if let Some(top) = self.pickers.top() {
+            match top.id {
+                PickerId::VisualizerPreset => {
+                    let presets = VisualizerPreset::all();
+                    let idx = top.selected.min(presets.len() - 1);
+                    self.visualizer.preset = presets[idx];
+                }
+                PickerId::ProgressStyle => {
+                    let styles = ProgressStyle::all();
+                    let idx = top.selected.min(styles.len() - 1);
+                    self.progress_style = styles[idx];
+                }
+                PickerId::FooterPreset => {
+                    let idx = top
+                        .selected
+                        .min(self.footer_presets.len().saturating_sub(1));
+                    self.footer_preset = idx;
+                    self.footer_cache.suppress_refresh = false;
+                }
+                _ => {}
+            }
         }
     }
 }

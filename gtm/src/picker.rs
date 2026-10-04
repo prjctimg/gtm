@@ -19,10 +19,7 @@ pub enum PickerId {
     CommandPalette,
     About,
     SleepTimer,
-    /// The unified presentation picker: zen layout, theme, visualizer, progress
-    /// bar and footer, cycled with Tab. One key for all five, because they are
-    /// one question.
-    Look,
+    ThemePicker,
     Help,
     PlaylistSelect,
     /// Multi-select track list shown after creating a new playlist, so tracks
@@ -33,6 +30,9 @@ pub enum PickerId {
     /// which clears the saved device so the mixer uses the platform sink.
     AudioDevice,
     Crossfade,
+    VisualizerPreset,
+    FooterPreset,
+    ProgressStyle,
     Settings,
     Notifications,
     NotificationSettings,

@@ -156,6 +156,24 @@ impl App {
         }
     }
 
+    /// Open the visualizer preset picker, refusing when the visualizer
+    /// extension is disabled. Shared by the palette entry and keybindings.
+    pub(crate) fn open_visualizer_picker(&mut self) {
+        if self.extensions.is_disabled(ExtensionId::Visualizer) {
+            self.notify(
+                format!(
+                    "{} is an optional extension (disabled)",
+                    ExtensionId::Visualizer.label()
+                ),
+                NotificationKind::Info,
+            );
+            return;
+        }
+        self.pickers.open(PickerId::VisualizerPreset);
+        self.dismiss_track_popup();
+        self.on_picker_opened(PickerId::VisualizerPreset);
+    }
+
     /// Open the notification settings overlay, refusing when the overlay
     /// extension is disabled.
     pub(crate) fn open_settings_overlay(&mut self) {

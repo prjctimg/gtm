@@ -237,14 +237,24 @@ impl CommandPalette {
                 hint: "sleeptimer",
             },
             Command {
+                icon: "\u{f0493} Theme",
+                keys: "Alt+C",
+                hint: "themepicker",
+            },
+            Command {
                 icon: "\u{f051d} Notifications",
                 keys: "Alt+N",
                 hint: "notifications",
             },
             Command {
-                icon: "\u{f0493} Presentation",
-                keys: "Alt+L",
-                hint: "look",
+                icon: "\u{f0493} Progress Style",
+                keys: "Alt+P",
+                hint: "progress style",
+            },
+            Command {
+                icon: "\u{f0570} Visualizer Preset",
+                keys: "Alt+V",
+                hint: "visualizer preset",
             },
             Command {
                 icon: "\u{f04db} Quit",
@@ -502,6 +512,11 @@ impl CommandPalette {
                 hint: "sleeptimer",
             },
             Command {
+                icon: "\u{1f3a8} Theme",
+                keys: "Alt+C",
+                hint: "themepicker",
+            },
+            Command {
                 icon: "\u{2139}\u{fe0f} About",
                 keys: "Alt+A",
                 hint: "about",
@@ -512,9 +527,14 @@ impl CommandPalette {
                 hint: "notifications",
             },
             Command {
-                icon: "\u{1f3a8} Presentation",
-                keys: "Alt+L",
-                hint: "look",
+                icon: "\u{1f3a8} Progress Style",
+                keys: "Alt+P",
+                hint: "progress style",
+            },
+            Command {
+                icon: "\u{1f3b6} Visualizer Preset",
+                keys: "Alt+V",
+                hint: "visualizer preset",
             },
             Command {
                 icon: "\u{23f9}\u{fe0f} Quit",

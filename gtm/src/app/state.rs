@@ -434,90 +434,6 @@ pub(crate) const GRID_FETCH_BATCH: usize = 6;
 /// thousand albums does not keep a thousand decoded images alive.
 pub(crate) const GRID_CACHE_MAX: usize = 96;
 
-/// State of the unified presentation picker.
-///
-/// The row under the cursor stays on the picker itself rather than here, so
-/// there is only one of it: mouse clicks, clamping and the viewport already
-/// drive `Picker::selected`, and a second cursor beside it would be a second
-/// thing to keep in step. Switching categories with Tab does not move the row
-/// within each — the app puts it back on whatever that category is set to.
-#[derive(Default)]
-pub struct LookView {
-    pub cat: Option<Look>,
-    /// Query for the category that has one. Only themes filter by name; the rest
-    /// are short enough that filtering them would only hide the current value.
-    pub query: String,
-}
-
-impl LookView {
-    /// The category being shown, `Look::Layout` when the picker has just opened.
-    pub fn cat(&self) -> Look {
-        self.cat.unwrap_or(Look::Layout)
-    }
-
-    /// Move to the next or previous category, resetting the query.
-    pub fn cycle(&mut self, forward: bool) {
-        let next = if forward {
-            self.cat().next()
-        } else {
-            self.cat().prev()
-        };
-        self.cat = Some(next);
-        self.query.clear();
-    }
-}
-
-/// A presentation setting the user can cycle, and the values it offers.
-///
-/// One picker for every setting that changes how the TUI looks: they were five
-/// overlays reachable by five keys, all of which draw a list, mark the current
-/// choice, and preview the highlighted one. They differ only in what they list
-/// and what previewing means, so the differences are here rather than in five
-/// renderers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Look {
-    /// Zen's fullscreen surface: which of the three the `z` key opens on.
-    Layout,
-    /// Colour theme.
-    Theme,
-    /// Visualizer preset.
-    Visualizer,
-    /// Track progress bar style.
-    Progress,
-    /// Footer layout.
-    Footer,
-}
-
-impl Look {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Look::Layout => "Zen Layout",
-            Look::Theme => "Theme",
-            Look::Visualizer => "Visualizer",
-            Look::Progress => "Progress Bar",
-            Look::Footer => "Footer",
-        }
-    }
-
-    pub(crate) fn next(self) -> Look {
-        match self {
-            Look::Layout => Look::Theme,
-            Look::Theme => Look::Visualizer,
-            Look::Visualizer => Look::Progress,
-            Look::Progress => Look::Footer,
-            Look::Footer => Look::Layout,
-        }
-    }
-
-    pub(crate) fn prev(self) -> Look {
-        match self {
-            Look::Layout => Look::Footer,
-            Look::Footer => Look::Progress,
-            Look::Progress => Look::Visualizer,
-            Look::Visualizer => Look::Theme,
-            Look::Theme => Look::Layout,
-        }
-    }
 }
 
 /// `gtm setup` wizard state, grouped under `App::setup`.
@@ -685,11 +601,8 @@ pub struct QueueView {
     pub preview_fail_until: Option<(String, std::time::Instant)>,
 }
 
+/// Lyrics pane UI state, grouped under `App::lyrics`.
 /// Which Zen-mode surface is shown. Only one is visible at a time.
-///
-/// Doubles as the "Zen Layout" presentation setting: it is both what Zen opens on
-/// and what daydreaming falls back to, so it was already the single value behind
-/// both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZenSurface {
     /// Now playing: enlarged cover art, the track title and artist on their

@@ -10,7 +10,6 @@ use crate::ui::*;
 
 pub mod forms;
 pub mod library;
-pub mod look;
 pub mod palette;
 pub mod presets;
 pub mod queue;
@@ -80,7 +79,7 @@ impl Pickers {
                 let n = app.visible_library_indices().len() as u16;
                 (w, (n + 7).clamp(14, 30))
             }
-            PickerId::Look => (58, 28),
+            PickerId::ThemePicker => (58, 24),
             PickerId::CommandPalette => (46, 18),
             PickerId::PlaylistSelect => (48, 20),
             PickerId::PlaylistTrackSelect => (64, 26),
@@ -89,7 +88,10 @@ impl Pickers {
             PickerId::Crossfade => (58, 20),
             PickerId::TrackInfo => (64, 26),
             PickerId::DiscordSetup => (60, 9),
+            PickerId::VisualizerPreset => (48, 14),
+            PickerId::FooterPreset => (52, 16),
             PickerId::NotificationSettings => (60, 14),
+            PickerId::ProgressStyle => (48, 18),
             PickerId::AudioDevice => (60, 14),
             PickerId::Settings => (64, 28),
             PickerId::Setup => (58, 24),
@@ -166,7 +168,7 @@ impl Pickers {
                     | PickerId::SearchLibrary
                     | PickerId::Libraries
                     | PickerId::CommandPalette
-                    | PickerId::Look
+                    | PickerId::ThemePicker
                     | PickerId::PlaylistSelect
                     | PickerId::PlaylistTrackSelect
                     | PickerId::SpotifySearch
@@ -205,7 +207,7 @@ impl Pickers {
             PickerId::SleepTimer => Self::render_sleep_timer(f, picker_area, app),
             PickerId::CommandPalette => Self::command_palette(f, picker_area, app),
             PickerId::Equalizer => Self::render_equalizer(f, picker_area, app),
-            PickerId::Look => Self::render_look(f, picker_area, app),
+            PickerId::ThemePicker => Self::render_theme(f, picker_area, app),
             PickerId::Help => Self::render_help(f, picker_area, app),
             PickerId::PlaylistSelect => Self::render_playlist_select(f, picker_area, app),
             PickerId::PlaylistTrackSelect => Self::render_track_select(f, picker_area, app),
@@ -213,6 +215,9 @@ impl Pickers {
             PickerId::Crossfade => Self::render_crossfade(f, picker_area, app),
             PickerId::TrackInfo => Self::render_track_info(f, picker_area, app),
             PickerId::DiscordSetup => Self::render_discord_setup(f, picker_area, app),
+            PickerId::VisualizerPreset => Self::render_visualizer_preset(f, picker_area, app),
+            PickerId::FooterPreset => Self::render_footer_preset(f, picker_area, app),
+            PickerId::ProgressStyle => Self::render_progress_style(f, picker_area, app),
             PickerId::AudioDevice => Self::render_audio_device(f, picker_area, app),
             PickerId::Settings => Self::render_settings(f, picker_area, app),
             PickerId::Notifications => Self::render_notifications(f, picker_area, app),
