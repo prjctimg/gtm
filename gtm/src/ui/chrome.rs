@@ -20,7 +20,6 @@ const DOCK_ART_H: u16 = 6;
 /// Eight rows of half-block art is 16x8 cells: enough to recognise the release,
 /// and the body it displaces keeps enough width that lines still wrap and the
 /// surface still scrolls.
-const ZEN_LYRICS_ART_H: u16 = 8;
 
 /// Which background the lyric lines are drawn on.
 ///
@@ -389,7 +388,12 @@ impl Render {
                     Style::default().fg(app.theme.secondary_accent),
                 )))
                 .alignment(Alignment::Center),
-                prog,
+                Rect {
+                    x: prog.x,
+                    y: prog.y + 1,
+                    width: prog.width,
+                    height: 1,
+                },
             );
             let time = format!(" {} / {}", format_duration(pos), format_duration(dur));
             f.render_widget(
@@ -400,7 +404,7 @@ impl Render {
                 .alignment(Alignment::Center),
                 Rect {
                     x: prog.x,
-                    y: prog.y + 2,
+                    y: prog.y + 3,
                     width: prog.width,
                     height: 1,
                 },
@@ -453,42 +457,15 @@ impl Render {
     /// under the artwork. This is the other half of that: the whole song, for
     /// reading along to, on the surface Zen exists to give a track.
     pub(crate) fn zen_lyrics(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        // The cover shares the header band with the title rather than sitting
-        // in its own full-width block. Reading along is the point of this
-        // surface, and a body spanning the whole terminal wrapped most lyric
-        // lines into a single row — which left nothing to scroll and made the
-        // highlight crawl down a static wall of text. Keeping the art beside
-        // the title narrows the body enough that lines wrap and the surface
-        // scrolls like the pane it shares code with.
-        //
-        // Sized for detail rather than presence: 8 rows of half-block art is
-        // 16x8 cells, enough to recognise the artwork, and a larger box just
-        // eats lyrics.
-        let art_h = area.height.saturating_sub(6).clamp(2, ZEN_LYRICS_ART_H);
-        let art_w = art_h * 2;
         let header = Rect {
             x: area.x,
             y: area.y,
-            width: area.width.saturating_sub(art_w + 2),
+            width: area.width,
             height: 2,
         };
         if let Some(t) = app.state.current_track.clone() {
             Render::zen_track_header(f, app, &t, header);
         }
-        let art = Rect {
-            x: area.x + area.width.saturating_sub(art_w),
-            y: area.y,
-            width: art_w,
-            height: art_h,
-        };
-        Render::cover(
-            f,
-            art,
-            app.np_cover.stateful.as_mut(),
-            app.np_cover.image.as_deref(),
-            app.theme.fg_dim,
-            Some(" \u{266b} "),
-        );
 
         let Some(ref lyrics) = app.lyrics.current else {
             let msg = if app.lyrics.fetching {
@@ -524,7 +501,7 @@ impl Render {
         let body = Rect {
             x: area.x.saturating_add(2),
             y: area.y.saturating_add(3),
-            width: area.width.saturating_sub(4 + art_w).max(16),
+            width: area.width.saturating_sub(4).max(16),
             height: area.height.saturating_sub(4),
         };
         Render::lyrics_body(f, body, app, lyrics, LyricSurface::Zen);
@@ -2640,11 +2617,11 @@ impl Render {
             if anchor == total - 1 {
                 bottom
             } else {
-                // Center active line: start = cur - h/2
-                row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
+                // Near the top: cur - 2
+                row_offsets[anchor].saturating_sub(2).min(bottom)
             }
         } else {
-            row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
+            row_offsets[anchor].saturating_sub(2).min(bottom)
         };
 
         // Centred rather than left-aligned. Lyrics are read as a block, and a

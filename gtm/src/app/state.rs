@@ -434,8 +434,6 @@ pub(crate) const GRID_FETCH_BATCH: usize = 6;
 /// thousand albums does not keep a thousand decoded images alive.
 pub(crate) const GRID_CACHE_MAX: usize = 96;
 
-}
-
 /// `gtm setup` wizard state, grouped under `App::setup`.
 #[derive(Default)]
 pub struct SetupView {
