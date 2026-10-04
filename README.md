@@ -1,6 +1,5 @@
 # gtm 📻
 
-![](./logo.png)
 
 [![Crates.io](https://img.shields.io/crates/v/gtm)](https://crates.io/crates/gtm)
 [![Crates.io downloads](https://img.shields.io/crates/d/gtm)](https://crates.io/crates/gtm)
@@ -84,6 +83,11 @@ See [the contributing guide](CONTRIBUTING.md) & [the Code of Conduct](CODE_OF_CO
 ---
 
 ## Acknowledgements
+
+
+![](./logo.png)
+
+This wouldn't be possible without the amazing open source community! 
 
 - [color-thief](https://crates.io/crates/color-thief)
 - [rustfft](https://crates.io/crates/rustfft)
