@@ -55,7 +55,11 @@ impl App {
                 let filtered = self.filtered_tracks();
                 let pos = self.list_pos();
                 filtered.get(pos).map(|hit| {
-                    if hit.path.is_empty() {
+                    // Remote rows are everything the local art cache cannot
+                    // serve: empty paths (chart-style rows) and provider URIs
+                    // (`spotify:`, …) that happen to be stored in `path`,
+                    // which is all of "All Tracks". Both carry `cover_url`.
+                    if hit.path.is_empty() || !std::path::Path::new(&hit.path).is_absolute() {
                         remote_url = hit.cover_url.clone();
                     }
                     (hit.id, hit.path.clone())
@@ -155,8 +159,8 @@ impl App {
         // A remote row: same slot as a chart row's, because both are a plain
         // URL rather than a library id. Checked before the local lookup below,
         // which would otherwise ask the art cache for id 0 and find nothing.
-        if path.is_empty()
-            && let Some(url) = remote_url
+        if !std::path::Path::new(&path).is_absolute()
+            && let Some(url) = remote_url.filter(|u| !u.is_empty())
         {
             self.popup_track_id = None;
             self.fetch_url_cover(Some(url));
