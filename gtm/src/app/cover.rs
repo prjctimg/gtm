@@ -3,6 +3,66 @@ use crate::ui::step_viewport;
 use ratatui::layout::Rect;
 
 impl App {
+    /// Fetch the artwork for the track on air.
+    ///
+    /// One entry point because three things want these bytes — a track change,
+    /// entering Zen, and a Zen surface switch back to the cover — and three
+    /// copies of the guard chain meant three places where one of them could
+    /// answer "no art" and leave the reactive theme on its base palette for
+    /// the whole track. A fetch already in flight is left alone: the reply is
+    /// generation-checked, so a second request would only throw the first away.
+    pub(crate) fn fetch_np_cover(&mut self) {
+        if !(self.reactive_theme || !no_image_protocol()) {
+            return;
+        }
+        let Some(track) = self.state.current_track.clone() else {
+            return;
+        };
+        let tid = track.id;
+        if self.np_cover.pending_gen.is_some() {
+            return;
+        }
+        let fetch_gen = self.next_cover_gen();
+        self.np_cover.pending_gen = Some(fetch_gen);
+        // A remote row (provider uri in `path`, which is every row that came
+        // out of a synced playlist) has no library id to look up, so it goes
+        // straight at the album-art url the row was labelled with — the same
+        // endpoint, and the same disk cache, the previews use.
+        let url = (!std::path::Path::new(&track.path).is_absolute())
+            .then(|| track.cover_url.clone())
+            .flatten()
+            .filter(|u| !u.is_empty());
+        let art_path = Some(track.path.clone());
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            let bytes = match url {
+                Some(u) => client.image_cover(&u).await.ok().flatten(),
+                // A provider track has no library row, so `id == 0` is ambiguous
+                // on its own and the daemon resolves it by exact path instead.
+                None => match client.art().cover_for(tid, art_path).await {
+                    Ok(b64) => {
+                        b64.and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+                    }
+                    Err(_) => match client.art().cover(tid).await {
+                        Ok(Some(b64)) => {
+                            base64::engine::general_purpose::STANDARD.decode(&b64).ok()
+                        }
+                        _ => None,
+                    },
+                },
+            };
+            // Always answer, including "no art". A miss used to send nothing at
+            // all, which left `pending_gen` claimed for the rest of the session:
+            // the reply handler treats that as "still in flight", so the pane
+            // stayed blank and no later attempt could ever claim the slot again.
+            let msg = bytes.map_or(IpcResult::CoverArt(None, Some(tid), fetch_gen), |bytes| {
+                IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen)
+            });
+            let _ = ipc_tx.send(msg);
+        });
+    }
+
     /// Kind of item the library track-info block is currently describing,
     /// derived from the active list and drill-down state.
     pub fn track_info_kind(&self) -> TrackInfoKind {

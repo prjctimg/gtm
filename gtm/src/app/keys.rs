@@ -516,6 +516,13 @@ impl App {
                             self.zen_surface = ZenSurface::NowPlaying;
                             self.dismiss_track_popup();
                         }
+                        // The cover for this track may never have been asked
+                        // for: the band can be hidden behind a list, a picker's
+                        // preview claim the slot, or the fetch answered before
+                        // the track settled. Zen draws the same bytes, so ask
+                        // for them on the way in rather than showing the
+                        // placeholder to full screen.
+                        self.fetch_np_cover();
                     }
                     Some(KeyboardAction::SeekForward) => {
                         self.set_last_action("Seek Forward", &key);

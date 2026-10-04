@@ -115,7 +115,7 @@ impl App {
                     save_prefs(&self.current_prefs());
                 }
                 5 => self.toggle_hide_footer(),
-                6 => self.toggle_reactive_theme(tx),
+                6 => self.toggle_reactive_theme(),
                 7 => self.cycle_reactive_intensity(),
                 _ => {}
             },
@@ -170,7 +170,7 @@ impl App {
                     save_prefs(&self.current_prefs());
                 }
                 5 => self.toggle_hide_footer(),
-                6 => self.toggle_reactive_theme(tx),
+                6 => self.toggle_reactive_theme(),
                 7 => self.cycle_reactive_intensity(),
                 8 => self.pickers.open(PickerId::VisualizerPreset),
                 9 => self.cycle_daydream(),
@@ -267,7 +267,7 @@ impl App {
 
     /// Turn the reactive theme on or off, fetching a palette the first time it
     /// is switched on with no artwork to read one from.
-    fn toggle_reactive_theme(&mut self, tx: &tokio::sync::mpsc::Sender<TuiCommand>) {
+    fn toggle_reactive_theme(&mut self) {
         self.reactive_theme = !self.reactive_theme;
         if self.reactive_theme && self.reactive_palette.is_none() {
             if let Some(c) = self.np_cover.image.clone() {
@@ -275,18 +275,13 @@ impl App {
                 self.reactive_gen = Some(self.next_cover_gen());
                 let pal_gen = self.reactive_gen.expect("just set");
                 self.request_reactive_palette(&c, pal_gen, itx);
-            } else if let Some(tid) = self.state.current_track.as_ref().map(|t| t.id) {
-                let fetch_gen = self.next_cover_gen();
-                self.np_cover.pending_gen = Some(fetch_gen);
-                let client = self.client.clone();
-                let ipc = self.ipc_tx.clone();
-                spawn(tx, move || async move {
-                    if let Ok(Some(b64)) = client.art().cover(tid).await
-                        && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
-                    {
-                        let _ = ipc.send(IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen));
-                    }
-                });
+            } else {
+                // The shared fetch rather than a local one: this path claimed
+                // the slot and then only answered on success, so a track with
+                // no art left the slot claimed and every later cover for it
+                // dropped as "still in flight" — and it asked by id alone, which
+                // misses every provider row.
+                self.fetch_np_cover();
             }
         }
         self.apply_reactive();

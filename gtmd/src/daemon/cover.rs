@@ -63,7 +63,7 @@ impl Cover {
         // points `cover_path` at the album art the web API handed us. Serve
         // that file before the artist/album search below, which misses often
         // enough to leave a playing track with no cover at all.
-        let known_cover = {
+        let known = {
             let state = inner.state.read().await;
             // A path is the only trustworthy key. Provider tracks (Spotify,
             // YouTube) have no library row, so their `id` is not a library id
@@ -88,19 +88,35 @@ impl Cover {
                     .chain(state.default_list.iter())
                     .find(|t| t.id == track_id),
             };
-            by_key.and_then(|t| t.cover_path.clone()).or_else(|| {
+            by_key.cloned().or_else(|| {
                 state.current_track.as_ref().and_then(|t| {
                     let matches = t.id == track_id
                         || (track_id == 0 && track_path.is_some_and(|p| t.path == p));
-                    matches.then(|| t.cover_path.clone()).flatten()
+                    matches.then(|| t.clone())
                 })
             })
         };
-        if let Some(path) = known_cover
+        if let Some(path) = known.as_ref().and_then(|t| t.cover_path.clone())
             && let Ok(data) = tokio::fs::read(&path).await
             && !CoverCache::too_small(&data)
         {
             let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+            return Ok(DaemonRes::CoverArt { data: Some(b64) });
+        }
+
+        // A row the resolver labelled also carries the album-art URL it was
+        // labelled from, and that URL is already in the URL cache under its own
+        // key. Consulting it is what makes the now-playing cover (and with it
+        // the reactive palette) work for a row with no library entry, no
+        // `cover_path` yet and — for a row the web api answered for only the
+        // id — nothing to search an artist by.
+        if let Some(url) = known
+            .as_ref()
+            .and_then(|t| t.cover_url.clone())
+            .filter(|u| !u.is_empty())
+            && let Some(bytes) = Self::url_cover(inner, &url).await
+        {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
             return Ok(DaemonRes::CoverArt { data: Some(b64) });
         }
 

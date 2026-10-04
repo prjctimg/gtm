@@ -129,41 +129,15 @@ impl App {
     /// Generation-guarded by URL via `spotify_popup_slot` (stale replies from
     /// earlier rows are dropped).
     pub(crate) fn fetch_spot_cover(&mut self) {
-        let Some(track) = self.selected_spotify_track().cloned() else {
-            self.clear_popup_cover();
-            return;
-        };
-        let Some(url) = track.image_url.clone() else {
-            self.clear_popup_cover();
-            return;
-        };
-        if self.spotify_popup_slot.id.as_deref() == Some(&url)
-            && self.spotify_popup_slot.version.is_some()
-        {
-            return;
-        }
-        if no_image_protocol() {
-            return;
-        }
-        let fetch_gen = self.next_cover_gen();
-        self.spotify_popup_slot.claim(url.clone(), fetch_gen);
-        self.track_popup_cover = None;
-        self.popup_cover_stateful = None;
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            match client.spotify().track_image(&url).await {
-                Ok(Some(b64)) => {
-                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                        let _ =
-                            ipc_tx.send(IpcResult::SpotifyPopupCover(Some(bytes), url, fetch_gen));
-                    }
-                }
-                Ok(None) | Err(_) => {
-                    let _ = ipc_tx.send(IpcResult::SpotifyPopupCover(None, url, fetch_gen));
-                }
-            }
-        });
+        // The album-art URL the web API handed us, fetched through the shared
+        // url path rather than Spotify's own image request: that one is
+        // refused outright with no linked account, so every preview was blank
+        // in the most common configuration, and it had no cache to answer from
+        // on a second visit.
+        self.fetch_url_cover(
+            self.selected_spotify_track()
+                .and_then(|t| t.image_url.clone()),
+        );
     }
 
     /// Run one Connect control and feed the refreshed status back into the

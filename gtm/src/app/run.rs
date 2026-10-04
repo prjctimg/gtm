@@ -762,61 +762,7 @@ impl App {
                 self.np_cover.pending_gen = None;
                 // Fetch cover art when needed: for display (no_image_protocol
                 // check) OR for reactive-theming palette extraction.
-                let needs_cover = self.reactive_theme || !no_image_protocol();
-                if needs_cover && let Some(tid) = current_tid {
-                    let fetch_gen = self.next_cover_gen();
-                    self.np_cover.pending_gen = Some(fetch_gen);
-                    // Pass the track path as well as the id. A provider track
-                    // has no library row, so `id == 0` is ambiguous on its own
-                    // and the daemon resolves it by exact path instead.
-                    let art_path = cur_path.clone();
-                    // A remote row (provider URI in `path`, e.g. everything
-                    // queued through "All Tracks") cannot be served from the
-                    // local art cache, so go straight at its `cover_url` —
-                    // same endpoint and cache the popup previews use.
-                    let url = if art_path
-                        .as_deref()
-                        .is_some_and(|p| !std::path::Path::new(p).is_absolute())
-                    {
-                        self.state
-                            .current_track
-                            .as_ref()
-                            .and_then(|t| t.cover_url.clone())
-                            .filter(|u| !u.is_empty())
-                    } else {
-                        None
-                    };
-                    let client = self.client.clone();
-                    let ipc_tx = self.ipc_tx.clone();
-                    tokio::spawn(async move {
-                        let bytes = match url {
-                            Some(u) => client.image_cover(&u).await.ok().flatten(),
-                            None => match client.art().cover_for(tid, art_path).await {
-                                Ok(b64) => b64.and_then(|b| {
-                                    base64::engine::general_purpose::STANDARD.decode(b).ok()
-                                }),
-                                Err(_) => match client.art().cover(tid).await {
-                                    Ok(Some(b64)) => {
-                                        base64::engine::general_purpose::STANDARD.decode(&b64).ok()
-                                    }
-                                    _ => None,
-                                },
-                            },
-                        };
-                        // Always answer, including "no art". A miss used to
-                        // send nothing at all, which left `pending_gen` claimed
-                        // for the rest of the session: the reply handler
-                        // treats that as "still in flight", so the pane stayed
-                        // blank and no later attempt could ever claim the slot
-                        // again. That also starved reactive theming, which
-                        // fetches a cover solely to extract a palette from it.
-                        let msg = bytes
-                            .map_or(IpcResult::CoverArt(None, Some(tid), fetch_gen), |bytes| {
-                                IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen)
-                            });
-                        let _ = ipc_tx.send(msg);
-                    });
-                }
+                self.fetch_np_cover();
                 // Auto-fetch lyrics on track change if enabled and (pane
                 // visible or auto-fetch enabled).
                 //
@@ -1272,6 +1218,14 @@ impl App {
                         {
                             self.track_popup_cover = cover;
                             self.popup_cover_sync();
+                            self.cover_art_dirty = true;
+                            if self.track_popup_cover.is_none() {
+                                // Release on a miss, as every other cover
+                                // reply does: the slot still claimed is a slot
+                                // no later row can take, so one failed image
+                                // request left that url blank for the session.
+                                self.spotify_popup_slot.version = None;
+                            }
                         }
                     }
                     IpcResult::ClipboardPaste(field, text) => {

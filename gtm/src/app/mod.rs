@@ -1270,13 +1270,25 @@ impl App {
             }
             event::KeyCode::Tab => {
                 self.zen_surface = self.zen_surface.next();
+                self.zen_fetch_cover();
                 self.set_last_action("Zen: Next Surface", &key);
             }
             event::KeyCode::BackTab => {
                 self.zen_surface = self.zen_surface.prev();
+                self.zen_fetch_cover();
                 self.set_last_action("Zen: Prev Surface", &key);
             }
             _ => {}
+        }
+    }
+
+    /// Ask for the now-playing cover when a Zen surface switch lands on it.
+    ///
+    /// The other two Zen surfaces draw no artwork, so this is the one switch
+    /// that can need bytes the fetch has not asked for yet.
+    fn zen_fetch_cover(&mut self) {
+        if self.zen_surface == ZenSurface::NowPlaying && self.np_cover.image.is_none() {
+            self.fetch_np_cover();
         }
     }
 
