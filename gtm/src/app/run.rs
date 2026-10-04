@@ -770,12 +770,38 @@ impl App {
                     // has no library row, so `id == 0` is ambiguous on its own
                     // and the daemon resolves it by exact path instead.
                     let art_path = cur_path.clone();
+                    // A remote row (provider URI in `path`, e.g. everything
+                    // queued through "All Tracks") cannot be served from the
+                    // local art cache, so go straight at its `cover_url` —
+                    // same endpoint and cache the popup previews use.
+                    let url = if art_path
+                        .as_deref()
+                        .map(|p| !std::path::Path::new(p).is_absolute())
+                        .unwrap_or(false)
+                    {
+                        self.state
+                            .current_track
+                            .as_ref()
+                            .and_then(|t| t.cover_url.clone())
+                            .filter(|u| !u.is_empty())
+                    } else {
+                        None
+                    };
                     let client = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     tokio::spawn(async move {
-                        let art = match client.art().cover_for(tid, art_path).await {
-                            Ok(b64) => b64,
-                            Err(_) => client.art().cover(tid).await.ok().flatten(),
+                        let bytes = match url {
+                            Some(u) => client.image_cover(&u).await.ok().flatten(),
+                            None => match client.art().cover_for(tid, art_path).await {
+                                Ok(b64) => b64
+                                    .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok()),
+                                Err(_) => match client.art().cover(tid).await {
+                                    Ok(Some(b64)) => {
+                                        base64::engine::general_purpose::STANDARD.decode(&b64).ok()
+                                    }
+                                    _ => None,
+                                },
+                            },
                         };
                         // Always answer, including "no art". A miss used to
                         // send nothing at all, which left `pending_gen` claimed
@@ -784,10 +810,7 @@ impl App {
                         // blank and no later attempt could ever claim the slot
                         // again. That also starved reactive theming, which
                         // fetches a cover solely to extract a palette from it.
-                        let msg = art
-                            .and_then(|b64| {
-                                base64::engine::general_purpose::STANDARD.decode(&b64).ok()
-                            })
+                        let msg = bytes
                             .map_or(IpcResult::CoverArt(None, Some(tid), fetch_gen), |bytes| {
                                 IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen)
                             });
