@@ -1310,15 +1310,35 @@ impl Render {
                     .style(style)
                 })
                 .collect();
-            f.render_widget(List::new(left_items), left_list_area);
+            // The list gives the scrollbar its own column rather than letting
+            // it draw over the count on the right of each row.
+            let (list_area, bar_area) = if total > list_rows as usize {
+                let bar = Rect {
+                    x: left_list_area.x + left_list_area.width - 1,
+                    width: 1,
+                    ..left_list_area
+                };
+                (
+                    Rect {
+                        width: left_list_area.width - 1,
+                        ..left_list_area
+                    },
+                    Some(bar),
+                )
+            } else {
+                (left_list_area, None)
+            };
+            f.render_widget(List::new(left_items), list_area);
 
-            if total > list_rows as usize {
-                let mut sb = ratatui::widgets::ScrollbarState::new(total).position(scroll_start);
+            if let Some(area) = bar_area {
+                let mut sb = ratatui::widgets::ScrollbarState::new(total)
+                    .position(scroll_start)
+                    .viewport_content_length(list_rows as usize);
                 f.render_stateful_widget(
                     ratatui::widgets::Scrollbar::new(
                         ratatui::widgets::ScrollbarOrientation::VerticalRight,
                     ),
-                    left_list_area,
+                    area,
                     &mut sb,
                 );
             }
