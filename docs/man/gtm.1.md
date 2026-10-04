@@ -110,14 +110,6 @@ To turn it off, empty the `Alt+X` field and press Enter, or remove
 | `Alt+1` | Toggle mono |
 | `Alt+/` | Search the library |
 | `Alt+l` | Add the current track to a Spotify playlist |
-<<<<<<< HEAD
-| `Alt+L` | Presentation picker: zen layout, theme, visualizer, progress bar, footer |
-| `Tab` | In the presentation picker: next setting |
-| `Left` / `Right` | In the presentation picker: change the setting |
-| `Alt+c` | Presentation picker, on Theme |
-| `Alt+v` | Presentation picker, on Visualizer |
-=======
->>>>>>> parent of 6fe085c (refactor(picker): one presentation picker for five settings)
 | `Alt+,` | Settings |
 | `Alt+.` | Pick a library to show |
 | `Alt+a` | About |

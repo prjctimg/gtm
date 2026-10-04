@@ -508,16 +508,6 @@ impl Render {
     /// `[extensions] visualizer` kill switch is honoured by the caller, which
     /// declines to pay for the frames when it is off.
     pub(crate) fn zen_visualizer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        Render::visualizer_block(f, area, app);
-    }
-
-    /// The visualizer, inset by a cell, in any surface that draws it.
-    ///
-    /// One renderer for the full-screen Zen view and the now-playing band's
-    /// column, because the tick has to happen exactly once per surface per
-    /// frame: two ticks for one surface would advance the band model twice as
-    /// fast as the frame it is drawn in.
-    pub(crate) fn visualizer_block(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let inner = Rect {
             x: area.x + 1,
             y: area.y + 1,
@@ -875,39 +865,6 @@ impl Render {
 
         let left_focus = app.library_pane_focus;
 
-        // The visualizer comes back to the band it used to have a column of,
-        // carved from the band's right edge rather than from its rows. Rows are
-        // the scarce resource here: they are what sizes the cover, so a
-        // visualizer that cost one would shrink the artwork on every terminal.
-        //
-        // The columns are only taken when the band can still hold the layout it
-        // had — the cover at its own height plus the sixteen columns the
-        // renderer reserves for the labels — so a narrow terminal keeps the
-        // artwork and loses the visualizer.
-        let vis_w = (np_area.width / 4).clamp(20, 44);
-        let cover_rows = if is_small_height {
-            np_height.saturating_sub(4).clamp(2, 7)
-        } else {
-            np_height.saturating_sub(3).min(12)
-        };
-        let (np_area, vis_area) = if app.np_visualizer()
-            && np_area.width.saturating_sub(vis_w + 1) >= cover_rows * 2 + 16 + 2
-        {
-            let vis = Rect {
-                x: np_area.x + np_area.width - vis_w,
-                ..np_area
-            };
-            (
-                Rect {
-                    width: np_area.width - vis_w,
-                    ..np_area
-                },
-                Some(vis),
-            )
-        } else {
-            (np_area, None)
-        };
-
         {
             // No rule under the label. The now-playing label is empty, so the
             // only thing the rule ever separated was the cover art from the
@@ -1205,11 +1162,6 @@ impl Render {
                 let msg = Paragraph::new(lines);
                 Render::evolving(f, inner, msg, "idle", app, false);
             }
-        }
-
-        if let Some(vis) = vis_area {
-            fill_pane(f, vis, app);
-            Render::visualizer_block(f, vis, app);
         }
 
         // The left pane carries the category list again, alongside the Alt+.

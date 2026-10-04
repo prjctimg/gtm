@@ -2528,34 +2528,36 @@ fn list_rows_have_no_bracketed_stream_suffix() {
     );
 }
 
-/// The lyrics header needs its own cover protocol, not the now-playing one.
+/// The now-playing cover has one protocol, whichever surface draws it.
 ///
-/// Both panes can be on screen in the same frame, and one `StatefulProtocol`
-/// rendered twice writes into the same cell buffer twice, so each pane would
-/// draw part of the other. The state must therefore be per-pane.
+/// The lyrics pane used to carry its own `StatefulProtocol` for the same bytes
+/// Zen and the band draw, and one protocol rendered twice in a frame writes
+/// into the same cell buffer twice, so each pane drew part of the other. The
+/// cover is built once from the decoded bytes and both surfaces read it.
 #[test]
-fn lyrics_cover_has_its_own_protocol() {
+fn the_now_playing_cover_has_one_protocol() {
     let app = include_str!("../src/app/mod.rs");
     let cover = include_str!("../src/app/cover.rs");
     let chrome = include_str!("../src/ui/chrome.rs");
 
     assert!(
-        app.contains("pub lyrics_cover: NowPlayingCoverState,"),
-        "App has no separate cover state for the lyrics pane"
-    );
-    // Built in the same place as the now-playing one, from the same bytes.
-    assert!(
-        cover.contains("self.lyrics_cover.stateful = Some(picker.new_resize_protocol(img2))"),
-        "the lyrics protocol is not built alongside the now-playing one"
-    );
-    // The renderer must take the lyrics one, not the shared now-playing one.
-    assert!(
-        chrome.contains("app.lyrics_cover.stateful.as_mut()"),
-        "the lyrics header does not use its own protocol"
+        !app.contains("lyrics_cover") && !chrome.contains("lyrics_cover"),
+        "a per-pane protocol is back for a surface drawing the now-playing bytes"
     );
     assert!(
-        !chrome.contains("app.np_cover.stateful.as_mut(),\n                        app.np_cover.image.as_deref(),\n                        app.theme.fg_dim,\n                        Some(\" \\u{266b} \"),\n                    );\n                }\n\n                let para"),
-        "the lyrics header still borrows the now-playing protocol"
+        cover
+            .contains("Ok(img) => self.np_cover.stateful = Some(picker.new_resize_protocol(img)),"),
+        "the protocol is no longer built in one place from the decoded bytes"
+    );
+    // Zen's Now Playing surface and the library band both read that state; a
+    // second `Render::cover` on `np_cover` is fine, a second protocol is not.
+    assert!(
+        chrome.matches("app.np_cover.stateful.as_mut(),").count() >= 2,
+        "the zen and band covers are no longer sharing one protocol"
+    );
+    assert!(
+        chrome.contains("x: col.x + col.width.saturating_sub(cw) / 2,"),
+        "the now-playing cover is no longer centred in its column"
     );
 }
 
@@ -2689,10 +2691,6 @@ fn crossfade_advances_exactly_once_at_full_volume() {
         "finish_crossfade does not claim the crossfade latch atomically"
     );
 }
-
-/// The up-next card's countdown must follow the real crossfade setting.
-///
-/// It was built from a field initialised to 6 and never written again, so the
 
 /// Four scrobbling and state-persistence defects.
 ///

@@ -1825,13 +1825,10 @@ impl App {
             // The visualizer animates continuously, idle wave included, so the
             // surfaces that draw it are worth a frame every tick even while the
             // position is unchanged. It is not always on: Zen only when its
-            // surface is selected, daydreaming only once the TUI has gone
-            // quiet, and the now-playing band whenever it has the columns for
-            // it. The `[extensions]` switch zeroes the streams outright.
-            let animating = self.extensions.is_enabled(ExtensionId::Visualizer)
-                && (self.np_visualizer()
-                    || self.daydreaming
-                    || (self.zen && self.zen_surface == ZenSurface::Visualizer));
+            // surface is selected, and daydreaming only once the TUI has gone
+            // quiet. The `[extensions]` switch zeroes the streams outright.
+            let animating = !self.extensions.is_disabled(ExtensionId::Visualizer)
+                && (self.daydreaming || (self.zen && self.zen_surface == ZenSurface::Visualizer));
             let mut force_render = pos_changed
                 || (playing && frame_count.is_multiple_of(2))
                 || animating

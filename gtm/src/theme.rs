@@ -1069,8 +1069,6 @@ mod tests {
         }
     }
 
-    /// WCAG relative luminance for an sRGB color.
-
     #[test]
     fn light_themes_text_contrast() {
         // Every light theme's text-role colors must hit WCAG AA (4.5:1) for
