@@ -776,8 +776,7 @@ impl App {
                     // same endpoint and cache the popup previews use.
                     let url = if art_path
                         .as_deref()
-                        .map(|p| !std::path::Path::new(p).is_absolute())
-                        .unwrap_or(false)
+                        .is_some_and(|p| !std::path::Path::new(p).is_absolute())
                     {
                         self.state
                             .current_track
@@ -1829,9 +1828,10 @@ impl App {
             // surface is selected, daydreaming only once the TUI has gone
             // quiet, and the now-playing band whenever it has the columns for
             // it. The `[extensions]` switch zeroes the streams outright.
-            let animating = self.np_visualizer()
-                || self.daydreaming
-                || (self.zen && self.zen_surface == ZenSurface::Visualizer);
+            let animating = self.extensions.is_enabled(ExtensionId::Visualizer)
+                && (self.np_visualizer()
+                    || self.daydreaming
+                    || (self.zen && self.zen_surface == ZenSurface::Visualizer));
             let mut force_render = pos_changed
                 || (playing && frame_count.is_multiple_of(2))
                 || animating

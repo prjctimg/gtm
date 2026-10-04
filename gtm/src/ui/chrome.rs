@@ -15,12 +15,6 @@ use crate::ui::*;
 /// album while still leaving the list most of the screen.
 const DOCK_ART_H: u16 = 6;
 
-/// Rows of cover art the Zen lyrics surface sets beside its title.
-///
-/// Eight rows of half-block art is 16x8 cells: enough to recognise the release,
-/// and the body it displaces keeps enough width that lines still wrap and the
-/// surface still scrolls.
-
 /// Which background the lyric lines are drawn on.
 ///
 /// The two callers share every line of the layout and differ only here: the
@@ -1047,9 +1041,7 @@ impl Render {
                         info_constraints.push(Constraint::Length(1));
                         info_constraints.push(Constraint::Length(1));
                     }
-                    while info_constraints.len() as u16 > avail_h.max(2) {
-                        info_constraints.pop();
-                    }
+                    info_constraints.truncate(avail_h.max(2) as usize);
                     let content_h = info_constraints.len() as u16;
                     let offset = cover_h.saturating_sub(content_h) / 2;
                     let vchunks = Layout::default()
