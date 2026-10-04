@@ -31,10 +31,22 @@ impl App {
         self.np_cover.track_path = Some(track.path.clone());
         let fetch_gen = self.next_cover_gen();
         self.np_cover.pending_gen = Some(fetch_gen);
-        // A remote row (provider uri in `path`, which is every row that came
-        // out of a synced playlist) has no library id to look up, so it goes
-        // straight at the album-art url the row was labelled with — the same
-        // endpoint, and the same disk cache, the previews use.
+        // One request, the same one every other surface makes: by library id
+        // *and* exact path.
+        //
+        // This used to branch, sending a row with a `cover_url` — every synced
+        // Spotify row, which is most of what plays — at the URL endpoint
+        // instead. That was the one surface where the URL endpoint's answer was
+        // not enough, and the result was a Now Playing pane and a Zen cover
+        // that never left the placeholder while every picker, drawing from its
+        // own fetch of the very same row, showed the artwork. The daemon
+        // already prefers a resolved `cover_path` and falls back to `cover_url`
+        // for a row it cannot otherwise place, so this one call reaches both
+        // kinds of row and returns the same bytes the previews get.
+        //
+        // The URL stays as a second attempt: a row whose path names nothing the
+        // daemon can match still has artwork behind that url, and asking for it
+        // costs one request that only happens after the first has missed.
         let url = (!std::path::Path::new(&track.path).is_absolute())
             .then(|| track.cover_url.clone())
             .flatten()
@@ -43,22 +55,20 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            let bytes = match url {
-                Some(u) => client.image_cover(&u).await.ok().flatten(),
-                // A provider track has no library row, so `id == 0` is ambiguous
-                // on its own and the daemon resolves it by exact path instead.
-                None => match client.art().cover_for(tid, art_path).await {
-                    Ok(b64) => {
-                        b64.and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
-                    }
-                    Err(_) => match client.art().cover(tid).await {
-                        Ok(Some(b64)) => {
-                            base64::engine::general_purpose::STANDARD.decode(&b64).ok()
-                        }
-                        _ => None,
-                    },
+            let mut bytes = match client.art().cover_for(tid, art_path).await {
+                Ok(b64) => {
+                    b64.and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+                }
+                Err(_) => match client.art().cover(tid).await {
+                    Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
+                    _ => None,
                 },
             };
+            if bytes.is_none()
+                && let Some(u) = url
+            {
+                bytes = client.image_cover(&u).await.ok().flatten();
+            }
             // Always answer, including "no art". A miss used to send nothing at
             // all, which left `pending_gen` claimed for the rest of the session:
             // the reply handler treats that as "still in flight", so the pane

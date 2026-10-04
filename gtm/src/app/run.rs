@@ -751,15 +751,29 @@ impl App {
             // Clear stale cover immediately so we don't show old art on the
             // new track, then trigger a cover fetch + lyrics auto-fetch.
             if track_changed || had_track_change || live_advanced {
-                self.np_cover.image = None;
-                self.np_cover.stateful = None;
-                // Invalidate pending fetch so stale responses cannot overwrite
-                // the new track. Path is used alongside id to disambiguate
-                // `id == 0` locally-inserted tracks.
                 let cur_path = self.state.current_track.as_ref().map(|t| t.path.clone());
-                self.np_cover.track_id = current_tid;
-                self.np_cover.track_path = cur_path.clone();
-                self.np_cover.pending_gen = None;
+                // Only forget a claim that belongs to a *different* track.
+                //
+                // `had_track_change` fires on every `PlaybackStarted`, and the
+                // daemon sends those for a crossfade landing back on the same
+                // row and for a track that restarts without changing. Releasing
+                // the slot unconditionally dropped it while the request was
+                // still in flight: the answer came back tagged with a
+                // generation nothing was waiting for, was discarded, and the
+                // retry issued in the same breath claimed the slot again — so
+                // each reply was orphaned by the next. The cover then stayed
+                // the placeholder for the whole track, in this pane and in Zen
+                // alike, because both read the same `np_cover`.
+                if self.np_cover.track_path != cur_path {
+                    self.np_cover.image = None;
+                    self.np_cover.stateful = None;
+                    // Invalidate the pending fetch so a stale response cannot
+                    // overwrite the new track. The path is what identifies it,
+                    // because `id == 0` is shared by every provider row.
+                    self.np_cover.track_id = current_tid;
+                    self.np_cover.track_path = cur_path.clone();
+                    self.np_cover.pending_gen = None;
+                }
                 // Fetch cover art when needed: for display (no_image_protocol
                 // check) OR for reactive-theming palette extraction.
                 self.fetch_np_cover();
