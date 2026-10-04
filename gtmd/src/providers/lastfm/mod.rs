@@ -595,10 +595,6 @@ impl LastfmManager {
     pub fn get_api_key(&self) -> Option<String> {
         self.api_key.clone()
     }
-
-    pub async fn get_session_key(&self) -> Option<String> {
-        self.session_key.lock().await.clone()
-    }
 }
 
 #[cfg(test)]

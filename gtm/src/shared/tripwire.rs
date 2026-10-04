@@ -61,12 +61,6 @@ pub fn arm(fp: FailPoint, n: u32) {
 
 /// Disarm a fail point entirely.
 #[cfg(feature = "debug-fail")]
-pub fn disarm(fp: FailPoint) {
-    FAIL_POINTS.with(|fps| {
-        fps.get_or_init(Default::default).borrow_mut().remove(&fp);
-    });
-}
-
 /// Clear all armed fail points.
 #[cfg(feature = "debug-fail")]
 pub fn clear() {

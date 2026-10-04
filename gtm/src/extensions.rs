@@ -61,11 +61,6 @@ impl ExtensionId {
             ExtensionId::NotificationOverlay => "Full notification history overlay.",
         }
     }
-
-    /// The default for every registered extension is enabled; users opt out.
-    pub fn enabled_by_default(self) -> bool {
-        true
-    }
 }
 
 /// The `[extensions]` config table. All fields default to enabled so an

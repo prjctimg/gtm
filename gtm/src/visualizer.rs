@@ -468,10 +468,6 @@ impl AudioVisualizer {
         }
     }
 
-    pub fn cycle_preset(&mut self) {
-        self.preset = self.preset.next();
-    }
-
     /// Advance the band/bar model one frame. `width`/`height` come from the
     /// visualizer panel; `audio_levels` is the 64-bin spectrum, `wave_samples`
     /// a decimated interleaved L/R ring (empty when silent) and `wave_stereo`

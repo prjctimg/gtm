@@ -22,7 +22,7 @@ use crate::audio::buffer::{
 use crate::audio::decoder::DecodeThread;
 use crate::audio::eq::{EqGains, EqSource, PreGain, PreGainSource, ReverbSource};
 use crate::audio::mixer::{Mixer, STREAM_PREBUFFER_TIMEOUT};
-use crate::audio::symphonia::SymphoniaSource;
+use crate::audio::symphonia::{StreamingReopen, SymphoniaSource};
 use crate::audio::wave::WaveformShared;
 use crate::shared::global::{EqPreset, ReverbConfig};
 use crate::shared::{MAX_VOLUME, volume_from_ratio, volume_ratio};
@@ -415,6 +415,7 @@ impl PulseAudioMixer {
     #[allow(clippy::too_many_arguments)]
     fn start_decode_reader(
         reader: Box<dyn std::io::Read + Send>,
+        reopen: Option<Box<dyn StreamingReopen>>,
         ring: &SharedRingBuffer,
         eq_gains: &EqGains,
         eq_enabled: &Arc<AtomicBool>,
@@ -426,6 +427,7 @@ impl PulseAudioMixer {
         let control = Arc::new(DecodeControl::new());
         let thread = DecodeThread::new_reader(
             reader,
+            reopen,
             ring.clone(),
             control.clone(),
             eq_gains.clone(),
@@ -649,6 +651,7 @@ impl Mixer for PulseAudioMixer {
     fn load_active_reader(
         &mut self,
         reader: Box<dyn std::io::Read + Send>,
+        reopen: Option<Box<dyn StreamingReopen>>,
         _start_pos: f64,
     ) -> AudioResult<()> {
         self.active_mut().stop_decode();
@@ -659,6 +662,7 @@ impl Mixer for PulseAudioMixer {
 
         let (control, handle) = Self::start_decode_reader(
             reader,
+            reopen,
             &self.active().ring,
             &self.eq_gains,
             &self.eq_enabled,
@@ -742,6 +746,17 @@ impl Mixer for PulseAudioMixer {
         Ok(())
     }
 
+    fn dropped_samples(&self) -> u64 {
+        // Both streams share the counter the decode thread bumps; the active
+        // one is the only one that can have dropped anything this run.
+        [Some(&self.stream_a), Some(&self.stream_b)]
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s.control.as_ref())
+            .map(|c| c.dropped_samples())
+            .max()
+            .unwrap_or(0)
+    }
     fn load_standby(&mut self, path: &str) -> AudioResult<()> {
         self.standby_mut().stop_decode();
 

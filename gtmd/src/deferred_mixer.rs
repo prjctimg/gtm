@@ -104,6 +104,14 @@ impl Mixer for DeferredMixer {
             .load_active_stream(source, start_pos, duration_secs)
     }
 
+    fn dropped_samples(&self) -> u64 {
+        // Read through the shared slot rather than `ensure_mut`: a health check
+        // must not be what opens the audio device.
+        match self.inner.get() {
+            Some(m) => m.dropped_samples(),
+            None => 0,
+        }
+    }
     fn load_standby(&mut self, path: &str) -> AudioResult<()> {
         self.ensure_mut()?.load_standby(path)
     }

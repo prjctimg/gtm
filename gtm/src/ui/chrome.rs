@@ -2392,22 +2392,6 @@ impl Render {
         render_progress(ratio, width, app.progress_style)
     }
 
-    pub fn progress_variant_styled<'a>(
-        ratio: f64,
-        width: usize,
-        app: &App,
-    ) -> Vec<ratatui::text::Span<'a>> {
-        let ratio = render_ratio(app.progress_style, ratio, app.progress_smoother.value());
-        render_progress_styled(
-            ratio,
-            width,
-            app.progress_style,
-            app.theme.accent,
-            app.theme.secondary_accent,
-            app.theme.tertiary_accent,
-        )
-    }
-
     pub(crate) fn lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         // No heading, and no left rule, in any layout. "LYRICS" named a panel
         // whose neighbours already say what is playing, and the rule drew a

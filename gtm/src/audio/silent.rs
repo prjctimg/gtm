@@ -83,6 +83,9 @@ impl Mixer for NullMixer {
         Ok(())
     }
 
+    fn dropped_samples(&self) -> u64 {
+        0
+    }
     fn load_standby(&mut self, _path: &str) -> AudioResult<()> {
         *self.standby_loaded.lock().unwrap() = true;
         Ok(())

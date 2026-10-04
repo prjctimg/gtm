@@ -1551,6 +1551,21 @@ impl Cmd {
             uptime_secs: None,
         });
 
+        // A stall between the decode thread and the output device is silent
+        // apart from what the audio sounds like, so the counter is reported
+        // rather than left as a number nothing reads.
+        let dropped = inner.mixer.lock().await.dropped_samples();
+        components.push(ComponentHealth {
+            name: "audio_ring".into(),
+            status: if dropped > 0 {
+                HealthStatus::Degraded
+            } else {
+                HealthStatus::Ok
+            },
+            message: Some(format!("{dropped} samples dropped")),
+            uptime_secs: None,
+        });
+
         Ok(DaemonRes::HealthReport {
             report: Box::new(HealthReport {
                 daemon_uptime_secs: h.uptime_secs(),

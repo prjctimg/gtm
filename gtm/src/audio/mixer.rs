@@ -65,6 +65,8 @@ pub trait Mixer: Send + Sync {
         reopen: Option<Box<dyn StreamingReopen>>,
         start_pos: f64,
     ) -> AudioResult<()>;
+    /// Samples the decode thread had to discard because the consumer stalled.
+    fn dropped_samples(&self) -> u64;
     fn load_standby(&mut self, path: &str) -> AudioResult<()>;
     fn load_standby_decoded(
         &mut self,
@@ -192,6 +194,9 @@ impl Mixer for AudioMixer {
         start_pos: f64,
     ) -> AudioResult<()> {
         self.load_active_reader(reader, reopen, start_pos)
+    }
+    fn dropped_samples(&self) -> u64 {
+        self.dropped_samples()
     }
     fn load_active_stream(
         &mut self,
@@ -748,6 +753,17 @@ impl AudioMixer {
         self.crossfade_start = None;
 
         Ok(())
+    }
+
+    /// Samples the decode thread had to discard because the consumer stalled.
+    ///
+    /// A nonzero value on a healthy machine means the output device stopped
+    /// draining, which is otherwise invisible: playback just sounds wrong.
+    pub fn dropped_samples(&self) -> u64 {
+        self.active_control
+            .as_ref()
+            .map(|c| c.dropped_samples())
+            .unwrap_or(0)
     }
 
     /// Load a provider-decoded sample source (Spotify via librespot) as the

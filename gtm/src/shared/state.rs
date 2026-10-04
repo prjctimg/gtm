@@ -487,20 +487,6 @@ impl EqPreset {
         let max_boost = self.to_gains().iter().copied().fold(0.0f32, f32::max);
         -max_boost
     }
-
-    /// Convert to 15 `EqBand` structs with ISO frequencies.
-    pub fn to_bands(&self) -> Vec<EqBand> {
-        let gains = self.to_gains();
-        EQ_FREQUENCIES
-            .iter()
-            .zip(gains.iter())
-            .map(|(freq, gain)| EqBand {
-                frequency: *freq,
-                gain_db: *gain,
-                q: EQ_DEFAULT_Q,
-            })
-            .collect()
-    }
 }
 
 /// Image data parsed from metadata or API call

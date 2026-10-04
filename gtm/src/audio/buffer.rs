@@ -120,10 +120,10 @@ impl RingBufferInner {
     /// here until the consumer drains a slot, re-checking `running` so a
     /// truly dead consumer can still stop the decode thread.  Only after a
     /// long (1 s) continuous stall do we give up and drop, signalling the
-    /// loss on [`DecodeControl::dropped_samples`] for diagnostics.
+    /// loss on [`Self::dropped_samples`] for diagnostics.
     /// SAFETY: Only the producer thread calls push_blocking(), so no data
     /// race with pop().
-    pub fn push_blocking(&self, sample: f32, running: &AtomicBool) {
+    pub fn push_blocking(&self, sample: f32, running: &AtomicBool, dropped: &AtomicU64) {
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
             let w = self.write_pos.load(Ordering::Relaxed);
@@ -137,6 +137,7 @@ impl RingBufferInner {
             }
             if !running.load(Ordering::Acquire) || Instant::now() >= deadline {
                 self.dropped_samples.fetch_add(1, Ordering::Relaxed);
+                dropped.fetch_add(1, Ordering::Relaxed);
                 return;
             }
             std::thread::sleep(Duration::from_micros(100));
@@ -195,6 +196,10 @@ pub struct DecodeControl {
     pub finished: Arc<AtomicBool>,
     pub sample_rate: AtomicU32,
     pub channels: AtomicU16,
+    /// Cumulative samples the producer had to discard after a stalled
+    /// consumer. Shared with the ring that counts them, so the health report
+    /// can read it without holding the buffer.
+    pub dropped: Arc<AtomicU64>,
 }
 
 impl Default for DecodeControl {
@@ -213,7 +218,13 @@ impl DecodeControl {
             finished: Arc::new(AtomicBool::new(false)),
             sample_rate: AtomicU32::new(44100),
             channels: AtomicU16::new(2),
+            dropped: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Samples dropped by a stalled consumer so far.
+    pub fn dropped_samples(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     pub fn signal_stop(&self) {
