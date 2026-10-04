@@ -306,14 +306,14 @@ impl App {
     /// True while the right pane is showing the track list of a Spotify
     /// playlist (drilled down from the Spotify playlists category).
     pub fn in_spotify_playlist(&self) -> bool {
-        self.browse_detail.is_some() && self.library_category == 5
+        self.browse_detail.is_some() && self.library_category == LIB_SPOTIFY
     }
 
     /// The Spotify *playlist list* is showing: category 5 with no drill-down
     /// open. Distinct from [`Self::in_spotify_playlist`], which is the
     /// track list one level deeper.
     pub fn in_spotify_playlists(&self) -> bool {
-        self.browse_detail.is_none() && self.library_category == 5
+        self.browse_detail.is_none() && self.library_category == LIB_SPOTIFY
     }
 
     /// Row count of the Spotify playlist drill-down list, including the two

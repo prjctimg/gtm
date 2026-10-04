@@ -5,7 +5,11 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use crate::app::{GRID_CELL_H, GRID_CELL_W};
+use crate::app::{
+    GRID_CELL_H, GRID_CELL_W, LIB_ADDED, LIB_ALL, LIB_CATEGORIES, LIB_CHARTS, LIB_FOLDERS,
+    LIB_LIKED, LIB_PLAYED, LIB_PLAYLISTS, LIB_PODCASTS, LIB_RADIO, LIB_RECENT, LIB_SPOTIFY,
+    LibraryFilter,
+};
 use crate::ui::*;
 
 /// Rows of cover art in the one-column bottom-pane track card.
@@ -1286,7 +1290,7 @@ impl Render {
             let left_items: Vec<ListItem> = visible_cats[scroll_start..scroll_end]
                 .iter()
                 .map(|&i| {
-                    let cat = LIBRARY_CATEGORIES[i];
+                    let cat = LIB_CATEGORIES[i];
                     let icon = lib_icons.get(i).copied().unwrap_or(" ");
                     let count = app.library_count(cat);
                     let text = if count > 0 {
@@ -1367,9 +1371,18 @@ impl Render {
             let _ = left_pad_area;
         }
 
-        let category_label = LIBRARY_CATEGORIES
+        let category_label = LIB_CATEGORIES
             .get(app.library_category)
-            .unwrap_or(&"All Tracks");
+            .copied()
+            .unwrap_or("");
+        // The Library view has four groupings behind one row, so its header
+        // names the one on screen: a pane headed "Library" over a list of
+        // albums says nothing about which list the user is looking at.
+        let category_label: &str = if app.library_category == LIB_ALL {
+            app.library_filter.label()
+        } else {
+            category_label
+        };
 
         // Total rows in the active right-pane list, threaded out of the category
         // branches so mouse hit zones only cover real rows.
@@ -1418,7 +1431,7 @@ impl Render {
             // is computed from the category, not from here — keeps counting
             // albums while there are no rows to count.
             (Vec::new(), String::new())
-        } else if app.browse_detail.is_some() && app.library_category == 5 {
+        } else if app.browse_detail.is_some() && app.library_category == LIB_SPOTIFY {
             let tracks = &app.spotify.playlist_tracks_cache;
             let total_len = app.spotify_playlist_rows();
             let st_line = library_stats_line(app);
@@ -1599,20 +1612,39 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             }
-        } else if app.library_category == 2 {
-            let albums = app.unique_albums();
-            let total_len = albums.len();
+        } else if app.library_category == LIB_ALL
+            && !matches!(app.library_filter, LibraryFilter::Tracks)
+        {
+            // One arm for the three grouped lists. They differ only in the row
+            // set and the noun under the count, both of which the filter names,
+            // and they render identically otherwise.
+            let groups = app.library_groups();
+            let total_len = groups.len();
             let sel = app.list_pos().min(total_len.saturating_sub(1));
-            let st_line = format!(" {} {} ", total_len, plural(total_len, "album", "albums"));
+            let st_line = format!(
+                " {} {} ",
+                total_len,
+                plural(
+                    total_len,
+                    app.library_filter.one(),
+                    app.library_filter.many()
+                )
+            );
             let available = window_rows();
             app.viewport_items = available;
             let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
             app.list_scroll = list_scroll;
             let mut lines = vec![Line::from("")];
-            for (i, (name, _count)) in albums[app.list_scroll..end].iter().enumerate() {
+            if groups.is_empty() {
+                lines.extend(empty_hint_lines(
+                    app,
+                    &format!("No {} yet", app.library_filter.many()),
+                    "Hint: import tagged audio files, then browse them here",
+                ));
+            }
+            for (i, (name, _count)) in groups[app.list_scroll..end].iter().enumerate() {
                 let real_i = app.list_scroll + i;
                 let is_sel = real_i == sel && !left_focus;
-                let prefix = "   ";
                 let style = if is_sel {
                     Style::default()
                         .fg(app.theme.selection_fg_readable())
@@ -1620,7 +1652,7 @@ impl Render {
                 } else {
                     Style::default().fg(app.theme.fg)
                 };
-                let row = format!("{}{}", prefix, name);
+                let row = format!("   {name}");
                 let row = if is_sel {
                     let pad = row_pad(&row, results_area.width);
                     format!("{row}{}", " ".repeat(pad))
@@ -1633,41 +1665,7 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             }
-        } else if app.library_category == 3 {
-            let artists = app.unique_artists();
-            let total_len = artists.len();
-            let sel = app.list_pos().min(total_len.saturating_sub(1));
-            let st_line = format!(" {} {} ", total_len, plural(total_len, "artist", "artists"));
-            let available = window_rows();
-            app.viewport_items = available;
-            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
-            app.list_scroll = list_scroll;
-            let mut lines = vec![Line::from("")];
-            for (i, (name, _count)) in artists[app.list_scroll..end].iter().enumerate() {
-                let real_i = app.list_scroll + i;
-                let is_sel = real_i == sel && !left_focus;
-                let prefix = "   ";
-                let style = if is_sel {
-                    Style::default()
-                        .fg(app.theme.selection_fg_readable())
-                        .bg(app.theme.selection_bg)
-                } else {
-                    Style::default().fg(app.theme.fg)
-                };
-                let row = format!("{}{}", prefix, name);
-                let row = if is_sel {
-                    let pad = row_pad(&row, results_area.width);
-                    format!("{row}{}", " ".repeat(pad))
-                } else {
-                    row
-                };
-                lines.push(Line::from(Span::styled(row, style)));
-            }
-            {
-                lib_total_rows = total_len;
-                (lines, st_line)
-            }
-        } else if app.library_category == 4 {
+        } else if app.library_category == LIB_PLAYLISTS {
             let playlists = &app.playlist_cache;
             let total_len = playlists.len();
             let sel = app.list_pos().min(total_len.saturating_sub(1));
@@ -1705,7 +1703,7 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             }
-        } else if app.library_category == 5 {
+        } else if app.library_category == LIB_SPOTIFY {
             let playlists = &app.spotify.playlists;
             let total_len = playlists.len();
             let sel = app.list_pos().min(total_len.saturating_sub(1));
@@ -1750,7 +1748,7 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             }
-        } else if app.library_category == 6 {
+        } else if app.library_category == LIB_RADIO {
             let stations = &app.radio.custom;
             let total_len = stations.len();
             let sel = app.list_pos().min(total_len.saturating_sub(1));
@@ -1796,49 +1794,7 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             }
-        } else if app.library_category == 10 {
-            let genres = app.unique_genres();
-            let total_len = genres.len();
-            let sel = app.list_pos().min(total_len.saturating_sub(1));
-            let st_line = format!(" {} {} ", total_len, plural(total_len, "genre", "genres"));
-            let available = window_rows();
-            app.viewport_items = available;
-            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
-            app.list_scroll = list_scroll;
-            let mut lines = vec![Line::from("")];
-            if genres.is_empty() {
-                lines.extend(empty_hint_lines(
-                    app,
-                    "No genres yet",
-                    "Hint: import tagged audio files, then browse them here by genre",
-                ));
-            } else {
-                for (i, (name, _count)) in genres[app.list_scroll..end].iter().enumerate() {
-                    let real_i = app.list_scroll + i;
-                    let is_sel = real_i == sel && !left_focus;
-                    let prefix = "   ";
-                    let style = if is_sel {
-                        Style::default()
-                            .fg(app.theme.selection_fg_readable())
-                            .bg(app.theme.selection_bg)
-                    } else {
-                        Style::default().fg(app.theme.fg)
-                    };
-                    let row = format!("{}{}", prefix, name);
-                    let row = if is_sel {
-                        let pad = row_pad(&row, results_area.width);
-                        format!("{row}{}", " ".repeat(pad))
-                    } else {
-                        row
-                    };
-                    lines.push(Line::from(Span::styled(row, style)));
-                }
-            }
-            {
-                lib_total_rows = total_len;
-                (lines, st_line)
-            }
-        } else if app.library_category == 11 {
+        } else if app.library_category == LIB_FOLDERS {
             let folders = app.unique_folders();
             let total_len = folders.len();
             let sel = app.list_pos().min(total_len.saturating_sub(1));
@@ -1873,7 +1829,7 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             }
-        } else if app.library_category == 12 {
+        } else if app.library_category == LIB_CHARTS {
             // Top Charts: three-level navigation
             // Level 0: Chart sources (Spotify, Apple Music, …)
             // Level 1: Charts for selected source
@@ -2032,7 +1988,7 @@ impl Render {
                     (lines, st_line)
                 }
             }
-        } else if app.library_category == 13 {
+        } else if app.library_category == LIB_PODCASTS {
             // Podcasts: level 0 lists the subscribed feeds, level 1 the
             // episodes of the feed drilled into. Mirrors the chart's two-level
             // shape so Backspace/Enter behave the same in both.
@@ -2158,21 +2114,21 @@ impl Render {
             let mut lines = vec![Line::from("")];
             if filtered.is_empty() {
                 let (headline, hint) = match app.library_category {
-                    7 => (
+                    LIB_PLAYED => (
                         "No most-played tracks yet",
                         "Hint: play counts build up as you listen",
                     ),
-                    8 => (
+                    LIB_RECENT => (
                         "Nothing played recently",
                         "Hint: play any track and it will show up here",
                     ),
-                    9 => (
+                    LIB_ADDED => (
                         "No recent additions",
                         "Hint: add music to your library to see it here",
                     ),
                     _ => (
-                        "No tracks in this list",
-                        "Hint: add music to your library to get started",
+                        "Nothing in the library yet",
+                        "Hint: add music to your library, or link a Spotify account",
                     ),
                 };
                 lines.extend(empty_hint_lines(app, headline, hint));

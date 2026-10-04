@@ -65,30 +65,120 @@ pub(crate) use crate::ui::{
 };
 pub(crate) use crate::visualizer::{AudioVisualizer, VisualizerPreset};
 pub const NUM_SETTINGS_CATEGORIES: usize = 3;
-pub const LIBRARY_CATEGORIES: &[&str] = &[
-    "All Tracks",
+/// The library views, in the order the left pane lists them.
+///
+/// All Tracks, Albums, Artists and Genres were four of these. They are one view
+/// now with a filter over it: they were four renderings of the same question —
+/// what is in the library, grouped one way or another — and the left pane spent
+/// four rows on the answer while the pane below showed one of them. The filter
+/// is [`LibraryFilter`], switched with Tab.
+///
+/// Named rather than compared as bare numbers: these indices are the row's
+/// identity in a dozen places, and a renumbering is otherwise invisible.
+pub const LIB_CATEGORIES: &[&str] = &[
+    "Library",
     "Liked",
-    "Albums",
-    "Artists",
     "Playlists",
     "Spotify",
     "Radio",
     "Most Played",
     "Recently Played",
     "Recently Added",
-    "Genres",
     "Folders",
     "Top Charts",
     "Podcasts",
 ];
+/// The old name, for the places that only pass the list on.
+pub const LIBRARY_CATEGORIES: &[&str] = LIB_CATEGORIES;
+pub const LIB_ALL: usize = 0;
+pub const LIB_LIKED: usize = 1;
+pub const LIB_PLAYLISTS: usize = 2;
+pub const LIB_SPOTIFY: usize = 3;
+pub const LIB_RADIO: usize = 4;
+pub const LIB_PLAYED: usize = 5;
+pub const LIB_RECENT: usize = 6;
+pub const LIB_ADDED: usize = 7;
+pub const LIB_FOLDERS: usize = 8;
+pub const LIB_CHARTS: usize = 9;
+pub const LIB_PODCASTS: usize = 10;
+
+/// How the Library view groups the same rows.
+///
+/// Tab and Shift+Tab walk it. Every arm reads the same data, so the filter is
+/// the only difference between them: which column the rows are keyed by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryFilter {
+    Tracks,
+    Albums,
+    Artists,
+    Genres,
+}
+
+impl LibraryFilter {
+    /// The filters in Tab order.
+    pub const ALL: [LibraryFilter; 4] = [
+        LibraryFilter::Tracks,
+        LibraryFilter::Albums,
+        LibraryFilter::Artists,
+        LibraryFilter::Genres,
+    ];
+
+    /// The same name, singular and plural, for counts and prose ("12 albums",
+    /// "delete every track in this album?"). `&'static str` because the counts
+    /// are built at draw time and must not allocate to name a row count.
+    pub fn one(self) -> &'static str {
+        match self {
+            LibraryFilter::Tracks => "track",
+            LibraryFilter::Albums => "album",
+            LibraryFilter::Artists => "artist",
+            LibraryFilter::Genres => "genre",
+        }
+    }
+
+    pub fn many(self) -> &'static str {
+        match self {
+            LibraryFilter::Tracks => "tracks",
+            LibraryFilter::Albums => "albums",
+            LibraryFilter::Artists => "artists",
+            LibraryFilter::Genres => "genres",
+        }
+    }
+
+    /// Name shown on the header, so the pane says which grouping is on screen.
+    pub fn label(self) -> &'static str {
+        match self {
+            LibraryFilter::Tracks => "Tracks",
+            LibraryFilter::Albums => "Albums",
+            LibraryFilter::Artists => "Artists",
+            LibraryFilter::Genres => "Genres",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let at = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(at + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let at = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(at + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
 /// Sanitize a TOML `left_pane_lists` value: keep only canonical category
 /// names, drop duplicates, preserve user order. Empty (or fully unknown)
 /// input falls back to the full default set so the pane always renders.
 pub fn clean_left_pane(names: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for n in names {
-        if LIBRARY_CATEGORIES.contains(&n.as_str()) && !out.iter().any(|e| e == n) {
-            out.push(n.clone());
+        // The four list names the Library view absorbed all mean the same row
+        // now, so a config saved before the merge keeps one of them rather
+        // than silently losing the list it named.
+        let name = match n.as_str() {
+            "All Tracks" | "Albums" | "Artists" | "Genres" => LIB_CATEGORIES[LIB_ALL],
+            other => other,
+        };
+        if LIB_CATEGORIES.contains(&name) && !out.iter().any(|e| e == name) {
+            out.push(name.to_string());
         }
     }
     if out.is_empty() {
@@ -168,11 +258,15 @@ pub struct App {
     pub(crate) daydream_secs: u64,
     pub input_mode: InputMode,
     pub search_query: String,
-    /// Per-category selection index, keyed by `library_category`, so every
-    /// list (All Tracks / Liked / Albums / Artists / Playlists / Spotify)
-    /// keeps its own highlighted row.
-    pub(crate) scroll_offset: [usize; LIBRARY_CATEGORIES.len()],
+    /// Per-view selection index: one slot per library view, plus one per
+    /// Library filter. The filter is a mode of one view, so it needs its own
+    /// slot the way each view has its own — switching to Albums and back has
+    /// to land on the row that view was left on, not on whichever row the
+    /// filter before it happened to point at.
+    pub(crate) scroll_offset: [usize; LIB_CATEGORIES.len() + LibraryFilter::ALL.len()],
     pub library_category: usize,
+    /// Grouping of the Library view. Only meaningful on [`LIB_ALL`].
+    pub library_filter: LibraryFilter,
     pub library_pane_focus: bool,
     pub settings_category: usize,
     pub settings_pane_focus: bool,
@@ -972,8 +1066,9 @@ impl App {
             daydream_secs: DEFAULT_DAYDREAM_SECS,
             input_mode: InputMode::Normal,
             search_query: String::new(),
-            scroll_offset: [0; LIBRARY_CATEGORIES.len()],
-            library_category: 0,
+            scroll_offset: [0; LIB_CATEGORIES.len() + LibraryFilter::ALL.len()],
+            library_category: LIB_ALL,
+            library_filter: LibraryFilter::Tracks,
             library_pane_focus: false,
             settings_category: 0,
             settings_pane_focus: false,
@@ -1296,14 +1391,79 @@ impl App {
     /// Selection index for the currently active library list (per-category,
     /// see the `scroll_offset` field).
     pub fn list_pos(&self) -> usize {
-        let i = self.library_category.min(LIBRARY_CATEGORIES.len() - 1);
-        self.scroll_offset[i]
+        self.scroll_offset[self.view_slot()]
     }
 
     /// Set the selection index for the currently active library list.
     pub fn set_list_pos(&mut self, v: usize) {
-        let i = self.library_category.min(LIBRARY_CATEGORIES.len() - 1);
-        self.scroll_offset[i] = v;
+        let slot = self.view_slot();
+        self.scroll_offset[slot] = v;
+    }
+
+    /// Switch the Library view's grouping, keeping the drill-down and the
+    /// selection coherent.
+    ///
+    /// Leaving a grouped list drops its detail: the detail is that group's
+    /// name, and on the next filter it names nothing. Entering one puts the
+    /// cursor back at the top, because row 3 of Albums is not row 3 of Artists.
+    pub(crate) fn cycle_library_filter(&mut self, back: bool) {
+        self.library_filter = if back {
+            self.library_filter.prev()
+        } else {
+            self.library_filter.next()
+        };
+        if self.browse_detail.is_some() {
+            self.browse_detail = None;
+            self.browse_title = None;
+        }
+        self.dismiss_track_popup();
+        self.set_list_pos(0);
+        self.data_dirty = true;
+        self.last_action_name = Some((
+            format!("Library: {}", self.library_filter.label()),
+            std::time::Instant::now() + std::time::Duration::from_secs(3),
+        ));
+    }
+
+    /// Whether the highlighted row names a group rather than a track.
+    ///
+    /// An album, an artist or a genre: every Library filter but Tracks, and the
+    /// one question the grouped lists all answer the same way — the row is a
+    /// name, and the actions on it are about the tracks behind it.
+    pub fn group_row(&self) -> bool {
+        self.library_category == LIB_ALL && !matches!(self.library_filter, LibraryFilter::Tracks)
+    }
+
+    /// The rows of the Library view's active filter, in display order.
+    ///
+    /// One accessor because four arms of the renderer, the counts, the stats
+    /// line and the drill-down all need the same list, and the filter is the
+    /// only thing that decides which one it is.
+    pub fn library_groups(&self) -> Vec<(String, usize)> {
+        self.library_groups_of(self.library_filter)
+    }
+
+    /// The grouped rows of one filter, whatever filter is on screen.
+    pub fn library_groups_of(&self, filter: LibraryFilter) -> Vec<(String, usize)> {
+        match filter {
+            LibraryFilter::Tracks => Vec::new(),
+            LibraryFilter::Albums => self.unique_albums(),
+            LibraryFilter::Artists => self.unique_artists(),
+            LibraryFilter::Genres => self.unique_genres(),
+        }
+    }
+
+    /// Which `scroll_offset` slot the active view reads and writes.
+    ///
+    /// The Library view's four filters are views in their own right as far as
+    /// the cursor is concerned, so they take the slots past the end of the
+    /// view table.
+    fn view_slot(&self) -> usize {
+        if self.library_category == LIB_ALL {
+            LIB_CATEGORIES.len() + self.library_filter as usize
+        } else {
+            self.library_category.min(LIB_CATEGORIES.len() - 1)
+        }
     }
 
     /// Record the footer's `KeyAction` echo for a command. `name` is the

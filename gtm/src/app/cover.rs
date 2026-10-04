@@ -67,17 +67,24 @@ impl App {
     /// derived from the active list and drill-down state.
     pub fn track_info_kind(&self) -> TrackInfoKind {
         if self.browse_detail.is_some() {
-            if self.library_category == 5 {
+            if self.library_category == LIB_SPOTIFY {
                 return TrackInfoKind::SpotifyTrack;
             }
             return TrackInfoKind::Track;
         }
+        // The Library view's grouped filters describe the row they highlight,
+        // so the preview card follows the filter rather than the view.
+        if self.library_category == LIB_ALL {
+            return match self.library_filter {
+                LibraryFilter::Albums => TrackInfoKind::Album,
+                LibraryFilter::Artists => TrackInfoKind::Artist,
+                LibraryFilter::Tracks | LibraryFilter::Genres => TrackInfoKind::Track,
+            };
+        }
         match self.library_category {
-            2 => TrackInfoKind::Album,
-            3 => TrackInfoKind::Artist,
-            4 => TrackInfoKind::Playlist,
-            5 => TrackInfoKind::SpotifyPlaylist,
-            6 => TrackInfoKind::RadioStation,
+            LIB_PLAYLISTS => TrackInfoKind::Playlist,
+            LIB_SPOTIFY => TrackInfoKind::SpotifyPlaylist,
+            LIB_RADIO => TrackInfoKind::RadioStation,
             // Charts have their own row type. Falling through to `Track` is
             // what made the left card describe a random local library track:
             // `filtered_tracks` has no chart case, so it returned the whole
@@ -87,7 +94,7 @@ impl App {
             // be `ChartTrack` at every level, and the fields for that kind read
             // `chart_tracks`, which is empty until a chart is opened: so the
             // source list and the chart list had no card at all.
-            12 => match (self.charts.selected_source, self.charts.selected_chart) {
+            LIB_CHARTS => match (self.charts.selected_source, self.charts.selected_chart) {
                 (None, _) => TrackInfoKind::ChartSource,
                 (Some(_), None) => TrackInfoKind::Chart,
                 (Some(_), Some(_)) => TrackInfoKind::ChartTrack,
@@ -488,7 +495,7 @@ impl App {
     pub fn toggle_grid(&mut self) -> bool {
         if self.grid_active() {
             self.grid.on = false;
-        } else if matches!(self.library_category, 2 | 3 | 10) && self.browse_detail.is_none() {
+        } else if self.grid_filter() && self.browse_detail.is_none() {
             self.grid.on = true;
         }
         self.grid.on
@@ -499,12 +506,19 @@ impl App {
     /// Read from the same helpers the row view reads, so the two cannot drift:
     /// a grid cell is an album, an artist or a genre because its row was one.
     pub fn grid_labels(&self) -> Vec<String> {
-        match self.library_category {
-            2 => self.unique_albums().into_iter().map(|(n, _)| n).collect(),
-            3 => self.unique_artists().into_iter().map(|(n, _)| n).collect(),
-            10 => self.unique_genres().into_iter().map(|(n, _)| n).collect(),
-            _ => Vec::new(),
+        match self.library_filter {
+            LibraryFilter::Tracks => Vec::new(),
+            LibraryFilter::Albums => self.unique_albums().into_iter().map(|(n, _)| n).collect(),
+            LibraryFilter::Artists => self.unique_artists().into_iter().map(|(n, _)| n).collect(),
+            LibraryFilter::Genres => self.unique_genres().into_iter().map(|(n, _)| n).collect(),
         }
+    }
+
+    /// Whether the Library filter on screen is one of the grouped lists the
+    /// grid can draw. The filter is what decides now that the four of them are
+    /// one view: the same view is a grid for three of its four groupings.
+    pub fn grid_filter(&self) -> bool {
+        self.library_category == LIB_ALL && !matches!(self.library_filter, LibraryFilter::Tracks)
     }
 
     /// Whether the active category draws as a cover grid.
@@ -518,10 +532,7 @@ impl App {
     /// placeholders in a row, which is strictly less useful than the list it
     /// replaced.
     pub fn grid_active(&self) -> bool {
-        self.grid.on
-            && self.browse_detail.is_none()
-            && !no_image_protocol()
-            && matches!(self.library_category, 2 | 3 | 10)
+        self.grid.on && self.browse_detail.is_none() && !no_image_protocol() && self.grid_filter()
     }
 
     /// Where the grid puts its cells in a pane this size, with the selected

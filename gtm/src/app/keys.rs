@@ -162,6 +162,10 @@ impl App {
                     // the highlighted row in the filtered list.
                     self.play_filtered_highlighted();
                 }
+                // Tab keeps its grouping meaning with a query typed: the query
+                // narrows one list, and Tab says which list.
+                KeyCode::Tab => self.cycle_library_filter(false),
+                KeyCode::BackTab => self.cycle_library_filter(true),
                 KeyCode::Char(c) => {
                     self.search_query.push(c);
                 }
@@ -326,6 +330,18 @@ impl App {
                         return true;
                     }
                 }
+                // Tab and Shift+Tab regroup the Library view. Handled before
+                // the dispatch so a user binding on the same key cannot take
+                // it: the grouping is the view's own mode switch, and a mode
+                // that can be unbound mid-scroll is not one.
+                if matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+                    && !self.multiselect_mode
+                    && self.library_category == LIB_ALL
+                {
+                    let back = key.code == KeyCode::BackTab;
+                    self.cycle_library_filter(back);
+                    return true;
+                }
                 // In multiselect mode, Tab toggles selection and advances
                 if key.code == KeyCode::Tab && self.multiselect_mode && !self.library_pane_focus {
                     let pos = self.list_pos();
@@ -374,7 +390,7 @@ impl App {
                             self.browse_detail = None;
                             self.browse_title = None;
                             self.set_list_pos(0);
-                            if self.library_category == 5 {
+                            if self.library_category == LIB_SPOTIFY {
                                 self.spotify.playlist_tracks_cache.clear();
                             }
                         } else {
@@ -633,50 +649,17 @@ impl App {
                             return true;
                         }
                         let (ids, label) = match self.library_category {
-                            2 => {
-                                // Album row: all tracks in the album
-                                if let Some((name, _)) = self.unique_albums().get(self.list_pos()) {
-                                    let ids: Vec<i64> = self
-                                        .tracks_cache
-                                        .iter()
-                                        .filter(|t| {
-                                            let album: &str = if t.album.is_empty() {
-                                                "Unknown Album"
-                                            } else {
-                                                &t.album
-                                            };
-                                            album == name
-                                        })
-                                        .map(|t| t.id)
-                                        .collect();
-                                    (ids, name.clone())
-                                } else {
-                                    (Vec::new(), String::new())
-                                }
+                            // Grouped row (album / artist / genre): every
+                            // cached track behind the name. The resolver is the
+                            // one the multiselect and edit paths already use.
+                            LIB_ALL if !matches!(self.library_filter, LibraryFilter::Tracks) => {
+                                let label = self
+                                    .library_groups()
+                                    .get(self.list_pos())
+                                    .map_or_else(String::new, |(n, _)| n.clone());
+                                (self.motion_row_ids().unwrap_or_default(), label)
                             }
-                            3 => {
-                                // Artist row: all tracks by the artist
-                                if let Some((name, _)) = self.unique_artists().get(self.list_pos())
-                                {
-                                    let ids: Vec<i64> = self
-                                        .tracks_cache
-                                        .iter()
-                                        .filter(|t| {
-                                            let artist: &str = if t.artist.is_empty() {
-                                                "Unknown Artist"
-                                            } else {
-                                                &t.artist
-                                            };
-                                            artist == name
-                                        })
-                                        .map(|t| t.id)
-                                        .collect();
-                                    (ids, name.clone())
-                                } else {
-                                    (Vec::new(), String::new())
-                                }
-                            }
-                            4 => {
+                            LIB_PLAYLISTS => {
                                 // Playlist row (drill-down open): all tracks in the playlist
                                 if self.browse_detail.is_some() {
                                     let ids: Vec<i64> =
@@ -687,7 +670,7 @@ impl App {
                                 }
                             }
                             _ => {
-                                if self.library_category == 12 {
+                                if self.library_category == LIB_CHARTS {
                                     // Chart tracks are streamed — they have no
                                     // library id to favourite.
                                     self.notify_typed(
@@ -812,10 +795,10 @@ impl App {
                                 self.browse_detail = None;
                                 self.browse_title = None;
                                 self.set_list_pos(0);
-                                if self.library_category == 5 {
+                                if self.library_category == LIB_SPOTIFY {
                                     self.spotify.playlist_tracks_cache.clear();
                                 }
-                            } else if self.library_category == 13
+                            } else if self.library_category == LIB_PODCASTS
                                 && self.podcast.episodes_feed_id.is_some()
                             {
                                 // Podcasts: leave the episode list for the feed
@@ -823,7 +806,7 @@ impl App {
                                 self.podcast.episodes.clear();
                                 self.podcast.episodes_feed_id = None;
                                 self.set_list_pos(0);
-                            } else if self.library_category == 12 {
+                            } else if self.library_category == LIB_CHARTS {
                                 // Top Charts: three-level back navigation, the
                                 // same shape `Esc` walks. Without this, Backspace
                                 // drilled into a chart's tracks and then fell
@@ -1031,7 +1014,7 @@ impl App {
                             } else if self.browse_detail.is_some() {
                                 // In detail view: play the selected track of
                                 // the rendered right-pane list.
-                                if self.library_category == 5 {
+                                if self.library_category == LIB_SPOTIFY {
                                     // Spotify playlist drill-down: rows 0/1 are
                                     // virtual actions (Play All / Shuffle), rows
                                     // 2+ resolve their track to a playable stream.
@@ -1086,29 +1069,24 @@ impl App {
                                     // filtered_tracks(), so play that row.
                                     self.play_filtered_highlighted();
                                 }
-                            } else if self.library_category == 2 {
-                                // Albums: select album → show its tracks
-                                let albums = self.unique_albums();
+                            } else if self.library_category == LIB_ALL
+                                && !matches!(self.library_filter, LibraryFilter::Tracks)
+                            {
+                                // Albums, artists and genres are one view's three
+                                // grouped lists, and drilling into a row is the
+                                // same act in all three: name the group, then show
+                                // its tracks.
+                                let groups = self.library_groups();
                                 let pos = self.list_pos();
-                                if pos < albums.len() {
-                                    self.browse_detail = Some(albums[pos].0.clone());
-                                    // The detail is the name for these categories, so any title
-                                    // left over from a Spotify drill-down must not survive the switch.
+                                if let Some((name, _)) = groups.get(pos) {
+                                    self.browse_detail = Some(name.clone());
+                                    // The detail is the name for these lists, so any
+                                    // title left over from a Spotify drill-down must
+                                    // not survive the switch.
                                     self.browse_title = None;
                                     self.set_list_pos(0);
                                 }
-                            } else if self.library_category == 3 {
-                                // Artists: select artist → show its tracks
-                                let artists = self.unique_artists();
-                                let pos = self.list_pos();
-                                if pos < artists.len() {
-                                    self.browse_detail = Some(artists[pos].0.clone());
-                                    // The detail is the name for these categories, so any title
-                                    // left over from a Spotify drill-down must not survive the switch.
-                                    self.browse_title = None;
-                                    self.set_list_pos(0);
-                                }
-                            } else if self.library_category == 4 {
+                            } else if self.library_category == LIB_PLAYLISTS {
                                 // Playlists: select playlist → show its tracks
                                 if self.list_pos() < self.playlist_cache.len() {
                                     let playlist = self.playlist_cache[self.list_pos()].clone();
@@ -1130,7 +1108,7 @@ impl App {
                                         }
                                     }));
                                 }
-                            } else if self.library_category == 5 {
+                            } else if self.library_category == LIB_SPOTIFY {
                                 // Spotify: select playlist → show its cached tracks
                                 if self.list_pos() < self.spotify.playlists.len() {
                                     let playlist = self.spotify.playlists[self.list_pos()].clone();
@@ -1155,7 +1133,7 @@ impl App {
                                         }
                                     }));
                                 }
-                            } else if self.library_category == 6 {
+                            } else if self.library_category == LIB_RADIO {
                                 // Radio: select custom station → play it
                                 let pos = self.list_pos();
                                 if let Some(station) = self.radio.custom.get(pos).cloned() {
@@ -1168,18 +1146,7 @@ impl App {
                                         let _ = c.radio().play(&id, &station.name).await;
                                     }));
                                 }
-                            } else if self.library_category == 10 {
-                                // Genres: select genre → show its tracks
-                                let genres = self.unique_genres();
-                                let pos = self.list_pos();
-                                if pos < genres.len() {
-                                    self.browse_detail = Some(genres[pos].0.clone());
-                                    // The detail is the name for these categories, so any title
-                                    // left over from a Spotify drill-down must not survive the switch.
-                                    self.browse_title = None;
-                                    self.set_list_pos(0);
-                                }
-                            } else if self.library_category == 11 {
+                            } else if self.library_category == LIB_FOLDERS {
                                 // Folders: select folder → show its tracks
                                 let folders = self.unique_folders();
                                 let pos = self.list_pos();
@@ -1190,7 +1157,7 @@ impl App {
                                     self.browse_title = None;
                                     self.set_list_pos(0);
                                 }
-                            } else if self.library_category == 13 {
+                            } else if self.library_category == LIB_PODCASTS {
                                 // Podcasts: feeds → episodes → play, mirroring
                                 // the chart levels. Reuses the same fetch and
                                 // play calls the picker drives, so both
@@ -1215,7 +1182,7 @@ impl App {
                                         }));
                                     }
                                 }
-                            } else if self.library_category == 12 {
+                            } else if self.library_category == LIB_CHARTS {
                                 // Top Charts: three-level navigation
                                 if self.charts.selected_source.is_none() {
                                     // Level 0: Select source → fetch charts
@@ -1312,7 +1279,9 @@ impl App {
                         if !self.library_pane_focus {
                             // Playlist overview rows let the user delete the whole
                             // playlist; rows inside a playlist delete the track.
-                            if self.library_category == 4 && self.browse_detail.is_none() {
+                            if self.library_category == LIB_PLAYLISTS
+                                && self.browse_detail.is_none()
+                            {
                                 if let Some(pl) = self.playlist_cache.get(self.list_pos()).cloned()
                                 {
                                     self.pending_prompt = Some(PendingPrompt {
@@ -1344,11 +1313,7 @@ impl App {
                                 // that belongs to the selected row.
                                 let count = ids.len();
                                 if count > 0 {
-                                    let label = if self.library_category == 2 {
-                                        "album"
-                                    } else {
-                                        "artist"
-                                    };
+                                    let label = self.library_filter.one();
                                     self.pending_prompt = Some(PendingPrompt {
                                         message: format!(
                                             "Delete {count} track(s) in this {label}? \
@@ -1368,7 +1333,7 @@ impl App {
                                         prompt_type: PromptType::MultiselectDelete(ids),
                                     });
                                 }
-                            } else if self.library_category == 12 {
+                            } else if self.library_category == LIB_CHARTS {
                                 // Chart tracks are streamed — nothing in the
                                 // library to delete.
                                 self.notify_typed(
@@ -1441,7 +1406,7 @@ impl App {
                         // Refuses, out loud, on a list with nothing to show as
                         // a grid — pressing a key that does nothing is worse
                         // than one that says why.
-                        if !matches!(self.library_category, 2 | 3 | 10) {
+                        if !self.group_row() {
                             self.notify_typed(
                                 "System",
                                 "The grid is for albums, artists and genres",
@@ -1492,7 +1457,9 @@ impl App {
                         if !self.library_pane_focus {
                             // Charts Level 0/1 list sources/charts, not tracks —
                             // there is nothing to select until a chart opens.
-                            if self.library_category == 12 && self.charts.selected_chart.is_none() {
+                            if self.library_category == LIB_CHARTS
+                                && self.charts.selected_chart.is_none()
+                            {
                                 self.notify_typed(
                                     "System",
                                     "Select a chart first to multiselect its tracks",
@@ -1532,7 +1499,9 @@ impl App {
                         if !self.library_pane_focus {
                             // Playlist overview rows have no tracks of their
                             // own: open the playlist first.
-                            if self.library_category == 4 && self.browse_detail.is_none() {
+                            if self.library_category == LIB_PLAYLISTS
+                                && self.browse_detail.is_none()
+                            {
                                 self.notify_typed(
                                     "System",
                                     Self::NEED_PLAYLIST_FOR_ADD,
@@ -1601,7 +1570,9 @@ impl App {
                         if !self.library_pane_focus {
                             // Playlist overview rows have no tracks of their
                             // own: open the playlist first.
-                            if self.library_category == 4 && self.browse_detail.is_none() {
+                            if self.library_category == LIB_PLAYLISTS
+                                && self.browse_detail.is_none()
+                            {
                                 self.notify_typed(
                                     "System",
                                     Self::NEED_PLAYLIST_FOR_ADD,
@@ -1611,8 +1582,7 @@ impl App {
                                 );
                                 return true;
                             }
-                            let row_expanded =
-                                self.library_category == 2 || self.library_category == 3;
+                            let row_expanded = self.group_row();
                             let indices: Vec<i64> = if let Some(ids) = self.motion_row_ids() {
                                 // Album/artist row: add every cached track in
                                 // the album/artist to the playlist.
@@ -1668,7 +1638,7 @@ impl App {
                                 self.pending_track_ids = indices;
                                 self.playlist_creating = false;
                                 self.pickers.open(PickerId::PlaylistSelect);
-                            } else if self.library_category == 12 {
+                            } else if self.library_category == LIB_CHARTS {
                                 self.notify_typed(
                                     "System",
                                     "Chart tracks are streamed \u{2014} not in your library",
@@ -1681,7 +1651,9 @@ impl App {
                     }
                     Some(KeyboardAction::DeleteFromList) => {
                         if !self.library_pane_focus {
-                            if self.library_category == 4 && self.browse_detail.is_some() {
+                            if self.library_category == LIB_PLAYLISTS
+                                && self.browse_detail.is_some()
+                            {
                                 // In playlist view: remove the highlighted track (or the
                                 // multiselect batch, excluding the highlighted row) from
                                 // the playlist in one round trip, notifying once.
@@ -1751,7 +1723,7 @@ impl App {
                                         );
                                     }
                                 }
-                            } else if self.library_category == 6 {
+                            } else if self.library_category == LIB_RADIO {
                                 // Radio category: removing a custom station
                                 // edits radios.toml, so require confirmation.
                                 if let Some(station) =
@@ -1776,7 +1748,7 @@ impl App {
                                         prompt_type: PromptType::RemoveCustomRadio(station.name),
                                     });
                                 }
-                            } else if self.library_category == 12 {
+                            } else if self.library_category == LIB_CHARTS {
                                 // Chart tracks are streamed — nothing in the
                                 // library to remove.
                                 self.notify_typed(
@@ -1808,7 +1780,9 @@ impl App {
                             // Playlist overview rows have no metadata of their
                             // own: `e` renames the playlist (typing a new name
                             // in the PlaylistSelect input, Enter to commit).
-                            if self.library_category == 4 && self.browse_detail.is_none() {
+                            if self.library_category == LIB_PLAYLISTS
+                                && self.browse_detail.is_none()
+                            {
                                 if let Some(pl) = self.playlist_cache.get(self.list_pos()).cloned()
                                 {
                                     self.renaming_playlist = Some(pl.id);
@@ -1821,7 +1795,7 @@ impl App {
                                 }
                                 return true;
                             }
-                            if self.library_category == 12 {
+                            if self.library_category == LIB_CHARTS {
                                 // Chart tracks are streamed — they have no
                                 // library metadata to edit.
                                 self.notify_typed(
@@ -1833,7 +1807,7 @@ impl App {
                                 );
                                 return true;
                             }
-                            let ids = if self.library_category == 2 || self.library_category == 3 {
+                            let ids = if self.group_row() {
                                 // Album/artist row: edit every cached track in
                                 // the album/artist in one batch.
                                 self.motion_row_ids().unwrap_or_default()
@@ -1850,23 +1824,24 @@ impl App {
                             // Seed the field template from the row itself: the
                             // album/artist name for grouped rows, the
                             // highlighted track otherwise.
+                            let grouped = self.group_row();
+                            let name = self
+                                .library_groups()
+                                .get(self.list_pos())
+                                .map_or_else(String::new, |(n, _)| n.clone());
                             let (title, artist, album, genre, year, track_num) =
-                                match self.library_category {
-                                    2 => (
+                                match self.library_filter {
+                                    LibraryFilter::Albums if grouped => (
                                         String::new(),
                                         String::new(),
-                                        self.unique_albums()
-                                            .get(self.list_pos())
-                                            .map_or_else(String::new, |(n, _)| n.clone()),
+                                        name,
                                         String::new(),
                                         None,
                                         None,
                                     ),
-                                    3 => (
+                                    LibraryFilter::Artists if grouped => (
                                         String::new(),
-                                        self.unique_artists()
-                                            .get(self.list_pos())
-                                            .map_or_else(String::new, |(n, _)| n.clone()),
+                                        name,
                                         String::new(),
                                         String::new(),
                                         None,
@@ -1923,13 +1898,13 @@ impl App {
                                     self.browse_detail = None;
                                     self.browse_title = None;
                                     self.set_list_pos(0);
-                                } else if self.library_category == 13
+                                } else if self.library_category == LIB_PODCASTS
                                     && self.podcast.episodes_feed_id.is_some()
                                 {
                                     self.podcast.episodes.clear();
                                     self.podcast.episodes_feed_id = None;
                                     self.set_list_pos(0);
-                                } else if self.library_category == 12 {
+                                } else if self.library_category == LIB_CHARTS {
                                     // Top Charts: three-level back navigation
                                     if self.charts.selected_chart.is_some() {
                                         // Level 2 -> Level 1
@@ -3855,7 +3830,7 @@ impl App {
                                                 false,
                                                 NotifType::NowPlaying,
                                             );
-                                        } else if self.library_category == 12 {
+                                        } else if self.library_category == LIB_CHARTS {
                                             self.notify_typed(
                                                 "System",
                                                 "Chart tracks are streamed \u{2014} not in your library",
@@ -3867,7 +3842,7 @@ impl App {
                                     }
                                 } else if action == "delete from list" {
                                     if !self.library_pane_focus {
-                                        if self.library_category == 12 {
+                                        if self.library_category == LIB_CHARTS {
                                             self.notify_typed(
                                                 "System",
                                                 "Charts are streamed \u{2014} not in your library",
@@ -3875,7 +3850,7 @@ impl App {
                                                 false,
                                                 NotifType::NowPlaying,
                                             );
-                                        } else if self.library_category == 4
+                                        } else if self.library_category == LIB_PLAYLISTS
                                             && self.browse_detail.is_some()
                                         {
                                             let filtered = self.filtered_tracks();
@@ -3921,7 +3896,7 @@ impl App {
                                     }
                                 } else if action == "edit metadata" {
                                     if !self.library_pane_focus {
-                                        if self.library_category == 12 {
+                                        if self.library_category == LIB_CHARTS {
                                             // Chart tracks are streamed — they
                                             // have no library metadata to edit.
                                             self.notify_typed(

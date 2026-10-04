@@ -126,38 +126,52 @@ fn every_library_category_has_an_icon() {
     );
 }
 
-/// Categories are dispatched by index, so the indices other code hardcodes
-/// (5 Spotify, 12 Top Charts) are part of the contract. New categories must
-/// therefore be appended: inserting one silently re-points every `== N`
-/// comparison at the wrong list.
+/// Categories are dispatched by index, so the named constants other code uses
+/// (`LIB_SPOTIFY`, `LIB_CHARTS`) are part of the contract: a constant that
+/// names a different row than its label is a whole pane dispatching on the
+/// wrong list.
 #[test]
 fn pinned_category_indices_do_not_move() {
-    assert_eq!(LIBRARY_CATEGORIES[5], "Spotify");
-    assert_eq!(LIBRARY_CATEGORIES[6], "Radio");
-    assert_eq!(LIBRARY_CATEGORIES[12], "Top Charts");
+    assert_eq!(LIBRARY_CATEGORIES[LIB_ALL], "Library");
+    assert_eq!(LIBRARY_CATEGORIES[LIB_LIKED], "Liked");
+    assert_eq!(LIBRARY_CATEGORIES[LIB_PLAYLISTS], "Playlists");
+    assert_eq!(LIBRARY_CATEGORIES[LIB_SPOTIFY], "Spotify");
+    assert_eq!(LIBRARY_CATEGORIES[LIB_RADIO], "Radio");
+    assert_eq!(LIBRARY_CATEGORIES[LIB_PLAYED], "Most Played");
+    assert_eq!(LIBRARY_CATEGORIES[LIB_RECENT], "Recently Played");
+    assert_eq!(LIBRARY_CATEGORIES[LIB_ADDED], "Recently Added");
+    assert_eq!(LIBRARY_CATEGORIES[LIB_FOLDERS], "Folders");
+    assert_eq!(LIBRARY_CATEGORIES[LIB_CHARTS], "Top Charts");
+    assert_eq!(LIBRARY_CATEGORIES[LIB_PODCASTS], "Podcasts");
     assert_eq!(
-        *LIBRARY_CATEGORIES.last().unwrap(),
-        "Podcasts",
-        "the newest category must be appended, not inserted"
+        LIBRARY_CATEGORIES.len(),
+        LIB_PODCASTS + 1,
+        "a category was inserted rather than appended"
     );
 }
 
-/// A config that predates the Podcasts category must not lose the categories
-/// it does name. The list is a filter, not a reorder, so unknown names are
-/// dropped while known ones survive.
+/// A config that predates the merge must not lose the list it named.
+///
+/// All Tracks, Albums, Artists and Genres were four rows; the Library view is
+/// one, so all four names resolve to it — a config naming three of them keeps
+/// one row rather than dropping three.
 #[test]
 fn stale_left_pane_lists_keep_known_categories() {
-    let names: Vec<String> = LIBRARY_CATEGORIES[..13]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    let out = clean_left_pane(&names);
+    let out = clean_left_pane(&[
+        "All Tracks".to_string(),
+        "Liked".to_string(),
+        "Albums".to_string(),
+        "Spotify".to_string(),
+    ]);
     assert_eq!(
-        out.len(),
-        13,
-        "every known category must survive the filter"
+        out,
+        vec![
+            "Library".to_string(),
+            "Liked".to_string(),
+            "Spotify".to_string()
+        ],
+        "the four merged list names must collapse to the one row that replaced them"
     );
-    assert!(!out.iter().any(|c| c == "Podcasts"));
 }
 
 /// A client id pasted into the port box must be reported, not swallowed.

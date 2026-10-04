@@ -195,14 +195,14 @@ impl App {
     pub fn visible_library_indices(&self) -> Vec<usize> {
         let mut out = Vec::new();
         for name in &self.left_pane_lists {
-            if let Some(i) = LIBRARY_CATEGORIES.iter().position(|c| c == name)
+            if let Some(i) = LIB_CATEGORIES.iter().position(|c| c == name)
                 && !out.contains(&i)
             {
                 out.push(i);
             }
         }
         if out.is_empty() {
-            (0..LIBRARY_CATEGORIES.len()).collect()
+            (0..LIB_CATEGORIES.len()).collect()
         } else {
             out
         }
@@ -225,26 +225,30 @@ impl App {
         };
         self.visible_library_indices()
             .into_iter()
-            .filter(|&i| fuzzy_match(query, LIBRARY_CATEGORIES[i]))
+            .filter(|&i| fuzzy_match(query, LIB_CATEGORIES[i]))
             .collect()
     }
 
     /// Item count shown next to a library category. `Top Charts` and anything
     /// unmapped counts as zero, which the picker renders as no count at all.
+    /// Rows behind one left-pane row.
+    ///
+    /// The Library row counts what its current filter shows: the four lists it
+    /// absorbed each counted their own rows, and the pane below had no way to
+    /// say which number the row beside it belonged to.
     pub fn library_count(&self, cat: &str) -> usize {
         match cat {
-            // Every track in every Spotify playlist, not the local library.
-            "All Tracks" => self.playlist_union().len(),
+            "Library" => match self.library_filter {
+                LibraryFilter::Tracks => self.library_tracks().len(),
+                filter => self.library_groups_of(filter).len(),
+            },
             "Liked" => self.tracks_cache.iter().filter(|t| t.favourite).count(),
-            "Albums" => self.unique_albums().len(),
-            "Artists" => self.unique_artists().len(),
             "Playlists" => self.playlist_cache.len(),
             "Spotify" => self.spotify.playlists.len(),
             "Radio" => self.radio.custom.len(),
             "Most Played" => self.most_played_cache.len(),
             "Recently Played" => self.recently_played_cache.len(),
             "Recently Added" => self.recently_added_cache.len(),
-            "Genres" => self.unique_genres().len(),
             "Folders" => self.unique_folders().len(),
             "Podcasts" => self.podcast.feeds.len(),
             _ => 0,
@@ -292,7 +296,7 @@ impl App {
         // whatever feed was drilled into last time — the episode list belongs
         // to the feed it was opened from, and re-entering the category is a
         // fresh start rather than a resume.
-        if self.library_category == 13 {
+        if self.library_category == LIB_PODCASTS {
             self.podcast.episodes.clear();
             self.podcast.episodes_feed_id = None;
         }
@@ -301,17 +305,17 @@ impl App {
         }
         self.spotify.playlist_tracks_cache.clear();
         match self.library_category {
-            6 => self.refresh_custom_stations(),
-            7 => self.fetch_list_tracks(7),
-            8 => self.fetch_list_tracks(8),
-            9 => self.fetch_list_tracks(9),
-            12 => self.fetch_chart_sources(),
-            13 => self.fetch_podcast_feeds(),
+            LIB_RADIO => self.refresh_custom_stations(),
+            LIB_PLAYED => self.fetch_list_tracks(LIB_PLAYED),
+            LIB_RECENT => self.fetch_list_tracks(LIB_RECENT),
+            LIB_ADDED => self.fetch_list_tracks(LIB_ADDED),
+            LIB_CHARTS => self.fetch_chart_sources(),
+            LIB_PODCASTS => self.fetch_podcast_feeds(),
             _ => {}
         }
         // Spotify pane: self-heal an empty playlist cache with a single
         // background sync so playlists appear without visiting Settings.
-        if self.library_category == 5 {
+        if self.library_category == LIB_SPOTIFY {
             self.auto_sync_spotify();
         }
         self.set_list_pos(0);
@@ -367,12 +371,30 @@ impl App {
         self.playlist_tracks = out;
     }
 
+    /// Every track the Library view's Tracks list shows, local and remote.
+    ///
+    /// Deduplicated by path, which is the identity both halves agree on: a
+    /// local row is keyed by its file and a playlist row by its provider uri,
+    /// so a track that is both is one row rather than two.
+    pub fn library_tracks(&self) -> Vec<&TrackInfo> {
+        let mut seen = std::collections::HashSet::new();
+        self.tracks_cache
+            .iter()
+            .chain(self.playlist_union().iter())
+            .filter(|t| !t.path.is_empty() && seen.insert(t.path.clone()))
+            .collect()
+    }
+
     pub fn filtered_tracks(&self) -> Vec<&TrackInfo> {
-        if self.library_category == 4 && self.browse_detail.is_some() {
+        if self.library_category == LIB_PLAYLISTS && self.browse_detail.is_some() {
             return self.playlist_tracks_cache.iter().collect();
         }
-        if self.library_category == 0 && self.browse_detail.is_none() {
-            let mut tracks: Vec<&TrackInfo> = self.playlist_union().iter().collect();
+        // The Library view's Tracks list is everything the daemon knows: the
+        // local library and, for an account linked to Spotify, every track of
+        // every synced playlist. They were two lists the user had to know were
+        // two; "All Tracks" was the promise that they were one.
+        if self.library_category == LIB_ALL && self.browse_detail.is_none() {
+            let mut tracks = self.library_tracks();
             if !self.search_query.is_empty() {
                 let q = self.search_query.to_lowercase();
                 tracks.retain(|t| {
@@ -386,9 +408,9 @@ impl App {
         }
         if self.browse_detail.is_none() {
             match self.library_category {
-                7 => return self.most_played_cache.iter().collect(),
-                8 => return self.recently_played_cache.iter().collect(),
-                9 => return self.recently_added_cache.iter().collect(),
+                LIB_PLAYED => return self.most_played_cache.iter().collect(),
+                LIB_RECENT => return self.recently_played_cache.iter().collect(),
+                LIB_ADDED => return self.recently_added_cache.iter().collect(),
                 _ => {}
             }
         }
@@ -407,8 +429,10 @@ impl App {
             // album name that appears in another track's title) and misses
             // empty-field keys that `unique_albums`/`unique_artists` render
             // as "Unknown Album"/"Unknown Artist".
-            tracks.retain(|t| match self.library_category {
-                2 => {
+            // The grouped lists share one drill-down; the filter says which
+            // field the detail names.
+            tracks.retain(|t| match (self.library_category, self.library_filter) {
+                (LIB_ALL, LibraryFilter::Albums) => {
                     let album: &str = if t.album.is_empty() {
                         "Unknown Album"
                     } else {
@@ -416,7 +440,7 @@ impl App {
                     };
                     album.eq_ignore_ascii_case(detail)
                 }
-                3 => {
+                (LIB_ALL, LibraryFilter::Artists) => {
                     let artist: &str = if t.artist.is_empty() {
                         "Unknown Artist"
                     } else {
@@ -424,7 +448,7 @@ impl App {
                     };
                     artist.eq_ignore_ascii_case(detail)
                 }
-                10 => {
+                (LIB_ALL, LibraryFilter::Genres) => {
                     let genre: &str = if t.genre.is_empty() {
                         "Unknown Genre"
                     } else {
@@ -432,7 +456,7 @@ impl App {
                     };
                     genre.eq_ignore_ascii_case(detail)
                 }
-                11 => folder_dir(&t.path) == detail.as_str(),
+                (LIB_FOLDERS, _) => folder_dir(&t.path) == detail.as_str(),
                 _ => {
                     t.album.eq_ignore_ascii_case(detail)
                         || t.artist.eq_ignore_ascii_case(detail)
@@ -440,13 +464,13 @@ impl App {
                 }
             });
         }
-        if self.library_category == 1 {
+        if self.library_category == LIB_LIKED {
             tracks.retain(|t| t.favourite);
-        } else if self.library_category == 5 {
+        } else if self.library_category == LIB_SPOTIFY {
             // Spotify: category renders the synced playlist browser, not a flat
             // TrackInfo list: resolve/play goes through the daemon.
             tracks.clear();
-        } else if self.library_category == 6 {
+        } else if self.library_category == LIB_RADIO {
             // Radio: category renders custom stations; rows are virtual and act
             // on radio:// paths, never on the flat TrackInfo list.
             tracks.clear();
@@ -454,7 +478,7 @@ impl App {
         // Sorting applies to the flat track list (Favourites and the
         // album/artist drill-downs). Playlist, Spotify and All Tracks views
         // either sort upstream or are not sorted at all — see `playlist_union`.
-        if self.browse_detail.is_none() && self.library_category == 1 {
+        if self.browse_detail.is_none() && self.library_category == LIB_LIKED {
             Self::sort_tracks(&mut tracks, self.track_sort);
         }
         tracks
@@ -519,74 +543,55 @@ impl App {
     /// in that album/artist. Returns `None` in flat views where the highlighted
     /// row maps 1:1 to `filtered_tracks()` (the caller falls back to that list).
     pub(crate) fn motion_row_ids(&self) -> Option<Vec<i64>> {
-        match self.library_category {
-            2 => {
-                let albums = self.unique_albums();
-                let (name, _) = albums.get(self.list_pos())?;
-                Some(
-                    self.tracks_cache
-                        .iter()
-                        .filter(|t| {
-                            let album: &str = if t.album.is_empty() {
+        if self.library_category == LIB_ALL && self.browse_detail.is_none() {
+            let groups = self.library_groups();
+            let (name, _) = groups.get(self.list_pos())?;
+            return Some(
+                self.tracks_cache
+                    .iter()
+                    .filter(|t| match self.library_filter {
+                        LibraryFilter::Tracks => false,
+                        LibraryFilter::Albums => {
+                            let album = if t.album.is_empty() {
                                 "Unknown Album"
                             } else {
                                 &t.album
                             };
                             album == name
-                        })
-                        .map(|t| t.id)
-                        .collect(),
-                )
-            }
-            3 => {
-                let artists = self.unique_artists();
-                let (name, _) = artists.get(self.list_pos())?;
-                Some(
-                    self.tracks_cache
-                        .iter()
-                        .filter(|t| {
-                            let artist: &str = if t.artist.is_empty() {
+                        }
+                        LibraryFilter::Artists => {
+                            let artist = if t.artist.is_empty() {
                                 "Unknown Artist"
                             } else {
                                 &t.artist
                             };
                             artist == name
-                        })
-                        .map(|t| t.id)
-                        .collect(),
-                )
-            }
-            10 => {
-                let genres = self.unique_genres();
-                let (name, _) = genres.get(self.list_pos())?;
-                Some(
-                    self.tracks_cache
-                        .iter()
-                        .filter(|t| {
-                            let genre: &str = if t.genre.is_empty() {
+                        }
+                        LibraryFilter::Genres => {
+                            let genre = if t.genre.is_empty() {
                                 "Unknown Genre"
                             } else {
                                 &t.genre
                             };
                             genre == name
-                        })
-                        .map(|t| t.id)
-                        .collect(),
-                )
-            }
-            11 => {
-                let folders = self.unique_folders();
-                let (dir, _) = folders.get(self.list_pos())?;
-                Some(
-                    self.tracks_cache
-                        .iter()
-                        .filter(|t| folder_dir(&t.path) == *dir)
-                        .map(|t| t.id)
-                        .collect(),
-                )
-            }
-            _ => None,
+                        }
+                    })
+                    .map(|t| t.id)
+                    .collect(),
+            );
         }
+        if self.library_category == LIB_FOLDERS {
+            let folders = self.unique_folders();
+            let (dir, _) = folders.get(self.list_pos())?;
+            return Some(
+                self.tracks_cache
+                    .iter()
+                    .filter(|t| folder_dir(&t.path) == *dir)
+                    .map(|t| t.id)
+                    .collect(),
+            );
+        }
+        None
     }
 
     /// Play the track highlighted in the current library view, replacing the
@@ -715,7 +720,7 @@ impl App {
     /// Length of the list currently visible in the library right pane,
     /// depending on the active category and drill-down state.
     pub fn library_list_len(&self) -> usize {
-        if self.library_category == 12 {
+        if self.library_category == LIB_CHARTS {
             // Top Charts is a three-level tree: sources / charts / tracks.
             if self.charts.selected_chart.is_some() {
                 return self.charts.chart_tracks.len();
@@ -726,19 +731,20 @@ impl App {
             return self.charts.sources.len();
         }
         if self.browse_detail.is_some() {
-            if self.library_category == 5 {
+            if self.library_category == LIB_SPOTIFY {
                 return self.spotify_playlist_rows();
             }
             return self.filtered_tracks().len();
         }
+        if self.library_category == LIB_ALL && !matches!(self.library_filter, LibraryFilter::Tracks)
+        {
+            return self.library_groups().len();
+        }
         match self.library_category {
-            2 => self.unique_albums().len(),
-            3 => self.unique_artists().len(),
-            4 => self.playlist_cache.len(),
-            5 => self.spotify.playlists.len(),
-            6 => self.radio.custom.len(),
-            10 => self.unique_genres().len(),
-            11 => self.unique_folders().len(),
+            LIB_PLAYLISTS => self.playlist_cache.len(),
+            LIB_SPOTIFY => self.spotify.playlists.len(),
+            LIB_RADIO => self.radio.custom.len(),
+            LIB_FOLDERS => self.unique_folders().len(),
             _ => self.filtered_tracks().len(),
         }
     }
@@ -748,7 +754,7 @@ impl App {
     /// chart levels, Spotify browse, radio stations, playlist overview)
     /// return an empty vector so Select mode can't act on the wrong list.
     pub(crate) fn selectable_rows(&self) -> Vec<(String, String, Option<i64>)> {
-        if self.library_category == 12 {
+        if self.library_category == LIB_CHARTS {
             // Charts Level 2: a chart's tracks, selected by playable URI.
             if self.charts.selected_chart.is_some() {
                 return self
@@ -762,11 +768,11 @@ impl App {
             return Vec::new();
         }
         // Spotify browse and radio stations render non-library rows.
-        if self.library_category == 5 || self.library_category == 6 {
+        if self.library_category == LIB_SPOTIFY || self.library_category == LIB_RADIO {
             return Vec::new();
         }
         // Playlist overview rows are playlists, not tracks.
-        if self.library_category == 4 && self.browse_detail.is_none() {
+        if self.library_category == LIB_PLAYLISTS && self.browse_detail.is_none() {
             return Vec::new();
         }
         self.filtered_tracks()
@@ -809,7 +815,7 @@ impl App {
     /// a chart row carrying a `spotify:` uri went to the library route, and one
     /// carrying no uri at all went to the empty path. Neither is a queue entry.
     pub(crate) fn queue_rows(&self, keys: Vec<String>) -> usize {
-        if self.library_category == 12 && self.charts.selected_chart.is_some() {
+        if self.library_category == LIB_CHARTS && self.charts.selected_chart.is_some() {
             let rows = self.selectable_rows();
             let picked: Vec<ChartTrack> = keys
                 .iter()
@@ -926,7 +932,7 @@ impl App {
         if self.browse_detail.is_some() {
             // Spotify drill-down rows are remote tracks (no local id to warm
             // the disk-cache with); only local track rows have an id to preload.
-            if self.library_category != 5 {
+            if self.library_category != LIB_SPOTIFY {
                 return self.filtered_tracks().get(pos).map(|t| t.id);
             }
             return None;
@@ -937,7 +943,7 @@ impl App {
         // than inside it, because that match is on the row's *kind* and a genre
         //        row is an ordinary track row as far as the kind is concerned — which is
         //        exactly why it resolved to whatever row sat at that index.
-        if self.library_category == 10 {
+        if self.library_category == LIB_ALL && self.library_filter == LibraryFilter::Genres {
             let name = self.unique_genres().get(pos)?.0.clone();
             return self
                 .tracks_cache

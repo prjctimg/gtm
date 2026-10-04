@@ -35,6 +35,11 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   [           Focus Previous Pane"),
     ("", "   ]           Focus Next Pane"),
     ("", "   Alt+.       Library Categories"),
+    (
+        "",
+        "   Tab         Library: next grouping (Tracks/Albums/Artists/Genres)",
+    ),
+    ("", "   Shift+Tab   Library: previous grouping"),
     ("", "   V           Cover grid for albums, artists, genres"),
     ("", "   (in grid)   Arrows move by cell, j/k by row"),
     ("", "   /           Search (context-aware)"),

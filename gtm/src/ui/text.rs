@@ -5,6 +5,10 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use crate::app::{
+    LIB_ADDED, LIB_ALL, LIB_CHARTS, LIB_FOLDERS, LIB_LIKED, LIB_PLAYED, LIB_PLAYLISTS,
+    LIB_PODCASTS, LIB_RADIO, LIB_RECENT, LIB_SPOTIFY, LibraryFilter,
+};
 use crate::ui::*;
 
 /// Most category rows the left pane will show at once.
@@ -74,7 +78,7 @@ pub(crate) fn info_block_h() -> u16 {
 
 pub(crate) fn library_stats_line(app: &App) -> String {
     if app.browse_detail.is_some() {
-        if app.library_category == 5 {
+        if app.library_category == LIB_SPOTIFY {
             let n = app.spotify.playlist_tracks_cache.len();
             return format!(" {} {} ", n, plural(n, "track", "tracks"));
         }
@@ -88,28 +92,24 @@ pub(crate) fn library_stats_line(app: &App) -> String {
             (total_dur % 3600) / 60
         );
     }
+    // The grouped lists count their own rows. They used to fall through to the
+    // track count below, so the footer read "812 tracks | 3h 12m" under a list
+    // of forty genres — a count of the wrong list, sitting under the one thing
+    // on screen that says how many there actually are.
+    if app.library_category == LIB_ALL && !matches!(app.library_filter, LibraryFilter::Tracks) {
+        let n = app.library_groups().len();
+        return format!(
+            " {} {} ",
+            n,
+            plural(n, app.library_filter.one(), app.library_filter.many())
+        );
+    }
     match app.library_category {
-        2 => {
-            let n = app.unique_albums().len();
-            format!(" {} {} ", n, plural(n, "album", "albums"))
-        }
-        3 => {
-            let n = app.unique_artists().len();
-            format!(" {} {} ", n, plural(n, "artist", "artists"))
-        }
-        // Genres counted tracks. There is no genre arm, so the footer read
-        // "812 tracks | 3h 12m" under a list of forty genres — a count of the
-        // wrong list, sitting under the one thing on screen that says how many
-        // there actually are.
-        10 => {
-            let n = app.unique_genres().len();
-            format!(" {} {} ", n, plural(n, "genre", "genres"))
-        }
-        4 => {
+        LIB_PLAYLISTS => {
             let n = app.playlist_cache.len();
             format!(" {} {} ", n, plural(n, "playlist", "playlists"))
         }
-        5 => {
+        LIB_SPOTIFY => {
             let n = app.spotify.playlists.len();
             format!(" {} {} ", n, plural(n, "playlist", "playlists"))
         }
