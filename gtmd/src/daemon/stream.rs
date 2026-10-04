@@ -183,6 +183,29 @@ pub(crate) fn open_remote_reader(
     Ok(reader)
 }
 
+/// Blocking open of a remote stream's byte transport plus the re-opener that
+/// gets back to the start of it.
+///
+/// Runs on a blocking thread; returns a byte transport (`IcyReader` strips
+/// Shoutcast metadata blocks and publishes `StreamTitle` into `title_slot`,
+/// `HttpReader` is the plain fallback) and, for live streams, a re-opener that
+/// reconnects from scratch (same URL, fresh ICY negotiation) so a dropped
+/// connection resumes and a seek restarts the transport instead of being
+/// dropped.
+pub(crate) fn open_remote_stream(
+    url: &str,
+    live: bool,
+    title_slot: Option<remote::IcySlot>,
+) -> AudioResult<(Box<dyn std::io::Read + Send>, Box<dyn StreamingReopen>)> {
+    let reader = open_remote_reader(url, live, title_slot.clone())?;
+    let reopen: Box<dyn StreamingReopen> = if live {
+        Box::new(remote::LiveReopen::new(url, title_slot))
+    } else {
+        Box::new(remote::HttpReopen::new(url))
+    };
+    Ok((reader, reopen))
+}
+
 /// Blocking decode of an HTTP stream into a decodable source. Runs on a
 /// blocking thread (network read during probe); returns the same source type
 /// the local-file and Spotify paths feed into `load_active_decoded`.
@@ -192,16 +215,8 @@ pub(crate) fn decode_remote_reader(
     start_pos: f64,
     title_slot: Option<remote::IcySlot>,
 ) -> AudioResult<Box<dyn rodio::Source<Item = f32> + Send>> {
-    let reader = open_remote_reader(&url, live, title_slot.clone())?;
-    // Live streams reconnect from scratch (same URL, fresh ICY negotiation);
-    // seeks stay disabled for them at the symphonia level, but the re-opener
-    // lets a dropped connection resume instead of ending the source.
-    let reopen: Option<Box<dyn StreamingReopen>> = if live {
-        Some(Box::new(remote::LiveReopen::new(url, title_slot)))
-    } else {
-        Some(Box::new(remote::HttpReopen::new(url)))
-    };
-    AudioMixer::decode_reader(reader, reopen, start_pos)
+    let (reader, reopen) = open_remote_stream(&url, live, title_slot)?;
+    AudioMixer::decode_reader(reader, Some(reopen), start_pos)
 }
 
 /// Derive a display title from a stream URL (host name or path segment).

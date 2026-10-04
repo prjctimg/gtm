@@ -232,8 +232,16 @@ const USER_AGENT: &str = concat!("gtm/", env!("CARGO_PKG_VERSION"));
 
 /// Shared blocking client with sane timeouts. Requests carry a descriptive
 /// User-Agent so streaming providers can identify gtm.
+///
+/// Built once and cloned per use. `reqwest::blocking::Client` owns a private
+/// runtime, so building one per request started a thread and a TLS stack for
+/// every stream open — and every reconnect — and threw them away when the
+/// response head was read.
 pub fn client() -> reqwest::blocking::Client {
-    build_client().expect("reqwest client builder cannot fail")
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| build_client().expect("reqwest client builder cannot fail"))
+        .clone()
 }
 
 fn build_client() -> std::io::Result<reqwest::blocking::Client> {
@@ -249,14 +257,20 @@ fn build_client() -> std::io::Result<reqwest::blocking::Client> {
 /// Blocking client for live (endless) streams. Deliberately no total
 /// `.timeout()`: reqwest's timeout covers the whole request including body
 /// streaming, so applying it here would kill every station ~60s in. Connect
-/// setup still fails fast via `CONNECT_TIMEOUT`.
+/// setup still fails fast via `CONNECT_TIMEOUT`. Cached for the same reason as
+/// [`client`].
 pub fn live_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .user_agent(USER_AGENT)
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .expect("reqwest client builder cannot fail")
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .user_agent(USER_AGENT)
+                .redirect(reqwest::redirect::Policy::limited(10))
+                .build()
+                .expect("reqwest client builder cannot fail")
+        })
+        .clone()
 }
 
 fn io_other(e: impl std::fmt::Display) -> std::io::Error {

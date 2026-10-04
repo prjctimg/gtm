@@ -251,12 +251,20 @@ const MAX_BODY: usize = 512 * 1024;
 
 /// A tracklist response is small and refetched often; keep the client cheap
 /// and the wait short so a slow source cannot hold up playback.
-pub fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent(format!("gtm/{} ({})", env!("CARGO_PKG_VERSION"), "gtm"))
-        .timeout(Duration::from_secs(8))
-        .build()
-        .unwrap_or_default()
+/// One client for the tracklist fetcher.
+///
+/// Rebuilt on every call before, and the tracklist refreshes every 30s while a
+/// station plays: a fresh TLS stack and connection pool each time, for a
+/// request to the same handful of hosts.
+pub fn client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(format!("gtm/{} ({})", env!("CARGO_PKG_VERSION"), "gtm"))
+            .timeout(Duration::from_secs(8))
+            .build()
+            .unwrap_or_default()
+    })
 }
 
 /// Parse a tracklist body into normalised absolute stamps.

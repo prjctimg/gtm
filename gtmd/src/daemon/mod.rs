@@ -608,17 +608,21 @@ impl Cmd {
             let mut state = inner.state.write().await;
             state.radio_title = None;
         }
-        let start = start_pos.max(0.0);
         let icy_slot = inner.icy_title.clone();
         let dur = {
-            let decoded = tokio::task::spawn_blocking(move || {
-                decode_remote_reader(url, live, start, Some(icy_slot))
-            })
-            .await
-            .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
-            .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
+            // The transport goes to the mixer as a reader, not as a decoded
+            // source. Decoding it on the output callback meant every network
+            // wait ran there: a slow read stalled the callback and the audio
+            // device underran with it. The ring primes to a full second and a
+            // half before `play`, so playback starts on buffered audio rather
+            // than on whatever the first read happened to deliver.
+            let opened =
+                tokio::task::spawn_blocking(move || open_remote_stream(&url, live, Some(icy_slot)))
+                    .await
+                    .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
+                    .map_err(|e| CoreError::Daemon(format!("stream: {e}")))?;
             let mut mixer = inner.mixer.lock().await;
-            mixer.load_active_decoded(decoded, start_pos)?;
+            mixer.load_active_reader(opened.0, Some(opened.1), start_pos)?;
             mixer.play()?;
             mixer.duration()
         };
@@ -3308,8 +3312,11 @@ impl Daemon {
             let s = state.read().await;
             let saved = SavedState::from_state(&s);
             drop(s);
-            if let Err(e) = saved.save(&state_file) {
-                warn!("failed to save state: {e}");
+            // Serialising a queue and writing the file are both blocking, and
+            // this runs while a track is playing: on the async task it held a
+            // worker for the length of the write.
+            if let Err(e) = tokio::task::spawn_blocking(move || saved.save(&state_file)).await {
+                warn!("failed to save state: {e:?}");
             }
         });
     }
@@ -4542,7 +4549,14 @@ fn run_covers_sync(
     let tracks = lib.list_tracks().map_err(|e| format!("list tracks: {e}"))?;
     let total = tracks.len();
     progress.total.store(total, Ordering::Relaxed);
-    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
+    // A current-thread runtime, not a fresh multi-thread one: these loops
+    // `block_on` one request at a time, and `Runtime::new()` handed each of
+    // them a whole worker pool -- eight threads apiece on an eight-core box,
+    // spawned and dropped around a background library sync.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("runtime: {e}"))?;
     let mut cache = CoverCache::new(cache_dir.clone());
     let mut synced = 0usize;
     for track in &tracks {
@@ -4597,7 +4611,14 @@ fn run_lyrics_sync(
     let tracks = lib.list_tracks().map_err(|e| format!("list tracks: {e}"))?;
     let total = tracks.len();
     progress.total.store(total, Ordering::Relaxed);
-    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
+    // A current-thread runtime, not a fresh multi-thread one: these loops
+    // `block_on` one request at a time, and `Runtime::new()` handed each of
+    // them a whole worker pool -- eight threads apiece on an eight-core box,
+    // spawned and dropped around a background library sync.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("runtime: {e}"))?;
     let manager = lyrics_manager.ok_or("lyrics manager not available")?;
     let mut synced = 0usize;
     for track in &tracks {
@@ -4636,7 +4657,14 @@ fn run_metadata_sync(
     let tracks = lib.list_tracks().map_err(|e| format!("list tracks: {e}"))?;
     let total = tracks.len();
     progress.total.store(total, Ordering::Relaxed);
-    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
+    // A current-thread runtime, not a fresh multi-thread one: these loops
+    // `block_on` one request at a time, and `Runtime::new()` handed each of
+    // them a whole worker pool -- eight threads apiece on an eight-core box,
+    // spawned and dropped around a background library sync.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("runtime: {e}"))?;
     let deezer = DeezerSearch::new();
     let mut synced = 0usize;
     for track in &tracks {

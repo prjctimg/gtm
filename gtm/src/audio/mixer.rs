@@ -51,12 +51,18 @@ pub trait Mixer: Send + Sync {
         start_pos: f64,
         duration_secs: f64,
     ) -> AudioResult<()>;
-    /// Load a live byte transport (radio/HTTP stream) as the active source.
+    /// Load a remote byte transport (radio, podcast, HTTP stream) as the active
+    /// source.
+    ///
     /// The decode thread owns reading, EQ, reverb and ring-buffer feeding, so
-    /// network jitter can never stall the audio callback. Seeking is disabled.
+    /// network jitter can never stall the audio callback, and the call returns
+    /// only once the ring holds enough audio that playback starts on a full
+    /// buffer rather than draining one. `reopen` is how a seek gets back to the
+    /// start of a transport that cannot seek on its own.
     fn load_active_reader(
         &mut self,
         reader: Box<dyn std::io::Read + Send>,
+        reopen: Option<Box<dyn StreamingReopen>>,
         start_pos: f64,
     ) -> AudioResult<()>;
     fn load_standby(&mut self, path: &str) -> AudioResult<()>;
@@ -182,9 +188,10 @@ impl Mixer for AudioMixer {
     fn load_active_reader(
         &mut self,
         reader: Box<dyn std::io::Read + Send>,
+        reopen: Option<Box<dyn StreamingReopen>>,
         start_pos: f64,
     ) -> AudioResult<()> {
-        self.load_active_reader(reader, start_pos)
+        self.load_active_reader(reader, reopen, start_pos)
     }
     fn load_active_stream(
         &mut self,
@@ -535,7 +542,7 @@ impl AudioMixer {
         let handle = thread.spawn().map_err(AudioError::DecodeError)?;
 
         let start = Instant::now();
-        let timeout = Duration::from_secs(5);
+        let timeout = STREAM_PREBUFFER_TIMEOUT;
         while !control.ready.load(Ordering::Acquire) && start.elapsed() < timeout {
             if !control.running.load(Ordering::Acquire) {
                 return Err(AudioError::DecodeError(
@@ -635,6 +642,7 @@ impl AudioMixer {
     #[allow(clippy::too_many_arguments)]
     fn start_decode_reader(
         reader: Box<dyn std::io::Read + Send>,
+        reopen: Option<Box<dyn StreamingReopen>>,
         eq_gains: &EqGains,
         eq_enabled: &Arc<AtomicBool>,
         pre_gain: &PreGain,
@@ -652,6 +660,7 @@ impl AudioMixer {
 
         let thread = DecodeThread::new_reader(
             reader,
+            reopen,
             shared.clone(),
             control.clone(),
             eq_gains.clone(),
@@ -661,7 +670,7 @@ impl AudioMixer {
             reverb_room_size.clone(),
             spectrum.clone(),
             wave.clone(),
-            PREBUFFER_SAMPLES_REDUCED,
+            PREBUFFER_SAMPLES,
         );
         let handle = thread.spawn().map_err(AudioError::DecodeError)?;
 
@@ -702,7 +711,8 @@ impl AudioMixer {
     pub fn load_active_reader(
         &mut self,
         reader: Box<dyn std::io::Read + Send>,
-        _start_pos: f64,
+        reopen: Option<Box<dyn StreamingReopen>>,
+        start_pos: f64,
     ) -> AudioResult<()> {
         Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
 
@@ -712,6 +722,7 @@ impl AudioMixer {
 
         let (control, source, handle) = Self::start_decode_reader(
             reader,
+            reopen,
             &self.eq_gains,
             &self.eq_enabled,
             &self.pre_gain,
@@ -732,7 +743,7 @@ impl AudioMixer {
 
         *self.position.lock().unwrap() = 0.0;
         *self.start_time.lock().unwrap() = None;
-        *self.start_pos.lock().unwrap() = 0.0;
+        *self.start_pos.lock().unwrap() = start_pos;
         self.playing.store(false, Ordering::SeqCst);
         self.crossfade_start = None;
 

@@ -414,12 +414,20 @@ impl Cover {
         Some(bytes.to_vec())
     }
 
-    fn image_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            .user_agent(format!("gtm/{} ({})", env!("CARGO_PKG_VERSION"), "gtm"))
-            .timeout(Duration::from_secs(8))
-            .build()
-            .unwrap_or_default()
+    /// One image client for the daemon.
+    ///
+    /// Built per call before, so every cover request — and every cell of a
+    /// cover grid — paid for a fresh TLS config, connection pool and DNS cache
+    /// to fetch a URL the next request was about to fetch again.
+    fn image_client() -> &'static reqwest::Client {
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        CLIENT.get_or_init(|| {
+            reqwest::Client::builder()
+                .user_agent(format!("gtm/{} ({})", env!("CARGO_PKG_VERSION"), "gtm"))
+                .timeout(Duration::from_secs(8))
+                .build()
+                .unwrap_or_default()
+        })
     }
 
     pub async fn artist(inner: &DaemonInner, artist: &str) -> Result<DaemonRes, CoreError> {

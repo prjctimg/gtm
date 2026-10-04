@@ -16,12 +16,31 @@ fn print_version() {
     );
 }
 
-#[tokio::main]
-async fn main() {
+/// The daemon's runtime, sized for what it actually does.
+///
+/// `#[tokio::main]` defaults to a worker per core and a 512-thread blocking
+/// pool, and both numbers are paid for at rest: this process spends its idle
+/// life on a 16 ms timer, two `accept()`s and a few periodic tasks, so it held
+/// sixteen threads to run one. Two workers cover every concurrent command
+/// (a playlist sync, a resolve, a cover fetch); the blocking pool is capped
+/// because the one job that holds a blocking thread for minutes -- the startup
+/// library scan -- is one thread, and a pool that cannot drain is a pool that
+/// only ever grows.
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(8)
+        .thread_name("gtmd")
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+}
+
+fn main() {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         print_version();
         return;
     }
 
-    gtmd::run().await;
+    runtime().block_on(gtmd::run());
 }

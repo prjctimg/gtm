@@ -98,9 +98,15 @@ pub async fn image_at(client: &AuthCodePkceSpotify, url: &str) -> Option<Vec<u8>
     fetch_image(client, url).await
 }
 
+/// One client for album-art fetches, shared by every prefetch in flight.
+fn image_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 async fn fetch_image(client: &AuthCodePkceSpotify, url: &str) -> Option<Vec<u8>> {
     let token = access_token(client).await.ok()?;
-    let resp = reqwest::Client::new()
+    let resp = image_client()
         .get(url)
         .bearer_auth(&token)
         .send()

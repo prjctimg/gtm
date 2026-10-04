@@ -11,6 +11,7 @@ use rodio::Source;
 
 use crate::audio::backend::{AudioEvent, AudioResult};
 use crate::audio::mixer::Mixer;
+use crate::audio::symphonia::StreamingReopen;
 use crate::shared::MAX_VOLUME;
 use crate::shared::global::{EqPreset, ReverbConfig};
 
@@ -63,6 +64,7 @@ impl Mixer for NullMixer {
     fn load_active_reader(
         &mut self,
         _reader: Box<dyn std::io::Read + Send>,
+        _reopen: Option<Box<dyn StreamingReopen>>,
         start_pos: f64,
     ) -> AudioResult<()> {
         *self.position.lock().unwrap() = start_pos;

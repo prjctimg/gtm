@@ -17,6 +17,7 @@ use std::sync::OnceLock;
 
 use rodio::Source;
 
+use gtm::audio::symphonia::StreamingReopen;
 use gtm::audio::{AudioEvent, AudioResult, Mixer};
 use gtm::shared::MAX_VOLUME;
 use gtm::shared::global::{EqPreset, ReverbConfig};
@@ -86,9 +87,11 @@ impl Mixer for DeferredMixer {
     fn load_active_reader(
         &mut self,
         reader: Box<dyn std::io::Read + Send>,
+        reopen: Option<Box<dyn StreamingReopen>>,
         start_pos: f64,
     ) -> AudioResult<()> {
-        self.ensure_mut()?.load_active_reader(reader, start_pos)
+        self.ensure_mut()?
+            .load_active_reader(reader, reopen, start_pos)
     }
 
     fn load_active_stream(

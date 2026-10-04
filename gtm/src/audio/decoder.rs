@@ -18,7 +18,7 @@ use crate::shared::global::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
 use crate::audio::buffer::{DecodeControl, SharedRingBuffer};
 use crate::audio::eq::{EqGains, PreGain};
-use crate::audio::symphonia::SymphoniaSource;
+use crate::audio::symphonia::{StreamingReopen, SymphoniaSource};
 use crate::audio::wave::{WAVEFORM_DECIM, WaveformShared};
 
 // ---------------------------------------------------------------------------
@@ -231,9 +231,14 @@ pub struct DecodeThread {
 enum DecodeSource {
     /// Local file opened with `SymphoniaSource::from_file` (seek = reopen).
     File { path: String },
-    /// Live byte stream handed straight to `SymphoniaSource::from_reader`
-    /// with no re-opener. Declared so one-shot readers never race a seek.
-    Reader(Option<Box<dyn Read + Send>>),
+    /// Live byte stream handed to `SymphoniaSource::from_reader`, with the
+    /// re-opener that lets a seek restart the transport. `reopen` is `None`
+    /// only for a genuinely one-shot reader, and then the seek is dropped as
+    /// before.
+    Reader {
+        reader: Option<Box<dyn Read + Send>>,
+        reopen: Option<Box<dyn StreamingReopen>>,
+    },
     /// An already-decoded sample source, used for remote providers that decode
     /// outside the mixer (Spotify via librespot). It carries no seek support
     /// of its own, so it is declared one-shot for the same reason as
@@ -278,6 +283,7 @@ impl DecodeThread {
     #[allow(clippy::too_many_arguments)]
     pub fn new_reader(
         reader: Box<dyn Read + Send>,
+        reopen: Option<Box<dyn StreamingReopen>>,
         shared: SharedRingBuffer,
         control: Arc<DecodeControl>,
         eq_gains: EqGains,
@@ -290,7 +296,10 @@ impl DecodeThread {
         prebuffer_samples: usize,
     ) -> Self {
         Self {
-            source: DecodeSource::Reader(Some(reader)),
+            source: DecodeSource::Reader {
+                reader: Some(reader),
+                reopen,
+            },
             shared,
             control,
             eq_gains,
@@ -370,7 +379,7 @@ impl DecodeThread {
                         break;
                     }
                 },
-                DecodeSource::Reader(reader) => {
+                DecodeSource::Reader { reader, reopen } => {
                     // Live transport: consume the reader once. A probe or
                     // read failure terminates the thread (the ring signals
                     // finished so the consumer can end cleanly); `ready` stays
@@ -382,7 +391,8 @@ impl DecodeThread {
                         self.control.finished.store(true, Ordering::Release);
                         return;
                     };
-                    match SymphoniaSource::from_reader(r, None, 0.0) {
+                    let reopen = reopen.take();
+                    match SymphoniaSource::from_reader(r, reopen, start_pos) {
                         Ok(s) => Box::new(s) as Box<dyn Source<Item = f32> + Send>,
                         Err(e) => {
                             log::error!("decode thread: failed to open live stream: {e}");
@@ -466,11 +476,20 @@ impl DecodeThread {
                 if let Some(target_secs) = self.control.consume_seek() {
                     self.control.seeking.store(false, Ordering::Release);
                     match &self.source {
-                        DecodeSource::Reader(_) => {
-                            // Live transports cannot seek: the request is
-                            // dropped so a stale seek can never mask EOF or
-                            // strand the consumer on the seeking flag.
+                        DecodeSource::Reader { reopen, .. } if reopen.is_none() => {
+                            // A transport with no way back to the start cannot
+                            // seek: the request is dropped so a stale seek can
+                            // never mask EOF or strand the consumer on the
+                            // seeking flag.
                             log::debug!("decode thread: seek ignored on live stream");
+                        }
+                        DecodeSource::Reader { .. } => {
+                            // Reconnectable: same restart as a file, with the
+                            // re-opener below re-issuing the GET.
+                            log::info!("decode thread: seek to {target_secs:.2}s on stream");
+                            start_pos = target_secs;
+                            self.shared.flush();
+                            break;
                         }
                         DecodeSource::Stream(_) => {
                             log::debug!("decode thread: seek ignored on provider stream");
