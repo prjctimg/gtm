@@ -198,7 +198,15 @@ impl Mixer for DeferredMixer {
     }
 
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>> {
-        self.ensure_mut()?.poll()
+        // Read-only until something is playing: the daemon's event loop polls
+        // this every 16 ms from the moment it starts, and going through
+        // `ensure_mut` there opened the audio device ~16 ms after launch —
+        // which is the thing this type exists to prevent. Once a mixer exists
+        // the poll is the real one.
+        match self.inner.get_mut() {
+            Some(m) => m.poll(),
+            None => Ok(None),
+        }
     }
 
     fn current_peak_level(&self) -> f32 {

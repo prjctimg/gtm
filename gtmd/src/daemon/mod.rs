@@ -688,6 +688,13 @@ impl Cmd {
     }
 }
 
+/// How much of a URL's body the playlist sniff is allowed to read.
+///
+/// A playlist is a few kilobytes; an endless live stream is the common case for
+/// this same request, and reading it whole is what made the request's own
+/// timeout cut a station off at a minute.
+const STREAM_SNIFF_BYTES: usize = 256 * 1024;
+
 impl Cmd {
     /// Play a raw HTTP(S) stream URL, transparently resolving M3U/PLS
     /// playlists fetched from the URL. Remaining playlist entries stay in the
@@ -738,7 +745,17 @@ impl Cmd {
                 if !resp.status().is_success() {
                     return Err(format!("stream HTTP {}", resp.status()));
                 }
-                let body = resp.text().map_err(|e| format!("stream read: {e}"))?;
+                // Bounded, and deliberately so: this reads the body of a URL the
+                // user handed us, which is very often an endless live stream.
+                // Reading it whole meant the request's own 60s timeout killed a
+                // station at a minute, and a playlist is never longer than the
+                // first few kilobytes.
+                let mut body = vec![0u8; STREAM_SNIFF_BYTES];
+                let mut resp = resp;
+                let read = std::io::Read::read(&mut resp, &mut body)
+                    .map_err(|e| format!("stream read: {e}"))?;
+                body.truncate(read);
+                let body = String::from_utf8_lossy(&body);
                 let parsed = sniff_stream_playlist(&url_owned, &body);
                 Ok((url_owned, parsed))
             })

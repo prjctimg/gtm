@@ -59,10 +59,57 @@ pub struct Library {
     data_dir: PathBuf,
 }
 
+/// Database files already at this build's schema version.
+fn schema_done(path: &str) -> bool {
+    let set = SCHEMA_DONE.get_or_init(Default::default);
+    set.lock().is_ok_and(|set| set.contains(path))
+}
+
+fn mark_schema_done(path: String) {
+    if let Ok(mut set) = SCHEMA_DONE.get_or_init(Default::default).lock() {
+        set.insert(path);
+    }
+}
+
+/// A database file this process has already prepared, found empty or missing.
+///
+/// `Connection::open` creates the file, so "empty" is how a database that was
+/// deleted underneath us — a prune, a test's temp dir — looks to the guard
+/// above. It has to run the schema again, or every query after it fails on a
+/// table that does not exist.
+fn fresh_db(path: &str) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() == 0)
+}
+
+static SCHEMA_DONE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
 impl Library {
     pub fn new(db_dir: &str) -> Result<Self, String> {
-        let path = format!("{}/{}", db_dir, DB_NAME);
+        let path = format!("{db_dir}/{DB_NAME}");
         let conn = Connection::open(&path).map_err(|e| format!("db open: {e}"))?;
+        // The schema runs once per database file, not once per open.
+        //
+        // Every library call opened its own connection and then ran the whole
+        // `CREATE TABLE IF NOT EXISTS` batch, two column probes and any pending
+        // migrations to get through it: a single library view cost twenty
+        // connections and twenty schema runs, each on its own blocking thread,
+        // none of them changing anything. The open stays per call — a
+        // connection is not `Sync`, so sharing one would mean locking every
+        // query in this file, and a fresh handle is cheap next to that.
+        if !schema_done(&path) || fresh_db(&path) {
+            Self::init_schema(&conn)?;
+            mark_schema_done(path);
+        }
+        Ok(Self {
+            conn,
+            _watch_dirs: Mutex::new(Vec::new()),
+            data_dir: PathBuf::from(db_dir),
+        })
+    }
+
+    /// The schema, plus the column migrations for databases older than it.
+    fn init_schema(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS tracks (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,11 +178,7 @@ impl Library {
             .map_err(|e| format!("db migrate play metrics: {e}"))?;
         }
 
-        Ok(Self {
-            conn,
-            _watch_dirs: Mutex::new(Vec::new()),
-            data_dir: PathBuf::from(db_dir),
-        })
+        Ok(())
     }
 
     /// Increment the play counter and refresh the last-played timestamp for a
