@@ -514,6 +514,16 @@ impl Render {
     /// `[extensions] visualizer` kill switch is honoured by the caller, which
     /// declines to pay for the frames when it is off.
     pub(crate) fn zen_visualizer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        Render::visualizer_block(f, area, app);
+    }
+
+    /// The visualizer, inset by a cell, in any surface that draws it.
+    ///
+    /// One renderer for the full-screen Zen view and the now-playing band's
+    /// column, because the tick has to happen exactly once per surface per
+    /// frame: two ticks for one surface would advance the band model twice as
+    /// fast as the frame it is drawn in.
+    pub(crate) fn visualizer_block(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let inner = Rect {
             x: area.x + 1,
             y: area.y + 1,
@@ -871,6 +881,39 @@ impl Render {
 
         let left_focus = app.library_pane_focus;
 
+        // The visualizer comes back to the band it used to have a column of,
+        // carved from the band's right edge rather than from its rows. Rows are
+        // the scarce resource here: they are what sizes the cover, so a
+        // visualizer that cost one would shrink the artwork on every terminal.
+        //
+        // The columns are only taken when the band can still hold the layout it
+        // had — the cover at its own height plus the sixteen columns the
+        // renderer reserves for the labels — so a narrow terminal keeps the
+        // artwork and loses the visualizer.
+        let vis_w = (np_area.width / 4).clamp(20, 44);
+        let cover_rows = if is_small_height {
+            np_height.saturating_sub(4).clamp(2, 7)
+        } else {
+            np_height.saturating_sub(3).min(12)
+        };
+        let (np_area, vis_area) = if app.np_visualizer()
+            && np_area.width.saturating_sub(vis_w + 1) >= cover_rows * 2 + 16 + 2
+        {
+            let vis = Rect {
+                x: np_area.x + np_area.width - vis_w,
+                ..np_area
+            };
+            (
+                Rect {
+                    width: np_area.width - vis_w,
+                    ..np_area
+                },
+                Some(vis),
+            )
+        } else {
+            (np_area, None)
+        };
+
         {
             // No rule under the label. The now-playing label is empty, so the
             // only thing the rule ever separated was the cover art from the
@@ -892,8 +935,14 @@ impl Render {
                 };
                 // `cover_band` is computed once in `library` so the left pane's
                 // list can align to it; here it is only bounded by what the
-                // band actually has room for.
-                let cover_h = if is_small_height {
+                // band actually has room for. One column has no left pane to
+                // align to, and its band is four rows, so the artwork takes
+                // all of them: the band cap was holding a single-column cover
+                // to two rows beside two rows of labels, which is the one
+                // layout where the artwork is the smaller half.
+                let cover_h = if is_narrow {
+                    avail_h
+                } else if is_small_height {
                     avail_h.clamp(2, 7)
                 } else {
                     avail_h.min(cover_band)
@@ -947,7 +996,7 @@ impl Render {
                 // horizontal room. On small-height terminals the cover is
                 // scaled down but never stacked onto a single-line row: the
                 // cover stays left with the track details to its right.
-                if inner.width >= cover_w + 16 && (avail_h >= 5 || is_small_height) {
+                if inner.width >= cover_w + 16 && (is_narrow || avail_h >= 5 || is_small_height) {
                     let hchunks = Layout::default()
                         .direction(Direction::Horizontal)
                         .constraints([
@@ -984,9 +1033,24 @@ impl Render {
 
                     let info_area = hchunks[2];
 
-                    let info_rows =
-                        2u16 + if has_album { 1 } else { 0 } + if has_progress { 1 } else { 0 };
-                    let content_h: u16 = info_rows;
+                    // The label block takes the rows it can: the title and the artist
+                    // always, then the album, the bar and the elapsed time, and
+                    // whatever does not fit is dropped from the bottom. One
+                    // column has four rows beside a four-row cover, so it keeps
+                    // the album and the bar and loses the elapsed time — which
+                    // the footer's `Time` module carries there.
+                    let mut info_constraints = vec![Constraint::Length(1), Constraint::Length(1)];
+                    if has_album {
+                        info_constraints.push(Constraint::Length(1));
+                    }
+                    if has_progress {
+                        info_constraints.push(Constraint::Length(1));
+                        info_constraints.push(Constraint::Length(1));
+                    }
+                    while info_constraints.len() as u16 > avail_h.max(2) {
+                        info_constraints.pop();
+                    }
+                    let content_h = info_constraints.len() as u16;
                     let offset = cover_h.saturating_sub(content_h) / 2;
                     let vchunks = Layout::default()
                         .direction(Direction::Vertical)
@@ -998,14 +1062,6 @@ impl Render {
                         .split(info_area);
                     let content_area = vchunks[1];
 
-                    let mut info_constraints = vec![Constraint::Length(1), Constraint::Length(1)];
-                    if has_album {
-                        info_constraints.push(Constraint::Length(1));
-                    }
-                    if has_progress {
-                        info_constraints.push(Constraint::Length(1));
-                        info_constraints.push(Constraint::Length(1)); // Extra line for elapsed time
-                    }
                     let info_chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints(info_constraints)
@@ -1023,26 +1079,31 @@ impl Render {
                     )]));
                     Render::evolving(f, info_chunks[0], title_para, "np", app, true);
 
+                    // Every label scrolls on the same clock: they share one
+                    // offset, so a long artist does not start moving a moment
+                    // after the long title did. `scroll_text` pads a short
+                    // string to the full width, which keeps the block from
+                    // flickering as the track changes.
+                    let avail = info_chunks[0].width as usize;
                     let artist_para = Paragraph::new(Line::from(vec![Span::styled(
-                        display_artist,
+                        scroll_text(&display_artist, avail, app.np_title_scroll, true),
                         Style::default().fg(app.theme.fg_bright),
                     )]));
                     f.render_widget(artist_para, info_chunks[1]);
 
                     let mut info_row = 2;
-                    if has_album {
+                    if has_album && let Some(area) = info_chunks.get(info_row) {
                         let album_para = Paragraph::new(Line::from(vec![Span::styled(
-                            &track.album,
+                            scroll_text(&track.album, avail, app.np_title_scroll, true),
                             Style::default().fg(app.theme.fg_bright),
                         )]));
-                        f.render_widget(album_para, info_chunks[info_row]);
+                        f.render_widget(album_para, *area);
                         info_row += 1;
                     }
-                    if has_progress {
+                    if has_progress && let Some(area) = info_chunks.get(info_row) {
                         let pos = app.display_position as u64;
                         let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
-                        let bar_w =
-                            (info_chunks[info_row].width / 3).saturating_sub(2).max(4) as usize;
+                        let bar_w = (area.width / 3).saturating_sub(2).max(4) as usize;
                         let progress_str = Render::progress_variant(ratio, bar_w, app);
                         let time_str =
                             format!(" {} / {}", format_duration(pos), format_duration(dur));
@@ -1051,14 +1112,14 @@ impl Render {
                             progress_str,
                             Style::default().fg(app.theme.secondary_accent),
                         )]));
-                        f.render_widget(prog_para, info_chunks[info_row]);
+                        f.render_widget(prog_para, *area);
                         // Elapsed time on second line
-                        if info_row + 1 < info_chunks.len() {
+                        if let Some(area) = info_chunks.get(info_row + 1) {
                             let time_para = Paragraph::new(Line::from(vec![Span::styled(
                                 time_str,
                                 Style::default().fg(app.theme.fg_dim),
                             )]));
-                            f.render_widget(time_para, info_chunks[info_row + 1]);
+                            f.render_widget(time_para, *area);
                         }
                     }
                 } else if inner.width >= 12 {
@@ -1152,6 +1213,11 @@ impl Render {
                 let msg = Paragraph::new(lines);
                 Render::evolving(f, inner, msg, "idle", app, false);
             }
+        }
+
+        if let Some(vis) = vis_area {
+            fill_pane(f, vis, app);
+            Render::visualizer_block(f, vis, app);
         }
 
         // The left pane carries the category list again, alongside the Alt+.

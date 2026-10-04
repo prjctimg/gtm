@@ -737,6 +737,15 @@ impl TuiCommand {
     }
 }
 impl App {
+    /// Whether the now-playing band may claim columns for a visualizer column.
+    ///
+    /// The renderer owns the arithmetic — how wide the column is and whether
+    /// the band can spare it — so this is only the part the frame loop needs
+    /// to decide whether a redraw is worth it while nothing else is moving.
+    pub fn np_visualizer(&self) -> bool {
+        self.extensions.is_enabled(ExtensionId::Visualizer) && self.terminal_cols >= 80
+    }
+
     pub fn surface_bg(&self) -> ratatui::style::Color {
         if self.transparent_bg {
             ratatui::style::Color::Reset
