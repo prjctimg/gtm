@@ -1,4 +1,4 @@
-# gtm 📻
+# [gtm](https://gtmd.dev) 📻
 
 
 [![Crates.io](https://img.shields.io/crates/v/gtm)](https://crates.io/crates/gtm)
@@ -8,7 +8,15 @@
 [![License](https://img.shields.io/github/license/prjctimg/gtm)](https://github.com/prjctimg/gtm/blob/main/LICENSE)
 
 
-<video src="https://github.com/user-attachments/assets/2dfe08cf-39cd-4ffa-bc3f-08150eb7f440" width="600"></video>
+
+![](./screenshots/1.png)
+
+![](./screenshots/2.png)
+
+![](./screenshots/3.png)
+
+![](./screenshots/4.png)
+
 `gtm` is a reimagined audio player built for terminal enthusiasts.
 
 ## On this page
