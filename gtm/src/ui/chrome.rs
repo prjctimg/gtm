@@ -2461,6 +2461,26 @@ impl Render {
         let inner = area;
         fill_pane(f, inner, app);
 
+        // Focus, without a header. Every other pane says which one has it with
+        // an accent bar on its header row; this one has no header row, so the
+        // bar runs the full height of the pane's edge instead and the body
+        // gives up the column so nothing is drawn under it.
+        let inner = if app.lyrics.pane_focus && inner.width > 1 {
+            f.render_widget(
+                Block::default()
+                    .borders(Borders::LEFT)
+                    .border_style(Style::default().fg(app.theme.accent)),
+                Rect { width: 1, ..inner },
+            );
+            Rect {
+                x: inner.x + 1,
+                width: inner.width - 1,
+                ..inner
+            }
+        } else {
+            inner
+        };
+
         let Some(ref lyrics) = app.lyrics.current else {
             if app.lyrics.fetching {
                 let mut spans = vec![Span::styled(

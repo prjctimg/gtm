@@ -3221,6 +3221,17 @@ fn the_lyrics_pane_carries_no_chrome() {
     for gone in ["lyrics.title", "lyrics.artist", "app.terminal_cols"] {
         assert!(!pane.contains(gone), "the lyrics header still reads {gone}");
     }
+    // No header means no focus bar on a header row, so the pane has to say
+    // which one has focus some other way: the same accent bar the headed panes
+    // get, run down the edge it cannot spare.
+    assert!(
+        pane.contains("if app.lyrics.pane_focus"),
+        "the lyrics pane no longer marks itself as focused"
+    );
+    assert!(
+        pane.contains("Borders::LEFT"),
+        "the lyrics focus marker is no longer the accent bar on the pane's edge"
+    );
 
     // One call site shape, so neither layout can reintroduce a fit-dependent
     // header by way of the argument that used to select it.
