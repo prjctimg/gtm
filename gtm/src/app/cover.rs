@@ -628,12 +628,28 @@ impl App {
         self.preload_chart_covers();
         let pos = self.list_pos();
         let mut ids = Vec::new();
+        let mut urls = Vec::new();
         for off in 1..=3 {
-            if let Some(id) = self.track_id_at(pos + off) {
+            // `track_id_at` answers 0 for a row with no library row, and the
+            // local art cache has nothing under 0: those were three identical
+            // dead lookups per cursor move. A provider row is named by its
+            // album-art url, so it warms through that instead.
+            if let Some(id) = self.track_id_at(pos + off)
+                && id != 0
+            {
                 ids.push(id);
             }
+            if let Some(url) = self
+                .filtered_tracks()
+                .get(pos + off)
+                .filter(|t| !std::path::Path::new(&t.path).is_absolute())
+                .and_then(|t| t.cover_url.clone())
+                .filter(|u| !u.is_empty())
+            {
+                urls.push(url);
+            }
         }
-        if ids.is_empty() {
+        if ids.is_empty() && urls.is_empty() {
             return;
         }
         let client = self.client.clone();
@@ -642,6 +658,9 @@ impl App {
                 // Errors (track without cover / daemon lookup fail) are fine:
                 // a warm miss is simply skipped next time.
                 let _ = client.art().cover(id).await;
+            }
+            for url in urls {
+                let _ = client.image_cover(&url).await;
             }
         });
     }
