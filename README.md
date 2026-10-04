@@ -23,16 +23,12 @@
 - [Contributors](#contributors)
 
 
-
-![](./gtm.png)
-
 ## Features
 
 - **Background playback**: reattach to the client from anywhere in the terminal
-- **YouTube & Spotify**: search & download from YouTube and sync Spotify
-  playlists; missing metadata/cover art is backfilled from Spotify, Deezer and
-  MusicBrainz.
-- **Internet radio**: browse the Radio Browser directory and stream any station
+- **YouTube & Spotify**: search & download from YouTube and sync Spotify. 
+- **Offline playback**: Resolve Spotify tracks via yt-dlp for downloading.
+ - **Internet radio**: browse the Radio Browser directory and stream any station
 - **Podcasts**: subscribe to RSS/Atom feeds and play episodes in order
 - **Top charts**: Spotify, Apple and community charts, browsable as a tree
 - **Crossfade**: gapless-ish transitions with a configurable duration.
@@ -68,26 +64,22 @@ curl -fsSL https://gtmd.dev/install.sh | bash -s -- --nightly
 Or grab an archive [releases page](https://github.com/prjctimg/gtm/releases/latest), extract it, and run the `./install.sh` in its directory
 
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md#build-from-source) for more installation routes.
+See [CONTRIBUTING](./CONTRIBUTING.md#build-from-source) for more installation routes.
 
 
 ## Documentation
 
 - [gtmd.dev](https://gtmd.dev) 
+
+### Manpages
+
 - [gtm(1)](docs/man/gtm.1.md)
 - [gtmd(1)](docs/man/gtmd.1.md)
 - [gtmd-ipc(1)](docs/man/gtmd-ipc.1.md)
 
-
-## Why another (terminal) audio player ?
-
-You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-terminal-audio-player)
-
-
-
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) & [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+See [the contributing guide](CONTRIBUTING.md) & [the Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 
