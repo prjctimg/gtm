@@ -106,8 +106,15 @@ impl Pickers {
             // The key sits in its own column, in the theme's dim colour, with
             // no brackets: the brackets were punctuation around something
             // already set apart, and on the selected row they were the only
-            // part that said which row the key belonged to.
-            let key_col = (row_w / 3).max(16);
+            // part that said which row the key belonged to. The column is as
+            // wide as the longest name, so a long one cannot push its key into
+            // its own text.
+            let key_col = commands
+                .iter()
+                .map(|c| c.label.chars().count() + 5)
+                .max()
+                .unwrap_or(0)
+                .min((row_w / 2) as usize) as u16;
             let head = format!("   {name}");
             let pad = row_pad(&head, key_col);
             let tail =
