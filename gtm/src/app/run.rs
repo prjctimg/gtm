@@ -1197,6 +1197,15 @@ impl App {
                         {
                             self.track_popup_cover = cover;
                             self.popup_cover_sync();
+                            self.cover_art_dirty = true;
+                            if self.track_popup_cover.is_none() {
+                                // Release on a miss, like the URL path: the
+                                // slot left claimed is a row that can never be
+                                // asked again, so a track whose art the daemon
+                                // had not cached yet stayed blank for the rest
+                                // of the session however much you scrolled.
+                                self.popup_slot.clear();
+                            }
                         }
                     }
                     IpcResult::GridCover(cover, track_id, round) => {

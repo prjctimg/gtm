@@ -22,6 +22,13 @@ impl App {
         if self.np_cover.pending_gen.is_some() {
             return;
         }
+        // The identity of the request belongs to the request, not to the caller.
+        // The frame loop used to set the track id and path before calling this,
+        // and the reply handler drops anything whose path no longer matches, so a
+        // caller that skipped those two lines — entering Zen does — could have
+        // its answer discarded against the *previous* track's path.
+        self.np_cover.track_id = Some(tid);
+        self.np_cover.track_path = Some(track.path.clone());
         let fetch_gen = self.next_cover_gen();
         self.np_cover.pending_gen = Some(fetch_gen);
         // A remote row (provider uri in `path`, which is every row that came
@@ -117,54 +124,40 @@ impl App {
         // every other category filled in. Read alongside the id/path pair
         // because that pair is all the local path below needs.
         let mut remote_url: Option<String> = None;
+        // A grouped row (a genre, or the drills into one) is a name, not a
+        // track: it needs the track it stands for, or the card shows the
+        // artwork of whatever row shares its index in the library.
         let maybe_track: Option<(i64, String)> = match kind {
             TrackInfoKind::Track => {
-                let filtered = self.filtered_tracks();
-                let pos = self.list_pos();
-                filtered.get(pos).map(|hit| {
-                    // Remote rows are everything the local art cache cannot
-                    // serve: empty paths (chart-style rows) and provider URIs
-                    // (`spotify:`, …) that happen to be stored in `path`,
-                    // which is all of "All Tracks". Both carry `cover_url`.
-                    if hit.path.is_empty() || !std::path::Path::new(&hit.path).is_absolute() {
-                        remote_url = hit.cover_url.clone();
+                if self.group_row() && self.browse_detail.is_none() {
+                    let pos = self.list_pos();
+                    if let Some(hit) = self.group_representative(pos) {
+                        if !std::path::Path::new(&hit.path).is_absolute() {
+                            remote_url = hit.cover_url.clone();
+                        }
+                        Some((hit.id, hit.path.clone()))
+                    } else {
+                        None
                     }
-                    (hit.id, hit.path.clone())
-                })
+                } else {
+                    let filtered = self.filtered_tracks();
+                    let pos = self.list_pos();
+                    filtered.get(pos).map(|hit| {
+                        // Remote rows are everything the local art cache cannot
+                        // serve: empty paths (chart-style rows) and provider URIs
+                        // (`spotify:`, …) that happen to be stored in `path`,
+                        // which is all of "All Tracks". Both carry `cover_url`.
+                        if hit.path.is_empty() || !std::path::Path::new(&hit.path).is_absolute() {
+                            remote_url = hit.cover_url.clone();
+                        }
+                        (hit.id, hit.path.clone())
+                    })
+                }
             }
-            TrackInfoKind::Album => {
-                let albums = self.unique_albums();
+            TrackInfoKind::Album | TrackInfoKind::Artist => {
                 let pos = self.list_pos();
-                albums.get(pos).and_then(|(name, _)| {
-                    self.tracks_cache
-                        .iter()
-                        .find(|t| {
-                            let album: &str = if t.album.is_empty() {
-                                "Unknown Album"
-                            } else {
-                                &t.album
-                            };
-                            album == name
-                        })
-                        .map(|t| (t.id, t.path.clone()))
-                })
-            }
-            TrackInfoKind::Artist => {
-                let artists = self.unique_artists();
-                let pos = self.list_pos();
-                artists.get(pos).and_then(|(name, _)| {
-                    self.tracks_cache
-                        .iter()
-                        .find(|t| {
-                            let artist: &str = if t.artist.is_empty() {
-                                "Unknown Artist"
-                            } else {
-                                &t.artist
-                            };
-                            artist == name
-                        })
-                        .map(|t| (t.id, t.path.clone()))
-                })
+                self.group_representative(pos)
+                    .map(|t| (t.id, t.path.clone()))
             }
             // Playlist and Spotify rows never resolve a local cover; the block
             // still describes the selected row. A chart row resolves its own
@@ -255,7 +248,15 @@ impl App {
         }
         // One in-flight fetch per track; `id == 0` reuse is safe because the
         // generation is what decides whether a reply is current.
+        //
+        // The cover is cleared *before* this check rather than after it: an
+        // early return here is the case where the row's own request is still in
+        // flight, and leaving the previous row's bytes on the card put one
+        // track's artwork under another track's title for as long as the fetch
+        // took.
         if no_image_protocol() || self.popup_slot.pending(&tid) {
+            self.track_popup_cover = None;
+            self.popup_cover_stateful = None;
             return;
         }
         let fetch_gen = self.next_cover_gen();
@@ -264,14 +265,19 @@ impl App {
         self.popup_cover_stateful = None;
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
+        let art_path = path.clone();
         tokio::spawn(async move {
-            // Answer on a miss too: a silent failure leaves `popup_slot`
-            // claimed, and the handler treats a claimed slot as "in flight", so
-            // the row could never be re-fetched for the rest of the session.
-            let bytes = match client.art().cover(tid).await {
+            // By id *and* path. The daemon resolves a library row by id first
+            // and only then falls back to the queue, so asking by id alone
+            // missed every row whose art is known from the queue entry — which
+            // is every row the resolver labelled without a local file behind it.
+            let bytes = match client.art().cover_for(tid, Some(art_path)).await {
                 Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
                 _ => None,
             };
+            // Answer on a miss too: a silent failure leaves `popup_slot`
+            // claimed, and the handler treats a claimed slot as "in flight", so
+            // the row could never be re-fetched for the rest of the session.
             let msg = match bytes {
                 Some(bytes) => IpcResult::PopupCoverArt(Some(bytes), tid, fetch_gen),
                 None => IpcResult::PopupCoverArt(None, tid, fetch_gen),

@@ -937,57 +937,16 @@ impl App {
             }
             return None;
         }
-        // Genres: no track of their own, so the grid borrows one track from the
-        // genre. Its artwork is an album sleeve for something in the genre,
-        //        which is the only picture a genre has. Checked before the match rather
-        // than inside it, because that match is on the row's *kind* and a genre
-        //        row is an ordinary track row as far as the kind is concerned — which is
-        //        exactly why it resolved to whatever row sat at that index.
-        if self.library_category == LIB_ALL && self.library_filter == LibraryFilter::Genres {
-            let name = self.unique_genres().get(pos)?.0.clone();
-            return self
-                .tracks_cache
-                .iter()
-                .find(|t| {
-                    let genre: &str = if t.genre.is_empty() {
-                        "Unknown Genre"
-                    } else {
-                        &t.genre
-                    };
-                    genre == name
-                })
-                .map(|t| t.id);
+        // A grouped row names a group, so it has no id of its own: the card and
+        // the grid both borrow the id of the first track behind it. Checked
+        // before the match, because the match is on the row's *kind* and a genre
+        // row is an ordinary track row as far as the kind is concerned — which is
+        // exactly why it used to resolve to whatever row sat at that index.
+        if self.group_row() {
+            return self.group_representative(pos).map(|t| t.id);
         }
         match self.track_info_kind() {
             TrackInfoKind::Track => self.filtered_tracks().get(pos).map(|t| t.id),
-            TrackInfoKind::Album => {
-                let name = self.unique_albums().get(pos)?.0.clone();
-                self.tracks_cache
-                    .iter()
-                    .find(|t| {
-                        let album: &str = if t.album.is_empty() {
-                            "Unknown Album"
-                        } else {
-                            &t.album
-                        };
-                        album == name
-                    })
-                    .map(|t| t.id)
-            }
-            TrackInfoKind::Artist => {
-                let name = self.unique_artists().get(pos)?.0.clone();
-                self.tracks_cache
-                    .iter()
-                    .find(|t| {
-                        let artist: &str = if t.artist.is_empty() {
-                            "Unknown Artist"
-                        } else {
-                            &t.artist
-                        };
-                        artist == name
-                    })
-                    .map(|t| t.id)
-            }
             // Playlist and Spotify rows carry no library id, and a chart row is
             // keyed on a URL. Both are warmed elsewhere.
             _ => None,
@@ -1041,6 +1000,48 @@ impl App {
             *guard = Some((self.tracks_cache_gen, out.clone()));
         }
         out
+    }
+
+    /// The track a grouped row at `pos` stands for: the first track of the
+    /// album, artist or genre the row names.
+    ///
+    /// One rule for all three, because the row is a name and everything that
+    /// needs a concrete track — the card's cover, the grid's cell, the preload's
+    /// warm-up — needs the same one. Asking `filtered_tracks()[pos]` instead,
+    /// which is what these rows used to do, indexes the *whole library*: at the
+    /// top level one row is an album, so row 4's cover was whatever local track
+    /// happened to be fourth in the list. Genres are the visible case, because
+    /// a genre row's kind is an ordinary track row.
+    pub fn group_representative(&self, pos: usize) -> Option<&TrackInfo> {
+        let filter = self.library_filter;
+        let name = self.library_groups_of(filter).get(pos)?.0.clone();
+        self.tracks_cache.iter().find(|t| {
+            let key = match filter {
+                LibraryFilter::Albums => {
+                    if t.album.is_empty() {
+                        "Unknown Album"
+                    } else {
+                        t.album.as_str()
+                    }
+                }
+                LibraryFilter::Artists => {
+                    if t.artist.is_empty() {
+                        "Unknown Artist"
+                    } else {
+                        t.artist.as_str()
+                    }
+                }
+                LibraryFilter::Genres => {
+                    if t.genre.is_empty() {
+                        "Unknown Genre"
+                    } else {
+                        t.genre.as_str()
+                    }
+                }
+                LibraryFilter::Tracks => "",
+            };
+            key == name
+        })
     }
 
     pub fn unique_folders(&self) -> Vec<(String, usize)> {

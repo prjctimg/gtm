@@ -3607,6 +3607,14 @@ impl App {
                                     self.send_high(TuiCommand::ToggleMute);
                                 } else if action == "toggle mono" {
                                     self.send_high(TuiCommand::ToggleMono);
+                                } else if action == "focus pane forward" {
+                                    self.cycle_pane_focus(true);
+                                } else if action == "focus pane back" {
+                                    self.cycle_pane_focus(false);
+                                } else if action == "library next grouping" {
+                                    self.cycle_library_filter(false);
+                                } else if action == "library previous grouping" {
+                                    self.cycle_library_filter(true);
                                 } else if action == "repeat" {
                                     let new_mode = match self.state.repeat {
                                         RepeatMode::Off => RepeatMode::One,

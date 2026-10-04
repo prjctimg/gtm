@@ -2215,27 +2215,34 @@ fn chart_rows_are_not_answered_from_the_local_library() {
         );
     }
     assert!(
-        body.contains("12 => match (self.charts.selected_source, self.charts.selected_chart)"),
-        "category 12 no longer resolves per level:\n{body}"
+        body.contains(
+            "LIB_CHARTS => match (self.charts.selected_source, self.charts.selected_chart)"
+        ),
+        "Top Charts no longer resolves per level:\n{body}"
     );
 
     // Radio rows are virtual `radio://` stations, not library tracks, so it
     // needs an arm for the same reason.
     assert!(
-        body.contains("6 => TrackInfoKind::RadioStation"),
-        "category 6 (Radio) must not fall through to TrackInfoKind::Track:\n{body}"
+        body.contains("LIB_RADIO => TrackInfoKind::RadioStation"),
+        "Radio must not fall through to TrackInfoKind::Track:\n{body}"
     );
 
-    // And the other list-shaped categories, for the same reason.
+    // And the other list-shaped views, for the same reason. Albums and artists
+    // are Library groupings now, so they are one arm that names the kind the
+    // highlighted filter produces.
+    assert!(
+        body.contains("LibraryFilter::Albums => TrackInfoKind::Album")
+            && body.contains("LibraryFilter::Artists => TrackInfoKind::Artist"),
+        "the Library groupings must describe their rows as albums and artists"
+    );
     for (cat, kind) in [
-        (2, "Album"),
-        (3, "Artist"),
-        (4, "Playlist"),
-        (5, "SpotifyPlaylist"),
+        ("LIB_PLAYLISTS", "Playlist"),
+        ("LIB_SPOTIFY", "SpotifyPlaylist"),
     ] {
         assert!(
             body.contains(&format!("{cat} => TrackInfoKind::{kind}")),
-            "category {cat} must map to {kind}"
+            "{cat} must map to {kind}"
         );
     }
 }
@@ -3579,9 +3586,9 @@ fn charts_and_radio_rows_all_describe_themselves() {
 
     // The level decides the kind, and every level is covered.
     assert!(squish(cover).contains(&squish(
-        "12 => match (self.charts.selected_source, self.charts.selected_chart) { (None, _) => TrackInfoKind::ChartSource, (Some(_), None) => TrackInfoKind::Chart, (Some(_), Some(_)) => TrackInfoKind::ChartTrack, },"
+        "LIB_CHARTS => match (self.charts.selected_source, self.charts.selected_chart) { (None, _) => TrackInfoKind::ChartSource, (Some(_), None) => TrackInfoKind::Chart, (Some(_), Some(_)) => TrackInfoKind::ChartTrack, },"
     )));
-    assert!(squish(cover).contains(&squish("6 => TrackInfoKind::RadioStation,")));
+    assert!(squish(cover).contains(&squish("LIB_RADIO => TrackInfoKind::RadioStation,")));
 
     // Each kind has fields, or the card is `None` and nothing renders.
     for kind in ["ChartSource", "Chart", "RadioStation"] {
@@ -4170,19 +4177,19 @@ fn the_grid_browses_covers_and_moves_by_cell() {
     let search = include_str!("../src/app/search.rs");
     let keymap = include_str!("../src/keymap.rs");
 
-    // Three lists, one renderer, both views.
-    for (cat, source) in [
-        ("2", "self.unique_albums()"),
-        ("3", "self.unique_artists()"),
-        ("10", "self.unique_genres()"),
+    // Three groupings of one list, one renderer, both views.
+    for (filter, source) in [
+        ("LibraryFilter::Albums", "self.unique_albums()"),
+        ("LibraryFilter::Artists", "self.unique_artists()"),
+        ("LibraryFilter::Genres", "self.unique_genres()"),
     ] {
         assert!(
-            cover.contains(&format!("{cat} => {source}")),
-            "the grid has no cell source for category {cat}"
+            cover.contains(&format!("{filter} => {source}")),
+            "the grid has no cell source for {filter}"
         );
     }
     assert!(
-        cover.contains("matches!(self.library_category, 2 | 3 | 10)"),
+        cover.contains("self.grid_filter()") && cover.contains("self.library_category == LIB_ALL"),
         "the grid is offered on lists that have no covers to show"
     );
     assert!(
@@ -4222,11 +4229,16 @@ fn the_grid_browses_covers_and_moves_by_cell() {
     }
     // A representative track behind every cell, so a cell has a cover to ask
     // for. Genres had none and fell through to indexing the track list, which
-    // is how a genre cell showed an unrelated album's sleeve.
+    // is how a genre cell showed an unrelated album's sleeve. One rule for all
+    // three groupings, and every caller goes through it — a fourth copy of the
+    // lookup is how they drifted apart in the first place.
     assert!(
-        search.contains("if self.library_category == 10 {")
-            && search.contains("self.unique_genres().get(pos)"),
-        "a genre cell still resolves no representative track"
+        search.contains("self.group_row()") && search.contains("self.group_representative(pos)"),
+        "a group row still resolves no representative track"
+    );
+    assert!(
+        cover.contains("self.group_representative(pos)"),
+        "the card resolves a group row through its own copy of the lookup"
     );
     // Steps: rows for j/k, cells for the arrows.
     assert!(
@@ -4275,15 +4287,13 @@ fn the_stats_line_counts_the_list_it_sits_under() {
         .expect("library_stats_line is gone");
     let block = &text[at..(at + 1600).min(text.len())];
 
-    for (cat, noun) in [("2", "album"), ("3", "artist"), ("10", "genre")] {
-        assert!(
-            block.contains(&format!("plural(n, \"{noun}\"")),
-            "category {cat} has no count of its own, so it falls through to the track one"
-        );
-    }
+    // One arm for all three groupings now, and it counts rows rather than
+    // tracks, which is the whole point of the arm.
     assert!(
-        block.contains("plural(n, \"genre\", \"genres\")"),
-        "the genre list still counts tracks"
+        block.contains("app.library_groups().len()")
+            && block.contains("app.library_filter.one()")
+            && block.contains("app.library_filter.many()"),
+        "the grouped Library lists count their own rows, named by the filter"
     );
 }
 
@@ -4303,7 +4313,7 @@ fn the_grid_refuses_where_it_cannot_work() {
         .expect("the grid toggle moved");
     let block = &keys[at..(at + 1800).min(keys.len())];
     assert!(
-        block.contains("!matches!(self.library_category, 2 | 3 | 10)"),
+        block.contains("!self.group_row()"),
         "the grid is offered on a list with no covers to show"
     );
     assert!(
