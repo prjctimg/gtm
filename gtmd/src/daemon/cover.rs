@@ -331,7 +331,7 @@ impl Cover {
         };
         let client = Self::image_client();
         if !homepage.is_empty()
-            && let Some(og) = Self::og_image(&client, &homepage).await
+            && let Some(og) = Self::og_image(client, &homepage).await
         {
             let mut guard = inner.cover_cache().await;
             if let Some(cache) = guard.as_mut() {
@@ -339,7 +339,7 @@ impl Cover {
             }
             return Some(og);
         }
-        let bytes = Self::fetch_image(&client, &favicon).await?;
+        let bytes = Self::fetch_image(client, &favicon).await?;
         let mut guard = inner.cover_cache().await;
         if let Some(cache) = guard.as_mut() {
             cache.put_station(uuid, bytes.clone()).await;

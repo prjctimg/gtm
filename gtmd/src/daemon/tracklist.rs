@@ -68,7 +68,7 @@ pub(crate) async fn load(inner: &DaemonInner, station_id: &str) -> RadioTracklis
         .and_then(|i| gtm::shared::custom::station_by_index(i).ok().flatten())
         .and_then(|s| s.tracklist);
     match track_fetch(
-        &track_client(),
+        track_client(),
         &resolved.url,
         station_id,
         override_url.as_deref(),
