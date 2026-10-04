@@ -29,6 +29,7 @@ use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastResult, Podcast
 use crate::shared::radio::{RadioCountry, RadioStation, RadioTag, RadioTracklist};
 use crate::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::shared::track;
+use crate::shared::track::TrackInfo;
 use crate::shared::wire;
 
 /// Map a response that did not match the awaited variant into an error.
@@ -637,10 +638,10 @@ impl<'a> Queue<'a> {
             .await
     }
 
-    pub async fn set(&self, paths: Vec<String>) -> Result<()> {
+    pub async fn set(&self, tracks: Vec<TrackInfo>) -> Result<()> {
         self.client
             .send_ok(DaemonReq::Queue {
-                action: QueueAction::Set { paths },
+                action: QueueAction::Set { tracks },
             })
             .await
     }

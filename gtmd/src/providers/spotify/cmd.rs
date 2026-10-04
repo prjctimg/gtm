@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 use gtm::oauth::mask_credential;
 use gtm::shared::CoreError;
-use gtm::shared::global::PlaybackStatus;
+use gtm::shared::global::{DaemonState, PlaybackStatus};
 use gtm::shared::ipc::{DaemonEvent, DaemonRes};
 use gtm::shared::spotify::{LIBRESPOT_CLIENT_ID, SpotifyTrack};
 use gtm::shared::track::TrackInfo;
@@ -42,6 +42,32 @@ pub(crate) struct StreamMeta<'a> {
     /// misses often enough to leave spotify rows with no artwork.
     pub image_url: Option<&'a str>,
     pub duration: Option<f64>,
+}
+
+/// [`StreamMeta`] that owns its strings.
+///
+/// The web API's answer is a local `SpotifyTrack`, and the code that needs the
+/// metadata outlives it: it awaits the cover cache, then the queue write. This
+/// is the same answer with nothing borrowed.
+#[derive(Clone)]
+pub(crate) struct OwnedMeta {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub image_url: Option<String>,
+    pub duration: Option<f64>,
+}
+
+impl<'a> From<&'a OwnedMeta> for StreamMeta<'a> {
+    fn from(m: &'a OwnedMeta) -> Self {
+        Self {
+            title: &m.title,
+            artist: &m.artist,
+            album: &m.album,
+            image_url: m.image_url.as_deref(),
+            duration: m.duration,
+        }
+    }
 }
 
 /// True when `uri` is a `spotify:track:` (or episode) URI librespot can
@@ -728,13 +754,6 @@ impl Spotify {
         play: bool,
         position: Option<u64>,
     ) -> Result<DaemonRes, CoreError> {
-        let StreamMeta {
-            title,
-            artist,
-            album,
-            image_url,
-            duration,
-        } = meta;
         if !is_playable(uri) {
             return Ok(DaemonRes::Error {
                 message: format!("not a playable spotify uri: {uri}"),
@@ -744,15 +763,7 @@ impl Spotify {
             let mut state = inner.state.write().await;
             let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
             let added = queue::add(&mut state, uri, position);
-            if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
-                entry.title = title.to_string();
-                entry.artist = artist.to_string();
-                entry.album = album.to_string();
-                entry.cover_url = image_url.map(str::to_string);
-                if let Some(duration) = duration {
-                    entry.duration = duration;
-                }
-            }
+            Self::patch_row(&mut state, &added.path, &meta);
             drop(state);
             w
         };
@@ -774,6 +785,41 @@ impl Spotify {
         Ok(DaemonRes::Ok)
     }
 
+    /// The web API's answer for one `spotify:track:<id>` uri.
+    ///
+    /// Native streaming needs a Premium account; the web API does not, so this
+    /// is what labels a queued uri on a free account, and on a linked one it
+    /// is the authority for a row the caller only had a uri for.
+    pub(crate) async fn uri_meta(inner: &DaemonInner, uri: &str) -> Option<OwnedMeta> {
+        let client = linked(inner).await.ok()?;
+        let id = uri.rsplit(':').next().filter(|s| !s.is_empty())?;
+        let track = crate::spotify::api::track(&client, id).await?;
+        Some(OwnedMeta {
+            title: track.name,
+            artist: track.artists,
+            album: track.album.unwrap_or_default(),
+            image_url: track.image_url,
+            duration: track.duration_ms.map(|ms| ms as f64 / 1000.0),
+        })
+    }
+
+    /// Copy resolved metadata onto the queue row for `path`.
+    ///
+    /// One place, because the queue row and the resolver's answer are the same
+    /// row written twice in two shapes: once when the entry is added, once when
+    /// a later resolution finally learns what the uri was.
+    pub(crate) fn patch_row(state: &mut DaemonState, path: &str, meta: &StreamMeta<'_>) {
+        if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == path) {
+            entry.title = meta.title.to_string();
+            entry.artist = meta.artist.to_string();
+            entry.album = meta.album.to_string();
+            entry.cover_url = meta.image_url.map(str::to_string);
+            if let Some(duration) = meta.duration {
+                entry.duration = duration;
+            }
+        }
+    }
+
     /// Warm the cover cache for a queued entry and point its `cover_path` at the
     /// file on disk.
     ///
@@ -782,7 +828,7 @@ impl Spotify {
     /// search, so a path written after `PlaybackStarted` is a race: a fast
     /// skip, or a track-change cover request that lands first, finds nothing
     /// and renders blank until the next refresh.
-    async fn warm_cover(inner: &DaemonInner, uri: &str, meta: &StreamMeta<'_>) {
+    pub(crate) async fn warm_cover(inner: &DaemonInner, uri: &str, meta: &StreamMeta<'_>) {
         let StreamMeta {
             artist,
             album,

@@ -65,8 +65,14 @@ pub enum QueueAction {
         paths: Vec<String>,
         position: Option<u64>,
     },
+    /// Replace the queue outright.
+    ///
+    /// Whole rows rather than paths: the caller already knows the title,
+    /// artist and cover of a row it read from the library, and a `spotify:`
+    /// uri on its own can only be labelled by asking the provider — which is
+    /// how a queue full of rows titled "Spotify Track" happened.
     Set {
-        paths: Vec<String>,
+        tracks: Vec<TrackInfo>,
     },
 }
 

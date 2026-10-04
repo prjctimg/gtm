@@ -597,11 +597,14 @@ impl App {
         if idx >= filtered.len() {
             return;
         }
-        let paths: Vec<String> = filtered.iter().map(|t| t.path.clone()).collect();
-        let path = paths[idx].clone();
+        // Whole rows, not paths: a library row of a synced playlist is a
+        // `spotify:` uri, and the queue the daemon builds from paths alone has
+        // no way to label it.
+        let tracks: Vec<TrackInfo> = filtered.iter().map(|t| (*t).clone()).collect();
+        let path = tracks[idx].path.clone();
         let c = self.client.clone();
         tokio::spawn(async move {
-            let _ = c.queue().set(paths).await;
+            let _ = c.queue().set(tracks).await;
             let _ = c.play(&path, 0.0).await;
         });
     }

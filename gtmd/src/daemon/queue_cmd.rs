@@ -14,6 +14,15 @@ pub(crate) fn is_provider_path(path: &str) -> bool {
         || path.starts_with("youtube:")
 }
 
+/// Whether a row carries a title of its own.
+///
+/// `resolve_track` labels a local file from its tags and leaves a provider uri
+/// as the literal "Spotify Track", which is the one title in the queue that
+/// says nothing about the row.
+pub(crate) fn is_labelled(track: &TrackInfo) -> bool {
+    !track.title.is_empty() && track.title != crate::spotify::pretty_id(&track.path)
+}
+
 pub(crate) struct Queue;
 
 impl Queue {
@@ -117,16 +126,49 @@ impl Queue {
                 Daemon::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
-            QueueAction::Set { paths } => {
+            QueueAction::Set { tracks } => {
                 Daemon::clear_history(inner).await;
-                let base = paths.clone();
-                let tracks = tokio::task::spawn_blocking(move || {
-                    base.iter()
-                        .map(|p| queue::resolve_track(p))
-                        .collect::<Vec<_>>()
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                // Rows come from the caller's own view of the world, so most of
+                // them are already labelled. The ones that are not are the
+                // provider uris a client only had a uri for — ask the provider
+                // before writing the row, because a queue that shows
+                // "Spotify Track" for everything is what this replaced.
+                let mut tracks = tracks.clone();
+                for track in tracks.iter_mut() {
+                    if !track.path.starts_with("spotify:") || is_labelled(track) {
+                        continue;
+                    }
+                    if let Some(meta) = Spotify::uri_meta(inner, &track.path).await {
+                        let borrowed: StreamMeta<'_> = (&meta).into();
+                        track.title = borrowed.title.to_string();
+                        track.artist = borrowed.artist.to_string();
+                        track.album = borrowed.album.to_string();
+                        track.duration = borrowed.duration.unwrap_or(track.duration);
+                        track.cover_url = borrowed.image_url.map(str::to_string);
+                    }
+                }
+                // Tag reads and directory walks are blocking, so the rows the
+                // caller did not label are resolved off the async thread.
+                let bare: Vec<usize> = tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| !is_labelled(t))
+                    .map(|(i, _)| i)
+                    .collect();
+                if !bare.is_empty() {
+                    let paths: Vec<String> = bare.iter().map(|&i| tracks[i].path.clone()).collect();
+                    let resolved = tokio::task::spawn_blocking(move || {
+                        paths
+                            .iter()
+                            .map(|p| queue::resolve_track(p))
+                            .collect::<Vec<_>>()
+                    })
+                    .await
+                    .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                    for (track, row) in bare.iter().zip(resolved) {
+                        tracks[*track] = row;
+                    }
+                }
                 {
                     let mut state = inner.state.write().await;
                     queue::set_resolved(&mut state, tracks);

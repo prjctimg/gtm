@@ -57,8 +57,10 @@ use crate::library::{Library, extract_metadata};
 use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
 use crate::network;
 use crate::podcast::PodcastManager;
+use crate::providers::spotify::cmd::{OwnedMeta, StreamMeta};
 use crate::providers::spotify::cover::{PRELOAD_LEAD, preload};
 use crate::providers::spotify::stream::{SessionSpec, StreamManager};
+use crate::providers::spotify::ytfb::spotify_yt_fallback;
 use crate::queue;
 use crate::radio::RadioBrowserManager;
 use crate::remote;
@@ -364,6 +366,62 @@ impl Cmd {
         Ok(DaemonRes::Error { message })
     }
 
+    /// Play a `spotify:` uri that cannot stream natively.
+    ///
+    /// Metadata first, from the web API when an account is linked and from the
+    /// queue row otherwise, because a yt-dlp search needs a name and a bare id
+    /// gives it nothing. The row is patched with whatever we learn, so the queue
+    /// stops showing the placeholder whether or not the stream then succeeds.
+    async fn play_spotify_fallback(
+        inner: &DaemonInner,
+        uri_path: &str,
+        start_pos: f64,
+        auto_advanced: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        let row = {
+            let state = inner.state.read().await;
+            state.queue.iter().find(|t| t.path == uri_path).cloned()
+        };
+        let meta = match Spotify::uri_meta(inner, uri_path).await {
+            Some(meta) => meta,
+            None => match row.filter(is_labelled) {
+                Some(row) => OwnedMeta {
+                    title: row.title,
+                    artist: row.artist,
+                    album: row.album,
+                    image_url: row.cover_url,
+                    duration: Some(row.duration).filter(|d| *d > 0.0),
+                },
+                None => {
+                    return Ok(DaemonRes::Error {
+                        message: format!(
+                            "{uri_path} has no metadata to resolve: link a Spotify account, or queue it from a list that names it"
+                        ),
+                    });
+                }
+            },
+        };
+        {
+            let mut state = inner.state.write().await;
+            let borrowed: StreamMeta<'_> = (&meta).into();
+            Spotify::patch_row(&mut state, uri_path, &borrowed);
+        }
+        let id = uri_path.rsplit(':').next().unwrap_or(uri_path);
+        let query = if meta.artist.is_empty() {
+            meta.title.clone()
+        } else {
+            format!("{} - {}", meta.artist, meta.title)
+        };
+        match spotify_yt_fallback(inner, &format!("spotify-web-{id}"), &query).await {
+            // Boxed because this is the one route back into `play`: the row is
+            // a `spotify:` uri that cannot stream natively, and what resolved is
+            // an ordinary path. Without the box the two futures are mutually
+            // recursive and neither gets a size.
+            Ok(path) => Box::pin(Self::play(inner, &path, start_pos, auto_advanced)).await,
+            Err(message) => Ok(DaemonRes::Error { message }),
+        }
+    }
+
     /// Play a `spotify:track:<id>` URI through the librespot streaming
     /// bridge. Requires a linked Premium account; the queue entry (created
     /// at resolve time) already carries title/artist/album metadata.
@@ -381,15 +439,13 @@ impl Cmd {
             let spotify = inner.spotify.lock().await;
             (spotify.linked(), spotify.is_premium())
         };
-        if !linked {
-            return Ok(DaemonRes::Error {
-                message: "spotify not linked".into(),
-            });
-        }
-        if !premium {
-            return Ok(DaemonRes::Error {
-                message: "spotify streaming requires a Premium account".into(),
-            });
+        if !linked || !premium {
+            // A `spotify:` row is not a Premium-only format. The web API
+            // resolves the metadata for any linked account and a yt-dlp search
+            // resolves the rest, so the row plays like any other remote instead
+            // of refusing: refusing here is what left a queue full of rows that
+            // looked playable and were not.
+            return Self::play_spotify_fallback(inner, uri_path, start_pos, auto_advanced).await;
         }
         // The Connect credential, never the Web API one — that pairing is what
         // login5 answers `INVALID_CREDENTIALS`, which the previous code did on

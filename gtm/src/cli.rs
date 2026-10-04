@@ -20,7 +20,7 @@ use crate::shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret,
 };
 use crate::shared::spotify::SpotifyStatus;
-use crate::shared::track::LrcData;
+use crate::shared::track::{LrcData, TrackInfo};
 use clap::{Parser, Subcommand};
 
 use crate::app::{Prefs, ensure_prefs_file};
@@ -666,7 +666,15 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .map_err(|e| e.to_string()),
             CliCommand::QueueSet { paths } => client
                 .queue()
-                .set(paths.clone())
+                .set(
+                    paths
+                        .iter()
+                        .map(|p| TrackInfo {
+                            path: p.clone(),
+                            ..Default::default()
+                        })
+                        .collect(),
+                )
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
