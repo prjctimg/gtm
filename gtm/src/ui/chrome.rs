@@ -1312,6 +1312,17 @@ impl Render {
                 .collect();
             f.render_widget(List::new(left_items), left_list_area);
 
+            if total > list_rows as usize {
+                let mut sb = ratatui::widgets::ScrollbarState::new(total).position(scroll_start);
+                f.render_stateful_widget(
+                    ratatui::widgets::Scrollbar::new(
+                        ratatui::widgets::ScrollbarOrientation::VerticalRight,
+                    ),
+                    left_list_area,
+                    &mut sb,
+                );
+            }
+
             // No indicator block on the active row.
             //
             // There was a left-quarter block drawn over the first column in

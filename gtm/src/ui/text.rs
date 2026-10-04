@@ -10,10 +10,10 @@ use crate::ui::*;
 /// Most category rows the left pane will show at once.
 ///
 /// The list is capped rather than given whatever the pane has left, because an
-/// uncapped list takes every row and squeezes the cover art to nothing. Ten
+/// uncapped list takes every row and squeezes the cover art to nothing. Six
 /// keeps the categories reachable on a short pane while leaving the card
 /// usable on a tall one.
-pub(crate) const LEFT_LIST_MAX_ROWS: u16 = 10;
+pub(crate) const LEFT_LIST_MAX_ROWS: u16 = 6;
 
 /// Fewest rows the category list keeps when a preview card wants the space.
 ///
@@ -23,7 +23,7 @@ pub(crate) const LEFT_LIST_MAX_ROWS: u16 = 10;
 /// categories (All Tracks, Spotify, Radio, Top Charts) carry a preview from the
 /// moment they are highlighted rather than only once something is loaded into
 /// them, so they were the ones where an empty list appeared.
-pub(crate) const LEFT_LIST_MIN_ROWS: u16 = 8;
+pub(crate) const LEFT_LIST_MIN_ROWS: u16 = 4;
 
 /// Blank rows between the category list and the cover art below it.
 ///
@@ -36,7 +36,7 @@ pub(crate) const LEFT_LIST_PADDING: u16 = 1;
 /// The card is a full surface with its own art, and one row of clearance left
 /// it visually attached to the list — long lists ran their last rows straight
 /// into the artwork with nothing separating them.
-pub(crate) const INFO_CARD_GAP: u16 = 4;
+pub(crate) const INFO_CARD_GAP: u16 = 1;
 
 /// Rows to clear above the category list so its first row sits level with the
 /// top of the now-playing cover image.
