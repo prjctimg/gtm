@@ -8,9 +8,8 @@
 [![License](https://img.shields.io/github/license/prjctimg/gtm)](https://github.com/prjctimg/gtm/blob/main/LICENSE)
 
 
-![](./image.png)
-`gtm` is a terminal music player: a background daemon (`gtmd`) with a client
-(`gtm`), both driven from the terminal.
+<video src="https://github.com/user-attachments/assets/2dfe08cf-39cd-4ffa-bc3f-08150eb7f440" width="600"></video>
+`gtm` is a reimagined audio player built for terminal enthusiasts.
 
 ## On this page
 
