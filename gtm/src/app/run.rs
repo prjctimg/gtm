@@ -793,8 +793,9 @@ impl App {
                         let bytes = match url {
                             Some(u) => client.image_cover(&u).await.ok().flatten(),
                             None => match client.art().cover_for(tid, art_path).await {
-                                Ok(b64) => b64
-                                    .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok()),
+                                Ok(b64) => b64.and_then(|b| {
+                                    base64::engine::general_purpose::STANDARD.decode(b).ok()
+                                }),
                                 Err(_) => match client.art().cover(tid).await {
                                     Ok(Some(b64)) => {
                                         base64::engine::general_purpose::STANDARD.decode(&b64).ok()
