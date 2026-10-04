@@ -1560,6 +1560,8 @@ pub enum DaemonEvent {
     VolumeChanged { volume: u8 },
     #[serde(rename = "mono_changed")]
     MonoChanged { enabled: bool },
+    #[serde(rename = "mute_changed")]
+    MuteChanged { mute: bool },
     #[serde(rename = "metadata_changed")]
     MetadataChanged { detail: String },
     #[serde(rename = "queue_changed")]

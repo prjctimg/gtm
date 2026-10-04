@@ -474,6 +474,10 @@ async fn apply_event(state: &Arc<RwLock<DaemonState>>, event: &DaemonEvent) {
         }
         DaemonEvent::VolumeChanged { volume } => {
             s.volume = *volume;
+            s.mute = false;
+        }
+        DaemonEvent::MuteChanged { mute } => {
+            s.mute = *mute;
         }
         DaemonEvent::ShuffleChanged { enabled } => {
             s.shuffle = *enabled;

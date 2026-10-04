@@ -594,7 +594,11 @@ impl Footer {
 
     fn volume(app: &App) -> String {
         if app.state.mute {
-            "MUTE".into()
+            if use_nerd_fonts() {
+                "\u{f075f}".into() // nf-md-volume-off
+            } else {
+                "\u{00d7}".into()
+            }
         } else {
             format!("{:>3}%", app.state.volume)
         }

@@ -224,6 +224,10 @@ impl DaemonState {
             }
             DaemonEvent::VolumeChanged { volume } => {
                 self.volume = *volume;
+                self.mute = false;
+            }
+            DaemonEvent::MuteChanged { mute } => {
+                self.mute = *mute;
             }
             DaemonEvent::QueueChanged { queue, cursor } => {
                 self.queue = queue.clone();

@@ -536,7 +536,8 @@ impl App {
                     Some(KeyboardAction::ToggleMute) => {
                         self.set_last_action("Toggle Mute", &key);
                         self.send_high(TuiCommand::ToggleMute);
-                        let msg = if self.state.mute { "Unmuted" } else { "Muted" };
+                        self.state.mute = !self.state.mute;
+                        let msg = if self.state.mute { "Muted" } else { "Unmuted" };
                         self.footer_notification = Some((
                             msg.to_string(),
                             std::time::Instant::now() + std::time::Duration::from_secs(2),

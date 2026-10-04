@@ -1026,10 +1026,14 @@ impl Cmd {
 
     pub async fn set_volume(inner: &DaemonInner, volume: u8) -> Result<DaemonRes, CoreError> {
         inner.mixer.lock().await.set_volume(volume)?;
+        let muted = inner.state.read().await.mute;
         let mut state = inner.state.write().await;
         state.set_volume(volume)?;
         drop(state);
         Daemon::push_event(inner, DaemonEvent::VolumeChanged { volume });
+        if muted {
+            Daemon::push_event(inner, DaemonEvent::MuteChanged { mute: false });
+        }
         Daemon::save_state(inner);
         Ok(DaemonRes::Ok)
     }
@@ -1091,6 +1095,7 @@ impl Cmd {
             inner.state.read().await.volume
         };
         inner.mixer.lock().await.set_volume(vol)?;
+        Daemon::push_event(inner, DaemonEvent::MuteChanged { mute: muted });
         Daemon::save_state(inner);
         Ok(DaemonRes::Ok)
     }
