@@ -1517,9 +1517,9 @@ impl App {
                 .filter(|entry| fuzzy_match(&query, &entry.name))
                 .count()
                 .saturating_sub(1),
-            PickerId::CommandPalette => CommandPalette::commands(&self.icon_style)
+            PickerId::CommandPalette => CommandPalette::commands()
                 .iter()
-                .filter(|c| fuzzy_match(&query, c.icon))
+                .filter(|c| fuzzy_match(&query, c.label) || fuzzy_match(&query, c.keys))
                 .count()
                 .saturating_sub(1),
             _ => usize::MAX,
@@ -1565,9 +1565,9 @@ impl App {
                 .iter()
                 .filter(|entry| fuzzy_match(&query, &entry.name))
                 .count(),
-            PickerId::CommandPalette => CommandPalette::commands(&self.icon_style)
+            PickerId::CommandPalette => CommandPalette::commands()
                 .iter()
-                .filter(|c| fuzzy_match(&query, c.icon))
+                .filter(|c| fuzzy_match(&query, c.label) || fuzzy_match(&query, c.keys))
                 .count(),
             PickerId::PodcastFeeds => self.podcast.feeds.len(),
             PickerId::PodcastEpisodes => self.podcast.episodes.len(),

@@ -7,8 +7,12 @@
 
 use crate::ui::*;
 
+#[derive(Debug)]
 pub struct Command {
-    pub icon: &'static str,
+    /// What the palette shows. The glyph that used to lead it is gone: eleven
+    /// rows of icons in a list the user reads by name is a column of noise, and
+    /// the icon style was the only reason this was two tables.
+    pub label: &'static str,
     pub keys: &'static str,
     pub hint: &'static str,
 }
@@ -16,568 +20,311 @@ pub struct Command {
 pub struct CommandPalette;
 
 impl CommandPalette {
-    pub fn commands(icon_style: &str) -> &'static [Command] {
-        if icon_style == "mdi" {
-            Self::commands_mdi()
-        } else {
-            Self::commands_emoji()
-        }
-    }
-
-    pub(crate) fn commands_mdi() -> &'static [Command] {
+    /// Every command the palette offers.
+    ///
+    /// One table. It was two — a nerd-font glyph and an emoji glyph per entry —
+    /// and they had already drifted: each had one command the other lacked, so
+    /// the palette showed "About" to emoji users and "Load Stream" to everyone
+    /// else, from the same list.
+    pub(crate) fn commands() -> &'static [Command] {
         &[
             Command {
-                icon: "\u{f04ba} Play/Pause",
+                label: "Play/Pause",
                 keys: "Space",
                 hint: "play/pause",
             },
             Command {
-                icon: "\u{f04ad} Next Track",
+                label: "Next Track",
                 keys: "n",
                 hint: "next track",
             },
             Command {
-                icon: "\u{f04a8} Prev Track",
+                label: "Prev Track",
                 keys: "p",
                 hint: "prev track",
             },
             Command {
-                icon: "\u{f04cd} Stop",
+                label: "Stop",
                 keys: "s",
                 hint: "stop",
             },
             Command {
-                icon: "\u{f04e2} Seek Forward",
+                label: "Seek Forward",
                 keys: ".",
                 hint: "seek forward",
             },
             Command {
-                icon: "\u{f04e0} Seek Backward",
+                label: "Seek Backward",
                 keys: ",",
                 hint: "seek backward",
             },
             Command {
-                icon: "\u{f057e} Volume Up",
+                label: "Volume Up",
                 keys: "+",
                 hint: "volume up",
             },
             Command {
-                icon: "\u{f057d} Volume Down",
+                label: "Volume Down",
                 keys: "-",
                 hint: "volume down",
             },
             Command {
-                icon: "\u{f0580} Mute: Toggle",
+                label: "Mute: Toggle",
                 keys: "m",
                 hint: "mute",
             },
             Command {
-                icon: "\u{f04ab} Mono: Toggle",
+                label: "Mono: Toggle",
                 keys: "Alt+1",
                 hint: "toggle mono",
             },
             Command {
-                icon: "\u{f0577} Repeat Mode",
+                label: "Repeat Mode",
                 keys: "r",
                 hint: "repeat",
             },
             Command {
-                icon: "\u{f0578} Shuffle Library",
+                label: "Shuffle Library",
                 keys: "S",
                 hint: "shuffle",
             },
             Command {
-                icon: "\u{f0493} Toggle Favourite",
+                label: "Toggle Favourite",
                 keys: "f",
                 hint: "toggle favourite",
             },
             Command {
-                icon: "\u{f04a6} Love / Un-love on Last.fm",
+                label: "Love / Un-love on Last.fm",
                 keys: "*",
                 hint: "love last.fm",
             },
             Command {
-                icon: "\u{f0493} Like on Spotify",
+                label: "Like on Spotify",
                 keys: "L",
                 hint: "like spotify",
             },
             Command {
-                icon: "\u{f0493} Add live track to Spotify",
+                label: "Add live track to Spotify",
                 keys: "Alt+L",
                 hint: "add to spotify",
             },
             Command {
-                icon: "\u{f04ec} Toggle Last.fm Scrobbling",
+                label: "Toggle Last.fm Scrobbling",
                 keys: "&",
                 hint: "toggle scrobbling",
             },
             Command {
-                icon: "\u{f057a} Search",
+                label: "Search",
                 keys: "/",
                 hint: "search this list",
             },
             Command {
-                icon: "\u{f057a} Search Library",
+                label: "Search Library",
                 keys: "Alt+/",
                 hint: "search lib",
             },
             Command {
-                icon: "\u{f07b} Library Categories",
+                label: "Library Categories",
                 keys: "Alt+.",
                 hint: "library lists",
             },
             Command {
-                icon: "\u{f056e} Queue",
+                label: "Library: Next Grouping",
+                keys: "Tab",
+                hint: "library grouping",
+            },
+            Command {
+                label: "Library: Previous Grouping",
+                keys: "Shift+Tab",
+                hint: "library grouping",
+            },
+            Command {
+                label: "Queue",
                 keys: "Alt+Q",
                 hint: "queue",
             },
             Command {
-                icon: "\u{f16a} YouTube Search",
+                label: "YouTube Search",
                 keys: "Alt+Y",
                 hint: "youtube",
             },
             Command {
-                icon: "\u{f04c7} Spotify",
+                label: "Spotify",
                 keys: "Alt+S",
                 hint: "spotify",
             },
             Command {
-                icon: "\u{f04ad} Spotify Next",
+                label: "Spotify Next",
                 keys: "",
                 hint: "spotify next",
             },
             Command {
-                icon: "\u{f04a8} Spotify Previous",
+                label: "Spotify Previous",
                 keys: "",
                 hint: "spotify previous",
             },
             Command {
-                icon: "\u{f0577} Spotify Shuffle",
+                label: "Spotify Shuffle",
                 keys: "",
                 hint: "spotify shuffle",
             },
             Command {
-                icon: "\u{f0577} Spotify Repeat",
+                label: "Spotify Repeat",
                 keys: "",
                 hint: "spotify repeat",
             },
             Command {
-                icon: "\u{f1dd} Fetch Lyrics",
+                label: "Fetch Lyrics",
                 keys: "l",
                 hint: "fetch lyrics",
             },
             Command {
-                icon: "\u{f156} Clear Queue",
+                label: "Clear Queue",
                 keys: "D",
                 hint: "clear queue",
             },
             Command {
-                icon: "\u{f285} Multiselect",
+                label: "Multiselect",
                 keys: "v",
                 hint: "multiselect",
             },
             Command {
-                icon: "\u{f285} Multiselect Up",
+                label: "Multiselect Up",
                 keys: "Shift+Up",
                 hint: "multiselect up",
             },
             Command {
-                icon: "\u{f285} Multiselect Down",
+                label: "Multiselect Down",
                 keys: "Shift+Down",
                 hint: "multiselect down",
             },
             Command {
-                icon: "\u{f055e} Add to Queue",
+                label: "Add to Queue",
                 keys: "a",
                 hint: "add to queue",
             },
             Command {
-                icon: "\u{f055e} Add to Playlist",
+                label: "Add to Playlist",
                 keys: "A",
                 hint: "add to playlist",
             },
             Command {
-                icon: "\u{f156} Delete from List",
+                label: "Delete from List",
                 keys: "x",
                 hint: "delete from list",
             },
             Command {
-                icon: "\u{f045d} Jump to End",
+                label: "Jump to End",
                 keys: "G",
                 hint: "jump to end",
             },
             Command {
-                icon: "\u{f0493} Edit Metadata",
+                label: "Edit Metadata",
                 keys: "e",
                 hint: "edit metadata",
             },
             Command {
-                icon: "\u{f0493} Focus Next Pane",
+                label: "Focus Next Pane",
                 keys: "]",
                 hint: "focus next pane",
             },
             Command {
-                icon: "\u{f0493} Focus Previous Pane",
+                label: "Focus Previous Pane",
                 keys: "[",
                 hint: "focus previous pane",
             },
             Command {
-                icon: "\u{f0493} Settings",
+                label: "Settings",
                 keys: "Alt+,",
                 hint: "settings",
             },
             Command {
-                icon: "\u{f0570} Equalizer",
+                label: "Equalizer",
                 keys: "Alt+E",
                 hint: "eq",
             },
             Command {
-                icon: "\u{f04b2} Sleep Timer",
+                label: "Sleep Timer",
                 keys: "Alt+Z",
                 hint: "sleeptimer",
             },
             Command {
-                icon: "\u{f0493} Theme",
+                label: "Theme",
                 keys: "Alt+C",
                 hint: "themepicker",
             },
             Command {
-                icon: "\u{f051d} Notifications",
+                label: "About",
+                keys: "Alt+A",
+                hint: "about",
+            },
+            Command {
+                label: "Notifications",
                 keys: "Alt+N",
                 hint: "notifications",
             },
             Command {
-                icon: "\u{f0493} Progress Style",
+                label: "Progress Style",
                 keys: "Alt+P",
                 hint: "progress style",
             },
             Command {
-                icon: "\u{f0570} Visualizer Preset",
+                label: "Visualizer Preset",
                 keys: "Alt+V",
                 hint: "visualizer preset",
             },
             Command {
-                icon: "\u{f04db} Quit",
+                label: "Quit",
                 keys: "q",
                 hint: "quit",
             },
             Command {
-                icon: "\u{f04db} Quit Daemon",
+                label: "Quit Daemon",
                 keys: "Q/Ctrl+Q",
                 hint: "quit daemon",
             },
             Command {
-                icon: "\u{f051d} Toggle Help",
+                label: "Toggle Help",
                 keys: "?",
                 hint: "toggle help",
             },
             Command {
-                icon: "\u{f051d} Hide Help Bar",
+                label: "Hide Help Bar",
                 keys: "Ctrl+H",
                 hint: "hide help bar",
             },
             Command {
-                icon: "\u{f0493} Health Check",
+                label: "Health Check",
                 keys: "Alt+H",
                 hint: "health check",
             },
             Command {
-                icon: "\u{f0493} Setup Services",
+                label: "Setup Services",
                 keys: "Alt+X",
                 hint: "setup",
             },
             Command {
-                icon: "\u{f043b} Radio Browser",
+                label: "Radio Browser",
                 keys: "Alt+R",
                 hint: "radio browse",
             },
             Command {
-                icon: "\u{f056d} Play Stream URL",
+                label: "Play Stream URL",
                 keys: "Alt+O",
                 hint: "play stream url",
             },
         ]
     }
-
-    pub(crate) fn commands_emoji() -> &'static [Command] {
-        &[
-            Command {
-                icon: "\u{25b6}\u{fe0f} Play/Pause",
-                keys: "Space",
-                hint: "play/pause",
-            },
-            Command {
-                icon: "\u{23ed}\u{fe0f} Next Track",
-                keys: "n",
-                hint: "next track",
-            },
-            Command {
-                icon: "\u{23ee}\u{fe0f} Prev Track",
-                keys: "p",
-                hint: "prev track",
-            },
-            Command {
-                icon: "\u{23f9}\u{fe0f} Stop",
-                keys: "s",
-                hint: "stop",
-            },
-            Command {
-                icon: "\u{23e9}\u{fe0f} Seek Forward",
-                keys: ".",
-                hint: "seek forward",
-            },
-            Command {
-                icon: "\u{23ea}\u{fe0f} Seek Backward",
-                keys: ",",
-                hint: "seek backward",
-            },
-            Command {
-                icon: "\u{1f50a} Volume Up",
-                keys: "+",
-                hint: "volume up",
-            },
-            Command {
-                icon: "\u{1f509} Volume Down",
-                keys: "-",
-                hint: "volume down",
-            },
-            Command {
-                icon: "\u{1f507} Mute: Toggle",
-                keys: "m",
-                hint: "mute",
-            },
-            Command {
-                icon: "\u{1f508} Mono: Toggle",
-                keys: "Alt+1",
-                hint: "toggle mono",
-            },
-            Command {
-                icon: "\u{1f501} Repeat Mode",
-                keys: "r",
-                hint: "repeat",
-            },
-            Command {
-                icon: "\u{1f500} Shuffle Library",
-                keys: "S",
-                hint: "shuffle",
-            },
-            Command {
-                icon: "\u{2764}\u{fe0f} Toggle Favourite",
-                keys: "f",
-                hint: "toggle favourite",
-            },
-            Command {
-                icon: "\u{1f49e} Love / Un-love on Last.fm",
-                keys: "*",
-                hint: "love last.fm",
-            },
-            Command {
-                icon: "\u{1f5a4}\u{fe0f} Like on Spotify",
-                keys: "L",
-                hint: "like spotify",
-            },
-            Command {
-                icon: "\u{1f5a4}\u{fe0f} Add live track to Spotify",
-                keys: "Alt+L",
-                hint: "add to spotify",
-            },
-            Command {
-                icon: "\u{1f504} Toggle Last.fm Scrobbling",
-                keys: "&",
-                hint: "toggle scrobbling",
-            },
-            Command {
-                icon: "\u{1f50d} Search",
-                keys: "/",
-                hint: "search this list",
-            },
-            Command {
-                icon: "\u{1f50e} Search Library",
-                keys: "Alt+/",
-                hint: "search lib",
-            },
-            Command {
-                icon: "\u{1f4d1} Library Categories",
-                keys: "Alt+.",
-                hint: "library lists",
-            },
-            Command {
-                icon: "\u{1f4cb} Queue",
-                keys: "Alt+Q",
-                hint: "queue",
-            },
-            Command {
-                icon: "\u{25b6}\u{fe0f} YouTube Search",
-                keys: "Alt+Y",
-                hint: "youtube",
-            },
-            Command {
-                icon: "\u{1f3b5} Spotify",
-                keys: "Alt+S",
-                hint: "spotify",
-            },
-            Command {
-                icon: "\u{23ed}\u{fe0f} Spotify Next",
-                keys: "",
-                hint: "spotify next",
-            },
-            Command {
-                icon: "\u{23ea}\u{fe0f} Spotify Previous",
-                keys: "",
-                hint: "spotify previous",
-            },
-            Command {
-                icon: "\u{1f500} Spotify Shuffle",
-                keys: "",
-                hint: "spotify shuffle",
-            },
-            Command {
-                icon: "\u{1f501} Spotify Repeat",
-                keys: "",
-                hint: "spotify repeat",
-            },
-            Command {
-                icon: "\u{1f4dd} Fetch Lyrics",
-                keys: "l",
-                hint: "fetch lyrics",
-            },
-            Command {
-                icon: "\u{1f5d1} Clear Queue",
-                keys: "D",
-                hint: "clear queue",
-            },
-            Command {
-                icon: "\u{2611}\u{fe0f} Multiselect",
-                keys: "v",
-                hint: "multiselect",
-            },
-            Command {
-                icon: "\u{2611}\u{fe0f} Multiselect Up",
-                keys: "Shift+Up",
-                hint: "multiselect up",
-            },
-            Command {
-                icon: "\u{2611}\u{fe0f} Multiselect Down",
-                keys: "Shift+Down",
-                hint: "multiselect down",
-            },
-            Command {
-                icon: "\u{2795} Add to Queue",
-                keys: "a",
-                hint: "add to queue",
-            },
-            Command {
-                icon: "\u{1f4dc} Add to Playlist",
-                keys: "A",
-                hint: "add to playlist",
-            },
-            Command {
-                icon: "\u{274c} Delete from List",
-                keys: "x",
-                hint: "delete from list",
-            },
-            Command {
-                icon: "\u{2b07}\u{fe0f} Jump to End",
-                keys: "G",
-                hint: "jump to end",
-            },
-            Command {
-                icon: "\u{270f}\u{fe0f} Edit Metadata",
-                keys: "e",
-                hint: "edit metadata",
-            },
-            Command {
-                icon: "\u{27a1}\u{fe0f} Focus Next Pane",
-                keys: "]",
-                hint: "focus next pane",
-            },
-            Command {
-                icon: "\u{2b05}\u{fe0f} Focus Previous Pane",
-                keys: "[",
-                hint: "focus previous pane",
-            },
-            Command {
-                icon: "\u{2699}\u{fe0f} Settings",
-                keys: "Alt+,",
-                hint: "settings",
-            },
-            Command {
-                icon: "\u{1f39a} Equalizer",
-                keys: "Alt+E",
-                hint: "eq",
-            },
-            Command {
-                icon: "\u{23f0}\u{fe0f} Sleep Timer",
-                keys: "Alt+Z",
-                hint: "sleeptimer",
-            },
-            Command {
-                icon: "\u{1f3a8} Theme",
-                keys: "Alt+C",
-                hint: "themepicker",
-            },
-            Command {
-                icon: "\u{2139}\u{fe0f} About",
-                keys: "Alt+A",
-                hint: "about",
-            },
-            Command {
-                icon: "\u{1f514} Notifications",
-                keys: "Alt+N",
-                hint: "notifications",
-            },
-            Command {
-                icon: "\u{1f3a8} Progress Style",
-                keys: "Alt+P",
-                hint: "progress style",
-            },
-            Command {
-                icon: "\u{1f3b6} Visualizer Preset",
-                keys: "Alt+V",
-                hint: "visualizer preset",
-            },
-            Command {
-                icon: "\u{23f9}\u{fe0f} Quit",
-                keys: "q",
-                hint: "quit",
-            },
-            Command {
-                icon: "\u{23f9}\u{fe0f} Quit Daemon",
-                keys: "Q/Ctrl+Q",
-                hint: "quit daemon",
-            },
-            Command {
-                icon: "\u{2753} Toggle Help",
-                keys: "?",
-                hint: "toggle help",
-            },
-            Command {
-                icon: "\u{1f6ab} Hide Help Bar",
-                keys: "Ctrl+H",
-                hint: "hide help bar",
-            },
-            Command {
-                icon: "\u{1fa7a} Health Check",
-                keys: "Alt+H",
-                hint: "health check",
-            },
-            Command {
-                icon: "\u{2699}\u{fe0f} Setup Services",
-                keys: "Alt+X",
-                hint: "setup",
-            },
-            Command {
-                icon: "\u{1f3f7}\u{fe0f} Radio Browser",
-                keys: "Alt+R",
-                hint: "radio browse",
-            },
-        ]
-    }
 }
 
+/// Group headings and how many rows each one owns, in list order.
+///
+/// The counts are a prefix sum the renderer walks, so they are checked against
+/// the table rather than trusted: a command past the last count is a row the
+/// palette never draws.
 pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("Playback", 14),
-    ("Library & Queue", 20),
+    ("Library & Queue", 25),
     ("View & Overlays", 10),
     ("System", 8),
 ];

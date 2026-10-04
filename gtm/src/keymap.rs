@@ -839,15 +839,20 @@ mod tests {
     #[test]
     fn every_command_lands_in_a_group() {
         let total: usize = crate::ui::COMMAND_GROUPS.iter().map(|(_, n)| *n).sum();
-        for commands in [
-            crate::ui::CommandPalette::commands("mdi"),
-            crate::ui::CommandPalette::commands("emoji"),
-        ] {
-            assert_eq!(
-                commands.len(),
-                total,
-                "group counts cover {total} but there are {} commands",
-                commands.len()
+        let commands = crate::ui::CommandPalette::commands();
+        assert_eq!(
+            commands.len(),
+            total,
+            "group counts cover {total} but there are {} commands",
+            commands.len()
+        );
+        // And every row names something: a row with neither a key nor a hint
+        // is a blank line the user can land on and cannot use.
+        for c in commands {
+            assert!(!c.label.is_empty(), "a palette row has no name: {c:?}");
+            assert!(
+                !c.keys.is_empty() || !c.hint.is_empty(),
+                "a palette row has neither a key nor a hint: {c:?}"
             );
         }
     }

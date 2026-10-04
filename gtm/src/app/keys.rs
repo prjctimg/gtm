@@ -3558,7 +3558,7 @@ impl App {
                             self.cycle_notification_mode(1);
                         }
                         PickerId::CommandPalette => {
-                            let commands = CommandPalette::commands(&self.icon_style);
+                            let commands = CommandPalette::commands();
                             let query = top.query.to_lowercase();
                             let filtered: Vec<&Command> = if query.is_empty() {
                                 commands.iter().collect()
@@ -3567,7 +3567,12 @@ impl App {
                                     .iter()
                                     .filter(|c| !(c.keys.is_empty() && c.hint.is_empty()))
                                     .filter(|c| {
-                                        let lower = c.icon.to_lowercase();
+                                        // The label and the key are what the row
+                                        // shows, so both are searchable; the
+                                        // hint is the word a user who does not
+                                        // know the name reaches for.
+                                        let lower =
+                                            format!("{} {}", c.label, c.keys).to_lowercase();
                                         let mut qi = 0usize;
                                         for ch in lower.chars() {
                                             if qi < query.len()

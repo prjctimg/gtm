@@ -9,13 +9,15 @@ use crate::ui::*;
 
 impl Pickers {
     pub(crate) fn command_palette(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let commands = CommandPalette::commands(&app.icon_style);
+        let commands = CommandPalette::commands();
 
         let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
         let filtered: Vec<usize> = commands
             .iter()
             .enumerate()
-            .filter_map(|(i, c)| fuzzy_match(&query, c.icon).then_some(i))
+            .filter_map(|(i, c)| {
+                (fuzzy_match(&query, c.label) || fuzzy_match(&query, c.keys)).then_some(i)
+            })
             .collect();
 
         let block = Self::picker_panel(app, " Commands ", None);
@@ -99,10 +101,17 @@ impl Pickers {
                 continue;
             }
             let ci = cmd.unwrap_or(0);
-            let (name, key) = (&commands[ci].icon, commands[ci].keys);
+            let (name, key) = (&commands[ci].label, commands[ci].keys);
             let is_sel = Some(i) == sel_display;
-            let full = format!(" {prefix}{name}  [{key}]", prefix = "   ");
-            let pad = row_pad(&full, row_w);
+            // The key sits in its own column, in the theme's dim colour, with
+            // no brackets: the brackets were punctuation around something
+            // already set apart, and on the selected row they were the only
+            // part that said which row the key belonged to.
+            let key_col = (row_w / 3).max(16);
+            let head = format!("   {name}");
+            let pad = row_pad(&head, key_col);
+            let tail =
+                row_w.saturating_sub((head.chars().count() + pad + key.chars().count() + 1) as u16);
             let style = if is_sel {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())
@@ -111,13 +120,22 @@ impl Pickers {
                 Style::default().fg(app.theme.fg)
             };
             let key_style = if is_sel {
-                style
+                // Dimmed against the selection rather than replaced by it: the
+                // key was readable on every other row and has to stay readable
+                // on the one the cursor is on.
+                Style::default()
+                    .fg(blend_colors(
+                        app.theme.selection_fg_readable(),
+                        app.theme.selection_bg,
+                        0.35,
+                    ))
+                    .bg(app.theme.selection_bg)
             } else {
                 Style::default().fg(app.theme.fg_dim)
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("{full}{}", " ".repeat(pad)), style),
-                Span::styled(" ", key_style),
+                Span::styled(format!("{head}{}", " ".repeat(pad)), style),
+                Span::styled(format!(" {key}{}", " ".repeat(tail as usize)), key_style),
             ]));
             if let Some(ci) = cmd {
                 let row_rect = Rect {
