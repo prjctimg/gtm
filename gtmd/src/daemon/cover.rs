@@ -59,6 +59,33 @@ impl Cover {
             discovered_album = track.album.clone();
         }
 
+        // The same sidecar, found from the path the caller supplied.
+        //
+        // The lookup above is keyed on the library id, and an id is not always
+        // available or correct: a queued row the resolver labelled, a track
+        // played straight from the command line, a row whose id belongs to a
+        // different library track — all of them reach this point with a path
+        // that names a real file and no row to read, and every one of them drew
+        // no artwork while the cover was sitting next to the audio the whole
+        // time. A sidecar needs nothing but the file's own name.
+        if library_track.is_none()
+            && let Some(path) = track_path
+            && std::path::Path::new(path).is_absolute()
+        {
+            let audio_path = std::path::Path::new(path);
+            let parent = audio_path.parent().unwrap_or(std::path::Path::new(""));
+            let stem = audio_path.file_stem().unwrap_or_default();
+            for ext in ["jpg", "jpeg", "png", "webp"] {
+                let sidecar = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
+                if let Ok(data) = tokio::fs::read(&sidecar).await
+                    && !CoverCache::too_small(&data)
+                {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                    return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                }
+            }
+        }
+
         // A queued entry can already know its artwork: the spotify resolver
         // points `cover_path` at the album art the web API handed us. Serve
         // that file before the artist/album search below, which misses often

@@ -65,7 +65,7 @@ pub enum PickerId {
     DiscordSetup,
 }
 
-/// Which list a fuzzy-finder picker searches. `Tab` cycles through these.
+/// Which list a fuzzy-finder picker searches. `[` and `]` cycle through these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PickerSource {
     #[default]
@@ -99,6 +99,17 @@ impl PickerSource {
             Self::Radio => Self::All,
         }
     }
+
+    pub fn prev(&self) -> Self {
+        match self {
+            Self::All => Self::Radio,
+            Self::Tracks => Self::All,
+            Self::Artists => Self::Tracks,
+            Self::Albums => Self::Artists,
+            Self::Playlists => Self::Albums,
+            Self::Radio => Self::Playlists,
+        }
+    }
 }
 
 /// Active picker instance: state + metadata.
@@ -110,7 +121,7 @@ pub struct Picker {
     /// Only advances when the selection leaves the viewport, so the
     /// list never recenters or jumps.
     pub viewport_offset: usize,
-    /// List the fuzzy finder filters over (`Tab` cycles it).
+    /// List the fuzzy finder filters over (`[` and `]` cycle it).
     pub source: PickerSource,
 }
 

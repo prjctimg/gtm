@@ -162,10 +162,11 @@ impl App {
                     // the highlighted row in the filtered list.
                     self.play_filtered_highlighted();
                 }
-                // Tab keeps its grouping meaning with a query typed: the query
-                // narrows one list, and Tab says which list.
-                KeyCode::Tab => self.cycle_library_filter(false),
-                KeyCode::BackTab => self.cycle_library_filter(true),
+                // The filter keys keep their grouping meaning with a query typed: the
+                // query narrows one list, and the pair says which list. Ahead
+                // of the `Char` arm, or they would be typed as text.
+                KeyCode::Char('[') => self.cycle_view_filter(true),
+                KeyCode::Char(']') => self.cycle_view_filter(false),
                 KeyCode::Char(c) => {
                     self.search_query.push(c);
                 }
@@ -329,18 +330,6 @@ impl App {
                         self.pending_motion = Some('g');
                         return true;
                     }
-                }
-                // Tab and Shift+Tab regroup the Library view. Handled before
-                // the dispatch so a user binding on the same key cannot take
-                // it: the grouping is the view's own mode switch, and a mode
-                // that can be unbound mid-scroll is not one.
-                if matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
-                    && !self.multiselect_mode
-                    && self.library_category == LIB_ALL
-                {
-                    let back = key.code == KeyCode::BackTab;
-                    self.cycle_library_filter(back);
-                    return true;
                 }
                 // In multiselect mode, Tab toggles selection and advances
                 if key.code == KeyCode::Tab && self.multiselect_mode && !self.library_pane_focus {
@@ -771,16 +760,19 @@ impl App {
                     Some(KeyboardAction::CheckHealth) => {
                         self.send_high(TuiCommand::CheckHealth);
                     }
-                    Some(KeyboardAction::FocusLeft) => {
-                        // The same cycle Tab used to run, in reverse. The
-                        // bracket pair is the only pane-focus key now, so it has
-                        // to be a proper cycle rather than two one-way steps.
+                    Some(KeyboardAction::FocusPaneBack) => {
                         self.cycle_pane_focus(false);
                         self.dismiss_track_popup();
                     }
-                    Some(KeyboardAction::FocusRight) => {
+                    Some(KeyboardAction::FocusPaneForward) => {
                         self.cycle_pane_focus(true);
                         self.dismiss_track_popup();
+                    }
+                    Some(KeyboardAction::PreviousFilter) => {
+                        self.cycle_view_filter(true);
+                    }
+                    Some(KeyboardAction::NextFilter) => {
+                        self.cycle_view_filter(false);
                     }
                     Some(KeyboardAction::Back) => {
                         if self.lyrics.pane_focus {
@@ -1968,6 +1960,22 @@ impl App {
 
         let tx = self.cmd_tx();
 
+        // `[` and `]` step the picker's filter, before anything else can claim
+        // them: the search pickers take printable characters into the query, so
+        // a filter key that arrived as text would be silently typed instead.
+        if matches!(key.code, KeyCode::Char('[') | KeyCode::Char(']')) {
+            let before = self.pickers.top().map(|o| (o.id, o.source));
+            let radio_before = self.radio.filter;
+            self.cycle_view_filter(key.code == KeyCode::Char('['));
+            let after = self.pickers.top().map(|o| (o.id, o.source));
+            let moved = before != after || radio_before != self.radio.filter;
+            self.picker_preview_cover = None;
+            self.data_dirty = true;
+            if moved {
+                return;
+            }
+        }
+
         // The library picker (Alt+.) is a list with a search box over the
         // user's configured lists. Typing therefore has to reach the query,
         // which rules out the `j`/`k` vim bindings the other list pickers use
@@ -2960,7 +2968,7 @@ impl App {
         // ─── Unified Radio picker (Alt+R) ───
         // One picker over the merged root list (Saved / Top / Tags /
         // Countries) with drill-down into tag/country stations and a
-        // filterable search box. Tab cycles the filter field, 's' saves a
+        // filterable search box. `[` and `]` cycle the filter field, 's' saves a
         // directory station, 'x' removes a saved station, 'r' refreshes the
         // current section, Esc pops drill-downs back to root (handled in
         // handle_key).
@@ -4369,22 +4377,11 @@ impl App {
                     }
                 }
             }
+            // Tab moves between the *fields* of a form. Filtering is `[`/`]`,
+            // handled at the top of this function.
             KeyCode::Tab => {
                 if let Some(top) = self.pickers.top_mut() {
-                    if matches!(top.id, PickerId::SearchLibrary | PickerId::SpotifySearch) {
-                        // Both search pickers share the same filter model, so
-                        // Tab narrows results the same way in either.
-                        top.source = top.source.next();
-                        top.selected = 0;
-                        top.viewport_offset = 0;
-                        self.picker_preview_cover = None;
-                        self.picker_preview_stateful = None;
-                        self.picker_slot.clear();
-                        self.artist_cover = None;
-                        self.artist_cover_stateful = None;
-                        self.artist_slot.clear();
-                        self.spotify.preview_fetch.clear();
-                    } else if top.id == PickerId::EditMetadata {
+                    if top.id == PickerId::EditMetadata {
                         self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
                     } else if top.id == PickerId::SpotifyLink {
                         // Client id first (it is the optional one that decides

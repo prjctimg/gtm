@@ -523,6 +523,15 @@ impl RadioFilter {
             Self::Rating => Self::Name,
         }
     }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Name => Self::Rating,
+            Self::Tags => Self::Name,
+            Self::Country => Self::Tags,
+            Self::Rating => Self::Country,
+        }
+    }
 }
 
 /// A selectable row in the unified Radio picker, mirroring how the

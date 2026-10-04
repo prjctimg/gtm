@@ -70,8 +70,14 @@ pub enum KeyboardAction {
 
     // Navigation
     Back,
-    FocusLeft,
-    FocusRight,
+    /// Step the active view's filter backwards (`[`): the Library grouping, or
+    /// whichever filter the open picker filters over.
+    PreviousFilter,
+    /// The same, forwards (`]`).
+    NextFilter,
+    /// Move the pane focus forwards (`Tab`) and back (`Shift+Tab`).
+    FocusPaneForward,
+    FocusPaneBack,
 
     // Lyrics
     FetchLyrics,
@@ -287,8 +293,12 @@ pub fn default_keybindings() -> Keybindings {
             ),
             b!(KeyCode::Char('&'), KeyboardAction::ToggleScrobble, NORMAL),
             b!(KeyCode::Char('D'), KeyboardAction::ClearQueue, NORMAL),
-            b!(KeyCode::Char('['), KeyboardAction::FocusLeft, NORMAL),
-            b!(KeyCode::Char(']'), KeyboardAction::FocusRight, NORMAL),
+            b!(KeyCode::Char('['), KeyboardAction::PreviousFilter, NORMAL),
+            b!(KeyCode::Char(']'), KeyboardAction::NextFilter, NORMAL),
+            // Tab walks the panes, which is what it did before the bracket
+            // pair took the job and left it to regroup the Library view.
+            b!(KeyCode::Tab, KeyboardAction::FocusPaneForward, NORMAL),
+            b!(KeyCode::BackTab, KeyboardAction::FocusPaneBack, NORMAL),
             b!(KeyCode::Char('l'), KeyboardAction::FetchLyrics, NORMAL),
             b!(
                 KeyCode::Char('i'),
@@ -589,8 +599,10 @@ impl KeyboardAction {
             "toggle_scrobble" | "scrobble" => KeyboardAction::ToggleScrobble,
             "clear_queue" => KeyboardAction::ClearQueue,
             "back" => KeyboardAction::Back,
-            "focus_left" => KeyboardAction::FocusLeft,
-            "focus_right" => KeyboardAction::FocusRight,
+            "previous_filter" | "filter_prev" => KeyboardAction::PreviousFilter,
+            "next_filter" | "filter_next" => KeyboardAction::NextFilter,
+            "focus_pane_forward" | "next_pane" => KeyboardAction::FocusPaneForward,
+            "focus_pane_back" | "prev_pane" => KeyboardAction::FocusPaneBack,
             "fetch_lyrics" | "lyrics" => KeyboardAction::FetchLyrics,
             "toggle_multiselect" | "multiselect" => KeyboardAction::ToggleMultiselect,
             "multiselect_up" => KeyboardAction::MultiselectUp,

@@ -71,7 +71,7 @@ pub const NUM_SETTINGS_CATEGORIES: usize = 3;
 /// now with a filter over it: they were four renderings of the same question —
 /// what is in the library, grouped one way or another — and the left pane spent
 /// four rows on the answer while the pane below showed one of them. The filter
-/// is [`LibraryFilter`], switched with Tab.
+/// is [`LibraryFilter`], switched with `[` and `]`.
 ///
 /// Named rather than compared as bare numbers: these indices are the row's
 /// identity in a dozen places, and a renumbering is otherwise invisible.
@@ -104,8 +104,8 @@ pub const LIB_PODCASTS: usize = 10;
 
 /// How the Library view groups the same rows.
 ///
-/// Tab and Shift+Tab walk it. Every arm reads the same data, so the filter is
-/// the only difference between them: which column the rows are keyed by.
+/// `[` and `]` walk it. Every arm reads the same data, so the filter is the
+/// only difference between them: which column the rows are keyed by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibraryFilter {
     Tracks,
@@ -115,7 +115,7 @@ pub enum LibraryFilter {
 }
 
 impl LibraryFilter {
-    /// The filters in Tab order.
+    /// The filters in `[` / `]` order.
     pub const ALL: [LibraryFilter; 4] = [
         LibraryFilter::Tracks,
         LibraryFilter::Albums,
@@ -1398,6 +1398,56 @@ impl App {
     pub fn set_list_pos(&mut self, v: usize) {
         let slot = self.view_slot();
         self.scroll_offset[slot] = v;
+    }
+
+    /// Step the filter of whatever view is on screen: the Library grouping, or
+    /// the source filter of the open picker.
+    ///
+    /// One entry point for `[` and `]` because they are the same question in
+    /// every context — "show me the next way of slicing this" — and the picker
+    /// arms and the library arm answering it separately is how the two drifted
+    /// onto different keys in the first place.
+    pub(crate) fn cycle_view_filter(&mut self, back: bool) {
+        let Some(top) = self.pickers.top_mut() else {
+            // No picker open: the Library view's own grouping. The other
+            // categories are flat lists with nothing to slice, so the pair does
+            // nothing there rather than moving the category.
+            if self.library_category == LIB_ALL {
+                self.cycle_library_filter(back);
+            }
+            return;
+        };
+        match top.id {
+            // The search pickers share one filter model.
+            PickerId::SearchLibrary | PickerId::SpotifySearch => {
+                top.source = if back {
+                    top.source.prev()
+                } else {
+                    top.source.next()
+                };
+                top.selected = 0;
+                top.viewport_offset = 0;
+                // Every cover the old filter's rows had asked for is now
+                // describing rows that are gone: the preview strip, the artist
+                // card and the Spotify preview all have to start over.
+                self.picker_preview_cover = None;
+                self.picker_preview_stateful = None;
+                self.picker_slot.clear();
+                self.artist_cover = None;
+                self.artist_cover_stateful = None;
+                self.artist_slot.clear();
+                self.spotify.preview_fetch.clear();
+            }
+            PickerId::Radio => {
+                self.radio.filter = if back {
+                    self.radio.filter.prev()
+                } else {
+                    self.radio.filter.next()
+                };
+            }
+            // A picker with one kind of row has no filter to step.
+            _ => {}
+        }
     }
 
     /// Switch the Library view's grouping, keeping the drill-down and the

@@ -817,25 +817,12 @@ jobs:
       - name: Set crates.io token
         run: echo "CARGO_REGISTRY_TOKEN=${{ steps.auth.outputs.token }}" >> "${GITHUB_ENV}"
 
-      - name: Publish crate
-        run: |
-          set -euo pipefail
-          version="${{ needs.tag.outputs.version }}"
-
-          for attempt in 1 2 3 4 5 6; do
-            out="$(cargo publish -p gtm 2>&1)"
-            if [[ $? -eq 0 ]]; then
-              echo "gtm v${version} published"
-              exit 0
-            fi
-            if grep -q "already exists" <<<"${out}"; then
-              echo "gtm v${version}: already published, skipping"
-              exit 0
-            fi
-            echo "gtm v${version}: publish failed, retrying (attempt ${attempt}/6)..."
-            echo "${out}"
-            sleep 30
-          done
-          exit 1
+      - name: Publish crates
+        # Both crates, in dependency order. Publishing only `gtm` left crates.io
+        # with a `gtmd 0.2.83` beside a `gtm 0.2.84`, so anyone depending on the
+        # daemon by version got a crate that could not resolve the library that
+        # was actually published. `gtmd` depends on `gtm`, so `gtm` goes first
+        # and the retry below covers the index not having caught up yet.
+        run: scripts/build/publish.sh
 
 

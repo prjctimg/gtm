@@ -130,12 +130,12 @@ impl CommandPalette {
             },
             Command {
                 label: "Library: Next Grouping",
-                keys: "Tab",
+                keys: "]",
                 hint: "library next grouping",
             },
             Command {
                 label: "Library: Previous Grouping",
-                keys: "Shift+Tab",
+                keys: "[",
                 hint: "library previous grouping",
             },
             Command {
@@ -225,12 +225,12 @@ impl CommandPalette {
             },
             Command {
                 label: "Focus Next Pane",
-                keys: "]",
+                keys: "Tab",
                 hint: "focus pane forward",
             },
             Command {
                 label: "Focus Previous Pane",
-                keys: "[",
+                keys: "Shift+Tab",
                 hint: "focus pane back",
             },
             Command {
