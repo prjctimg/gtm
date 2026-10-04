@@ -100,35 +100,118 @@ api_get() {
   curl "${CURL_WAIT[@]}" -fsSL "$1"
 }
 
-# Download a URL, showing a bar on a terminal.
+# The size of <url> in bytes, or 0 when the server will not say.
 #
-# A bar, not a byte count: the byte-count indicator that used to be here
-# reported a total and a downloaded figure that did not match what was written,
-# and a wrong number is worse than none. `--progress-bar` draws the bar and the
-# percentage and nothing else. On a non-terminal stderr (CI logs, `2>log`,
-# `| tee`) there is no bar to draw into, so it stays quiet — but curl's own
-# errors still come through, which the old `2>/dev/null` swallowed along with
-# them: a 404 used to print "download failed" and not "404", which is the one
-# line that says why.
+# One extra round trip, and only so the percentage can be honest. Without a
+# total there is nothing to divide by, and a percentage of an unknown total is
+# not a percentage. Header names are matched with explicit classes rather than
+# `IGNORECASE`, which is a GNU awk extension and this installer also runs under
+# busybox awk on Alpine and Termux.
+remote_size() {
+  curl -fsSLI --connect-timeout 10 --max-time 30 "$1" 2>/dev/null \
+    | awk '/^[Cc]ontent-[Ll]ength:/ { gsub(/\r/, "", $2); n = $2 } END { print n + 0 }'
+}
+
+# Seconds a download may receive no new bytes at all before it is called dead.
 #
-# No `--max-time`, because a 18 MB archive on a slow link legitimately takes
+# Measured in bytes, not in average rate, and that distinction is the whole
+# point: a slow link that keeps trickling is slow, not dead. This one averages
+# 35 kB/s while pausing for tens of seconds at a stretch, and a rate floor
+# (`--speed-limit`) added for the same purpose killed that exact download four
+# times over — each curl retry restarts from zero, so it could never finish.
+# Ninety seconds with not one new byte is a connection nobody is reading.
+DOWNLOAD_STALL_SECS=90
+
+# Download a URL, reporting a percentage on a terminal.
+#
+# curl's own `--progress-bar` is gone: it draws a row of `#`, `=` and `O`
+# glyphs, which is the one thing in this output that does not read as text. The
+# percentage is computed here instead — bytes on disk against the size the
+# server reported — so it is a real number rather than curl's guess at one.
+#
+# The bytes arrive through a backgrounded curl because there is no way to ask a
+# foreground curl what it has written so far. On a non-terminal stderr (CI
+# logs, `2>log`, `| tee`) there is nothing to redraw the line into, so no
+# progress is printed — but the stall guard still runs, because a CI log that
+# stops forever is the same bug as a terminal that does. curl's errors come
+# through either way, which the old `2>/dev/null` swallowed along with them: a
+# 404 used to print "download failed" and not "404", which is the one line that
+# says why.
+#
+# No `--max-time`, because an 18 MB archive on a slow link legitimately takes
 # minutes and a total cap would fail the installs that most need patience.
-# `--speed-limit`/`--speed-time` cover the case a total cap cannot: bytes stop
-# arriving altogether while the connection stays open, which is the one failure
-# that looks exactly like waiting and is not. The archive is ~18 MB, so anything
-# under 1 kB/s sustained for 30 s is a dead transfer, not a slow one.
 #   download_simple <url> <outfile>
 download_simple() {
   local url="$1" out="$2"
-  local progress
-  if [ -t 2 ]; then
-    progress=(--progress-bar)
-  else
-    progress=(--silent)
+  local curl_common=(-fL --silent --show-error --connect-timeout 15
+    --retry 3 --retry-delay 2)
+
+  local tty=0
+  if [ -t 2 ]; then tty=1; fi
+
+  local total pid have prev=-1 still=0 last=-1 code=0 killed=0
+  total="$(remote_size "$url")"
+  curl "${curl_common[@]}" "$url" -o "$out" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    # The file does not exist yet on the first poll — curl has not been
+    # scheduled — and `wc -c < missing` is a redirection failure the *shell*
+    # reports, which lands on this line and corrupts the percentage beside it.
+    # Ask whether it is there first.
+    if [ -f "$out" ]; then
+      have="$(wc -c < "$out" 2>/dev/null || echo 0)"
+      have="${have:-0}"
+    else
+      have=0
+    fi
+
+    if [ "${have}" -gt "${prev}" ]; then
+      still=0
+    else
+      still=$((still + 1))
+      if [ "${still}" -ge "${DOWNLOAD_STALL_SECS}" ]; then
+        kill "${pid}" 2>/dev/null || true
+        killed=1
+        break
+      fi
+    fi
+    prev="${have}"
+
+    if [ "${tty}" -eq 1 ]; then
+      if [ "${total}" -gt 0 ] 2>/dev/null; then
+        local pct=$((have * 100 / total))
+        if [ "${pct}" -gt 100 ]; then pct=100; fi
+        # A retry restarts the transfer and the file shrinks under us, so the
+        # number only ever goes up. A percentage that goes backwards
+        # mid-download reads as a fault in the installer rather than as the
+        # retry it is.
+        if [ "${pct}" -lt "${last}" ]; then pct="${last}"; fi
+        if [ "${pct}" -ne "${last}" ]; then
+          # Right-padded to a fixed width so a shorter number cannot leave the
+          # tail of the previous one on screen.
+          printf "${MUTED}📥 Downloading: %3d%%   ${NC}\r" "$pct" >&2
+          last="${pct}"
+        fi
+      elif [ "${last}" -lt 0 ]; then
+        # No total to divide by: say what is happening, invent nothing.
+        printf "${MUTED}📥 Downloading…${NC}\r" >&2
+        last=0
+      fi
+    fi
+    sleep 1
+  done
+  wait "${pid}" 2>/dev/null || code=$?
+
+  if [ "${tty}" -eq 1 ]; then
+    # Erase the progress line so the next one is not written over it.
+    printf '\r%*s\r' 24 '' >&2
   fi
-  curl -fL "${progress[@]}" --show-error \
-    --connect-timeout 15 --speed-limit 1024 --speed-time 30 \
-    --retry 3 --retry-delay 2 "$url" -o "$out"
+  # 28 is curl's own "timed out", so the caller's failure message reads the same
+  # whether the stall was caught here or by curl.
+  if [ "${killed}" -eq 1 ]; then
+    return 28
+  fi
+  return "${code}"
 }
 
 VERSION=""
@@ -299,7 +382,7 @@ bootstrap_install() {
   fi
 
   local archive_name="gtm-${PLATFORM}.tar.gz"
-  stage "🔎 resolving the ${archive_name} download URL"
+  stage "🔎 resolving release assets"
   if [ "${CHANNEL}" = "nightly" ]; then
     # Resolve strictly against the published nightly so a draft (mid-build)
     # resolves to a clear "try again" instead of a dead 404 URL.
@@ -341,7 +424,7 @@ bootstrap_install() {
   trap 'exit 143' TERM
   trap 'rm -rf "${BOOTSTRAP_TMPDIR:?}"' EXIT
 
-  log "📥 downloading ${label}"
+  log "⬇️  ${label}"
   if ! download_simple "${url}" "${BOOTSTRAP_TMPDIR}/${archive_name}"; then
     die "download failed: ${url}"
   fi
