@@ -2547,8 +2547,6 @@ impl Render {
         let total = lyrics.lines.len();
         let width = lyrics_inner.width.max(1) as usize;
         let synced = lyrics_are_synced(&lyrics.lines);
-        // User-adjustable offset applied to matching and the timestamp gutter.
-        let offset = app.lyrics.offset_secs;
         let anchor = app.lyrics.scroll.min(total.saturating_sub(1));
         let mut row_offsets = Vec::with_capacity(total);
         let mut text = Vec::with_capacity(total);
@@ -2581,12 +2579,12 @@ impl Render {
             // range, which cost two to nine columns on *every* row and told the
             // reader nothing they had not just watched the highlight move
             // through. The line being sung is already marked; the timing is in
-            // the source, and the manual offset still nudges the matching.
+            // the source.
             // Karaoke: the active line lights up word-by-word when the source
             // carries per-word timings (enhanced LRC). Words not yet sung sit
             // at the future-lines colour.
             let rendered = if i == anchor && synced && !line.words.is_empty() {
-                let pos = app.raw_position + offset;
+                let pos = app.raw_position;
                 let mut spans: Vec<Span> = Vec::with_capacity(line.words.len() + 1);
                 for w in &line.words {
                     let sung = pos >= w.time;

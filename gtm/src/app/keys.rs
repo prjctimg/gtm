@@ -389,14 +389,6 @@ impl App {
                         let _ = tokio::time::timeout(Duration::from_millis(1500), c.quit()).await;
                         return false;
                     }
-                    Some(KeyboardAction::NextPane) => {
-                        self.cycle_pane_focus(true);
-                        self.dismiss_track_popup();
-                    }
-                    Some(KeyboardAction::PrevPane) => {
-                        self.cycle_pane_focus(false);
-                        self.dismiss_track_popup();
-                    }
                     Some(KeyboardAction::OpenOverlay(id)) => {
                         if let Some(ext) = overlay_extension(id)
                             && self.extensions.is_disabled(ext)
@@ -790,35 +782,15 @@ impl App {
                         self.send_high(TuiCommand::CheckHealth);
                     }
                     Some(KeyboardAction::FocusLeft) => {
-                        if self.lyrics.show && self.lyrics.pane_focus {
-                            // `[` trims lyrics highlights earlier while the
-                            // lyrics pane holds focus (exit focus with Back/Tab).
-                            self.nudge_lyrics_offset(-0.1);
-                        } else if self.lyrics.show {
-                            // `[` with lyrics open but not focused returns focus
-                            // to the library pane.
-                            self.library_pane_focus = true;
-                        } else {
-                            self.library_pane_focus = true;
-                        }
+                        // The same cycle Tab used to run, in reverse. The
+                        // bracket pair is the only pane-focus key now, so it has
+                        // to be a proper cycle rather than two one-way steps.
+                        self.cycle_pane_focus(false);
+                        self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::FocusRight) => {
-                        if self.lyrics.show && self.lyrics.pane_focus {
-                            // `]` delays lyrics highlights later.
-                            self.nudge_lyrics_offset(0.1);
-                        } else if self.lyrics.show {
-                            if self.library_pane_focus {
-                                // left → right (track) pane
-                                self.library_pane_focus = false;
-                                self.update_track_popup();
-                            } else {
-                                // right pane → lyrics pane
-                                self.lyrics.pane_focus = true;
-                            }
-                        } else {
-                            self.library_pane_focus = false;
-                            self.update_track_popup();
-                        }
+                        self.cycle_pane_focus(true);
+                        self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::Back) => {
                         if self.lyrics.pane_focus {

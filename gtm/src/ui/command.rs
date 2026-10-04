@@ -212,14 +212,14 @@ impl CommandPalette {
                 hint: "edit metadata",
             },
             Command {
-                icon: "\u{f0493} Tab Cycle",
-                keys: "Tab",
-                hint: "tab cycle",
+                icon: "\u{f0493} Focus Next Pane",
+                keys: "]",
+                hint: "focus next pane",
             },
             Command {
-                icon: "\u{f0493} Prev Tab",
-                keys: "Shift+Tab",
-                hint: "prev tab",
+                icon: "\u{f0493} Focus Previous Pane",
+                keys: "[",
+                hint: "focus previous pane",
             },
             Command {
                 icon: "\u{f0493} Settings",
@@ -487,14 +487,14 @@ impl CommandPalette {
                 hint: "edit metadata",
             },
             Command {
-                icon: "\u{27a1}\u{fe0f} Tab Cycle",
-                keys: "Tab",
-                hint: "tab cycle",
+                icon: "\u{27a1}\u{fe0f} Focus Next Pane",
+                keys: "]",
+                hint: "focus next pane",
             },
             Command {
-                icon: "\u{2b05}\u{fe0f} Prev Tab",
-                keys: "Shift+Tab",
-                hint: "prev tab",
+                icon: "\u{2b05}\u{fe0f} Focus Previous Pane",
+                keys: "[",
+                hint: "focus previous pane",
             },
             Command {
                 icon: "\u{2699}\u{fe0f} Settings",

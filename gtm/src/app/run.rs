@@ -1709,6 +1709,18 @@ impl App {
                 self.mark_all_dirty();
             }
 
+            // Duration the bar and the elapsed readout are measured against: the
+            // event-reported duration when there is one, the track's own
+            // otherwise.
+            let bar_dur = if self.state.duration > 0.0 {
+                self.state.duration
+            } else {
+                self.state
+                    .current_track
+                    .as_ref()
+                    .map(|t| t.duration)
+                    .unwrap_or(0.0)
+            };
             let mut raw_pos = self.client.estimated_position().await;
             // Monotonic guard: prevent large backward jumps from clock skew.
             // Allow at most 0.5s of regression to avoid visible stutter.
@@ -1717,14 +1729,26 @@ impl App {
             let seeking = self
                 .seek_pending
                 .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(1200));
+            // …and skipped whenever the daemon is not playing, because then a
+            // backward jump is the truth rather than skew: the clock is back at
+            // zero because the track ended, and the guard held the elapsed time
+            // just under where it stopped for as long as the app ran.
+            let skew_guard = seeking || self.state.status == PlaybackStatus::Playing;
             if seeking {
                 // A real (in-track) seek target has landed: drop the window so
                 // the guard resumes once playback continues past it.
-                if self.state.duration > 0.0 && self.raw_position <= self.state.duration {
+                if bar_dur > 0.0 && self.raw_position <= bar_dur {
                     self.seek_pending = None;
                 }
-            } else {
+            } else if skew_guard {
                 raw_pos = raw_pos.max(self.display_position - 0.5);
+            }
+            // The estimate runs off a local clock, so between the last event
+            // and the next it drifts ahead of the audio. Clamped here rather
+            // than trusted: an elapsed time past the duration is a readout
+            // nothing can explain.
+            if bar_dur > 0.0 {
+                raw_pos = raw_pos.min(bar_dur);
             }
             // Lyric matching uses the raw (guard-only) position so the active
             // verse switches at the right timestamp; the smoothing below only
@@ -1746,17 +1770,13 @@ impl App {
                 self.display_position +=
                     (raw_pos - self.display_position) * (1.0 - (-dt / 0.08).exp());
             }
+            // The glide eases toward the target, so it can still be sitting
+            // above the duration on the frame the estimate was clamped.
+            if bar_dur > 0.0 {
+                self.display_position = self.display_position.min(bar_dur);
+            }
             // Debounced daemon seek dispatch for long-press seeking.
             self.ensure_seek_flush();
-            let bar_dur = if self.state.duration > 0.0 {
-                self.state.duration
-            } else {
-                self.state
-                    .current_track
-                    .as_ref()
-                    .map(|t| t.duration)
-                    .unwrap_or(0.0)
-            };
             let bar_target = if bar_dur > 0.0 {
                 self.display_position / bar_dur
             } else {

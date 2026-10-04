@@ -1190,7 +1190,6 @@ impl App {
                 show: false,
                 pane_focus: false,
                 manual_scroll: false,
-                offset_secs: 0.0,
                 row: None,
                 kind: LyricsKind::None,
             },
@@ -1234,9 +1233,10 @@ impl App {
     /// * `q` is `Quit` everywhere else. From a fullscreen view, with the
     ///   library and the footer both off screen, that would kill playback from
     ///   an overlay the user cannot see the rest of the app in.
-    /// * `Tab` / `BackTab` are `NextPane` / `PrevPane`. Zen is one surface, so
-    ///   there is no pane to focus, and cycling the surface is the only thing
-    ///   the key could usefully do.
+    /// * `Tab` / `BackTab` cycle Zen's surface. Zen is one surface, so there is
+    ///   no pane to focus, and cycling is the only thing the key could
+    ///   usefully do — the bracket pair that focuses panes elsewhere has
+    ///   nothing to focus here.
     /// * `Esc` closes a picker when one is open and is already handled above
     ///   this point, so it is listed only for the case where none is.
     ///

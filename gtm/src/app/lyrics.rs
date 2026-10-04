@@ -113,7 +113,7 @@ impl App {
         let Some(ref lyrics) = self.lyrics.current else {
             return 0;
         };
-        lyric_index_at(&lyrics.lines, self.raw_position + self.lyrics.offset_secs)
+        lyric_index_at(&lyrics.lines, self.raw_position)
     }
 
     /// Start a lyrics fetch for `track`, updating the view state in place.
@@ -227,33 +227,8 @@ impl App {
         self.lyrics.pending_gen = Some(fetch_gen);
         self.lyrics.fetching = true;
         self.lyrics.scroll = 0;
-        self.lyrics.offset_secs = 0.0;
         self.lyrics.row = None;
         fetch_gen
-    }
-
-    /// Shift the lyric time baseline by `delta` seconds so lines whose timing
-    /// is early or late line up with the audio. Only meaningful while a track
-    /// with synced lyrics is loaded. Re-engages auto-follow and clears the
-    /// in-flight offset adjustment once the user stops nudging.
-    pub fn nudge_lyrics_offset(&mut self, delta: f64) {
-        if self.lyrics.current.is_none() {
-            return;
-        }
-        let mut offset = self.lyrics.offset_secs + delta;
-        if !offset.is_finite() {
-            offset = 0.0;
-        }
-        offset = offset.clamp(-120.0, 120.0);
-        self.lyrics.offset_secs = offset;
-        self.lyrics.manual_scroll = false;
-        self.notify_typed(
-            "Lyrics",
-            format!("offset {:+.2}s — press [ / ] to adjust", offset),
-            NotificationKind::Info,
-            true,
-            NotifType::NowPlaying,
-        );
     }
 }
 

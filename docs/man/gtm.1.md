@@ -24,8 +24,7 @@ default keybinding, grouped by topic. For configuration options and setup, see
 # TUI MODE (default)
 
 The TUI opens on the **Library** view; there are no tabs. Three panes are
-available and **Tab** / **Shift+Tab** cycles between them, or focus them
-directly with **[** / **]**.
+available and **[** / **]** cycle between them.
 
 ## Library
 
@@ -49,10 +48,9 @@ takes over (see *Daydreaming*).
 Press **l** to fetch lyrics for the current track (LRCLIB, an `.lrc`/`.srt`/
 timed `.json` sidecar next to the audio file, or the offline cache). When
 timestamps are available the active line is highlighted and auto-follows the
-playback position; enhanced-LRC sources light up per word. **Tab** moves focus
+playback position; enhanced-LRC sources light up per word. **]** moves focus
 into the lyrics pane, where **j**/**k**, **PageUp**/**PageDown**, **Home**/
-**End** scroll manually. **[** and **]** shift the lyric timing by ±0.1 s per
-press, clamped to ±120 s, so early/late sync can be corrected. Untimed lyrics
+**End** scroll manually, and **[** takes it back. Untimed lyrics
 are shown as untimestamped lines and never get a highlight, and the pane says *not time
 synced*.
 

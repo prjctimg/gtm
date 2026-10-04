@@ -17,10 +17,6 @@ pub enum KeyContext {
 
 #[derive(Debug, Clone)]
 pub enum KeyboardAction {
-    // Pane cycling (Tab / Shift-Tab)
-    NextPane,
-    PrevPane,
-
     // Cursor
     MoveUp,
     MoveDown,
@@ -227,8 +223,6 @@ pub fn default_keybindings() -> Keybindings {
                 KeyboardAction::OpenOverlay(PickerId::CommandPalette),
                 NORMAL
             ),
-            b!(KeyCode::Tab, KeyboardAction::NextPane, NORMAL),
-            b!(KeyCode::BackTab, KeyboardAction::PrevPane, NORMAL),
             b!(
                 KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT),
                 KeyboardAction::OpenOverlay(PickerId::Settings),
@@ -565,8 +559,6 @@ impl KeyboardAction {
     /// Map an action name (from config) to a `KeyboardAction`.
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
-            "next_pane" => KeyboardAction::NextPane,
-            "prev_pane" => KeyboardAction::PrevPane,
             "move_up" | "up" => KeyboardAction::MoveUp,
             "move_down" | "down" => KeyboardAction::MoveDown,
             "page_up" => KeyboardAction::PageUp,
