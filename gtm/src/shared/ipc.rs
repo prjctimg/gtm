@@ -283,6 +283,15 @@ pub enum DaemonReq {
     RemoveFavourite {
         track_id: i64,
     },
+    /// Favourite or unfavourite a row the library has no row for.
+    ///
+    /// The id-keyed pair above can only reach `tracks`, and a provider row is
+    /// not in it: the update matched nothing and the read-back failed. This
+    /// carries the row itself, so the uri, the title and the cover travel with
+    /// the request and the daemon can store what there is to store.
+    ToggleFavUri {
+        track: Box<TrackInfo>,
+    },
     YtSearch {
         query: String,
         filter: Option<YTFilter>,
@@ -603,6 +612,7 @@ impl DaemonReq {
             DaemonReq::GetFavourites => "get_favourites",
             DaemonReq::AddFavourite { .. } => "add_favourite",
             DaemonReq::RemoveFavourite { .. } => "remove_favourite",
+            DaemonReq::ToggleFavUri { .. } => "toggle_fav_uri",
             DaemonReq::YtSearch { .. } => "yt_search",
             DaemonReq::YtSearchPoll => "yt_search_poll",
             DaemonReq::YtSearchCancel => "yt_search_cancel",
@@ -919,6 +929,10 @@ impl DaemonReq {
                 DaemonReq::RemoveFavourite {
                     track_id: x.track_id,
                 }
+            }
+            "toggle_fav_uri" => {
+                let x: TrackInfo = p(params)?;
+                DaemonReq::ToggleFavUri { track: Box::new(x) }
             }
             "yt_search" => {
                 #[derive(Deserialize)]

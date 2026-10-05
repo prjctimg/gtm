@@ -337,6 +337,13 @@ impl App {
                     }
                 });
             }
+            TuiCommand::ToggleFavUri(track) => {
+                tokio::spawn(async move {
+                    if let Err(e) = client.favourites().toggle_uri(&track).await {
+                        error_handler(e);
+                    }
+                });
+            }
             TuiCommand::RemoveFavourite(id) => {
                 tokio::spawn(async move {
                     if let Err(e) = client.favourites().remove(id).await {

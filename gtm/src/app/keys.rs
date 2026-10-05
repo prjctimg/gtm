@@ -649,7 +649,7 @@ impl App {
                         if self.library_pane_focus {
                             return true;
                         }
-                        let (ids, label) = match self.library_category {
+                        let (ids, label, mut rows) = match self.library_category {
                             // Grouped row (album / artist / genre): every
                             // cached track behind the name. The resolver is the
                             // one the multiselect and edit paths already use.
@@ -658,17 +658,19 @@ impl App {
                                     .library_groups()
                                     .get(self.list_pos())
                                     .map_or_else(String::new, |(n, _)| n.clone());
-                                (self.motion_row_ids().unwrap_or_default(), label)
+                                (self.motion_row_ids().unwrap_or_default(), label, Vec::new())
                             }
-                            LIB_PLAYLISTS if self.playlist_row() => (Vec::new(), String::new()),
+                            LIB_PLAYLISTS if self.playlist_row() => {
+                                (Vec::new(), String::new(), Vec::new())
+                            }
                             LIB_PLAYLISTS => {
                                 // Playlist row (drill-down open): all tracks in the playlist
                                 if self.browse_detail.is_some() {
                                     let ids: Vec<i64> =
                                         self.filtered_tracks().iter().map(|t| t.id).collect();
-                                    (ids, "Playlist".to_string())
+                                    (ids, "Playlist".to_string(), Vec::new())
                                 } else {
-                                    (Vec::new(), String::new())
+                                    (Vec::new(), String::new(), Vec::new())
                                 }
                             }
                             _ => {
@@ -698,31 +700,42 @@ impl App {
                                         .filter(|&id| Some(id) != cursor_id)
                                         .collect();
                                     if ids.is_empty() {
-                                        (Vec::new(), String::new())
+                                        (Vec::new(), String::new(), Vec::new())
                                     } else {
                                         let count = ids.len();
-                                        (ids, format!("{count} tracks"))
+                                        (ids, format!("{count} tracks"), Vec::new())
                                     }
                                 } else if let Some(t) = filtered.get(self.list_pos()) {
-                                    (vec![t.id], t.title.clone())
+                                    // A provider row has no library id, so it is
+                                    // carried whole and toggled by its uri.
+                                    let (id, row) = if t.id > 0 {
+                                        (vec![t.id], Vec::new())
+                                    } else {
+                                        (Vec::new(), vec![(*t).clone()])
+                                    };
+                                    (id, t.title.clone(), row)
                                 } else {
-                                    (Vec::new(), String::new())
+                                    (Vec::new(), String::new(), Vec::new())
                                 }
                             }
                         };
-                        if ids.is_empty() {
+                        if ids.is_empty() && rows.is_empty() {
                             return true;
                         }
                         let all_fav = self
                             .tracks_cache
                             .iter()
                             .filter(|t| ids.contains(&t.id))
+                            .chain(rows.iter())
                             .all(|t| t.favourite);
                         let new_fav = !all_fav;
                         for t in &mut self.tracks_cache {
                             if ids.contains(&t.id) {
                                 t.favourite = new_fav;
                             }
+                        }
+                        for t in rows.iter_mut() {
+                            t.favourite = new_fav;
                         }
                         let tx = self.cmd_tx();
                         for id in ids {
@@ -733,6 +746,13 @@ impl App {
                                     TuiCommand::RemoveFavourite(id)
                                 })
                                 .await;
+                        }
+                        // A provider row has no library id to toggle, so it
+                        // carries itself: the uri, the title and the cover are
+                        // what the daemon has to store, and it has no row to
+                        // read any of it back from.
+                        for t in rows.iter() {
+                            let _ = tx.send(TuiCommand::ToggleFavUri(t.clone())).await;
                         }
                         if !label.is_empty() {
                             let verb = if new_fav { "added to" } else { "removed from" };

@@ -1675,6 +1675,15 @@ pub struct Favourites<'a> {
 }
 
 impl<'a> Favourites<'a> {
+    /// Favourite or unfavourite a provider row, keyed by its uri.
+    pub async fn toggle_uri(&self, track: &TrackInfo) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::ToggleFavUri {
+                track: Box::new(track.clone()),
+            })
+            .await
+    }
+
     pub async fn list(&self) -> Result<DaemonRes> {
         self.client.send_raw(DaemonReq::GetFavourites).await
     }

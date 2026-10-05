@@ -19,6 +19,27 @@ impl Favourites {
         }
     }
 
+    /// Favourite or unfavourite a provider row, which has no library row.
+    pub async fn toggle_uri(
+        inner: &DaemonInner,
+        track: &TrackInfo,
+    ) -> Result<DaemonRes, CoreError> {
+        let data_dir = inner.config.data_dir.clone();
+        let track = track.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+            lib.toggle_fav_path(&track)
+        })
+        .await
+        .map_err(|e| CoreError::Daemon(e.to_string()))?;
+        // No state back: the caller already decided which way the toggle went,
+        // and the next read of the favourites is what tells the truth.
+        match result {
+            Ok(_) => Ok(DaemonRes::Ok),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
+    }
+
     pub async fn add(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
         let data_dir = inner.config.data_dir.clone();
         let result = tokio::task::spawn_blocking(move || {

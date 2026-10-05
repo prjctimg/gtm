@@ -142,7 +142,16 @@ impl Library {
                 FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_tracks_path ON tracks(path);
-            CREATE INDEX IF NOT EXISTS idx_tracks_fav ON tracks(favourite);",
+            CREATE INDEX IF NOT EXISTS idx_tracks_fav ON tracks(favourite);
+            CREATE TABLE IF NOT EXISTS fav_tracks (
+                path       TEXT PRIMARY KEY,
+                title      TEXT NOT NULL DEFAULT '',
+                artist     TEXT NOT NULL DEFAULT '',
+                album      TEXT NOT NULL DEFAULT '',
+                cover_url  TEXT,
+                duration   REAL NOT NULL DEFAULT 0.0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
         )
         .map_err(|e| format!("db init: {e}"))?;
         // Add the album_id column for tracks that pre-date it. SQLite has no
@@ -429,16 +438,81 @@ impl Library {
         Ok(val != 0)
     }
 
+    /// The favourites, local files and provider rows alike.
+    ///
+    /// `tracks.favourite` can only hold a file, so favouriting a `spotify:` row
+    /// updated no row and then read back nothing: `read fav: Query returned no
+    /// rows`, which is what the log showed. Provider rows have no library row at
+    /// all, so they live in `fav_tracks`, keyed by the uri that *is* their
+    /// identity. Both halves are one list because to the user a favourite is a
+    /// track, and which side of the database holds it is an implementation
+    /// detail they have no way to act on.
     pub fn get_favourites(&self) -> Result<Vec<TrackInfo>, String> {
         let mut stmt = self
             .conn
             .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks WHERE favourite = 1 ORDER BY title ASC")
             .map_err(|e| format!("prepare: {e}"))?;
-        let rows = stmt
+        let mut out: Vec<TrackInfo> = stmt
             .query_map([], Self::row_to_track)
-            .map_err(|e| format!("query: {e}"))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("rows: {e}"))
+            .map_err(|e| format!("query: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("rows: {e}"))?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, title, artist, album, cover_url, duration FROM fav_tracks ORDER BY title ASC")
+            .map_err(|e| format!("prepare fav: {e}"))?;
+        let remote = stmt
+            .query_map([], |row| {
+                Ok(TrackInfo {
+                    path: row.get(0)?,
+                    title: row.get(1)?,
+                    artist: row.get(2)?,
+                    album: row.get(3)?,
+                    cover_url: row.get(4)?,
+                    duration: row.get(5)?,
+                    favourite: true,
+                    ..Default::default()
+                })
+            })
+            .map_err(|e| format!("query fav: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("rows fav: {e}"))?;
+        out.extend(remote);
+        Ok(out)
+    }
+
+    /// Favourite or unfavourite a track the library has no row for.
+    ///
+    /// The counterpart to [`Self::toggle_favourite`] for a provider uri. Returns
+    /// the new state, so the caller does not have to read it back: the write is
+    /// `INSERT OR REPLACE` on the way in and a delete on the way out, and either
+    /// reports what it did from the change count.
+    pub fn toggle_fav_path(&self, track: &TrackInfo) -> Result<bool, String> {
+        let on = self
+            .conn
+            .execute(
+                "DELETE FROM fav_tracks WHERE path = ?1",
+                params![track.path],
+            )
+            .map_err(|e| format!("clear fav: {e}"))?;
+        if on == 0 {
+            self.conn
+                .execute(
+                    "INSERT INTO fav_tracks (path, title, artist, album, cover_url, duration)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        track.path,
+                        track.title,
+                        track.artist,
+                        track.album,
+                        track.cover_url,
+                        track.duration
+                    ],
+                )
+                .map_err(|e| format!("set fav: {e}"))?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub fn create_playlist(&self, name: &str) -> Result<Playlist, String> {

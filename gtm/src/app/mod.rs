@@ -962,6 +962,8 @@ pub enum TuiCommand {
     SetEqPreset(EqPreset),
     Search(String),
     AddFavourite(i64),
+    /// Favourite toggle for a provider row, which carries no library id.
+    ToggleFavUri(TrackInfo),
     RemoveFavourite(i64),
     Refresh,
     RefreshLibrary,

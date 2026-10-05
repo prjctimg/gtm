@@ -3026,6 +3026,7 @@ impl Daemon {
             DaemonReq::Search { query } => Search::handle(inner, query).await,
             DaemonReq::GetFavourites => Favourites::list(inner).await,
             DaemonReq::AddFavourite { track_id } => Favourites::add(inner, *track_id).await,
+            DaemonReq::ToggleFavUri { track } => Favourites::toggle_uri(inner, track).await,
             DaemonReq::RemoveFavourite { track_id } => Favourites::remove(inner, *track_id).await,
             #[cfg(feature = "youtube")]
             DaemonReq::YtSearch { query, filter } => Yt::search(inner, query, *filter).await,
