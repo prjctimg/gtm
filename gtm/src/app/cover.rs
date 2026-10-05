@@ -104,6 +104,16 @@ impl App {
             };
         }
         match self.library_category {
+            // The three levels of the Playlists view are three row types, and
+            // they used to answer as one: the card behind the group list read
+            // `playlist_cache[list_pos()]`, so a group's row described whichever
+            // playlist happened to sit at that index.
+            LIB_PLAYLISTS if self.playlist_row() => TrackInfoKind::PlaylistGroup,
+            LIB_PLAYLISTS
+                if self.playlist_open && self.playlist_group != PlaylistGroup::Playlists =>
+            {
+                TrackInfoKind::Track
+            }
             LIB_PLAYLISTS => TrackInfoKind::Playlist,
             LIB_SPOTIFY => TrackInfoKind::SpotifyPlaylist,
             LIB_RADIO => TrackInfoKind::RadioStation,
@@ -183,10 +193,12 @@ impl App {
             | TrackInfoKind::ChartTrack
             | TrackInfoKind::ChartSource
             | TrackInfoKind::Chart
-            | TrackInfoKind::RadioStation => None,
+            | TrackInfoKind::RadioStation
+            | TrackInfoKind::PlaylistGroup => None,
         };
 
         let valid = match kind {
+            TrackInfoKind::PlaylistGroup => self.list_pos() < PlaylistGroup::ALL.len(),
             TrackInfoKind::Playlist => self.list_pos() < self.playlist_cache.len(),
             TrackInfoKind::SpotifyPlaylist => self.list_pos() < self.spotify.playlists.len(),
             TrackInfoKind::SpotifyTrack => self.selected_spotify_track().is_some(),

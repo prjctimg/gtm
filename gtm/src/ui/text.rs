@@ -6,8 +6,8 @@
 // This is free software released under the GPL-3.0 license.
 
 use crate::app::{
-    LIB_ALL, LIB_CHARTS, LIB_LIKED, LIB_PLAYLISTS, LIB_PODCASTS, LIB_RADIO, LIB_SPOTIFY,
-    LibraryFilter, PlaylistGroup,
+    LIB_ALL, LIB_CHARTS, LIB_PLAYLISTS, LIB_PODCASTS, LIB_RADIO, LIB_SPOTIFY, LibraryFilter,
+    PlaylistGroup,
 };
 use crate::ui::*;
 
@@ -122,13 +122,20 @@ pub(crate) fn library_stats_line(app: &App) -> String {
                     (total_dur % 3600) / 60
                 );
             }
-            let (n, one, many) = match app.playlist_group {
-                PlaylistGroup::Playlists => (app.playlist_cache.len(), "playlist", "playlists"),
-                PlaylistGroup::MostPlayed => (app.most_played_cache.len(), "track", "tracks"),
-                PlaylistGroup::RecentlyPlayed => {
-                    (app.recently_played_cache.len(), "track", "tracks")
+            let (n, one, many) = if !app.playlist_open {
+                (PlaylistGroup::ALL.len(), "group", "groups")
+            } else {
+                match app.playlist_group {
+                    PlaylistGroup::Playlists => (app.playlist_cache.len(), "playlist", "playlists"),
+                    PlaylistGroup::MostPlayed => (app.most_played_cache.len(), "track", "tracks"),
+                    PlaylistGroup::RecentlyPlayed => {
+                        (app.recently_played_cache.len(), "track", "tracks")
+                    }
+                    PlaylistGroup::RecentlyAdded => {
+                        (app.recently_added_cache.len(), "track", "tracks")
+                    }
+                    PlaylistGroup::Liked => (app.fav_cache.len(), "track", "tracks"),
                 }
-                PlaylistGroup::RecentlyAdded => (app.recently_added_cache.len(), "track", "tracks"),
             };
             format!(" {} {} ", n, plural(n, one, many))
         }
@@ -305,6 +312,16 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                     plural(tc, "track", "tracks"),
                     source_label(use_nerd, "Local").trim_start()
                 ),
+                has_cover: false,
+            })
+        }
+        TrackInfoKind::PlaylistGroup => {
+            let group = PlaylistGroup::ALL.get(app.list_pos())?;
+            Some(TrackInfoFields {
+                title: group.label().to_string(),
+                artist: String::new(),
+                album: None,
+                meta: String::new(),
                 has_cover: false,
             })
         }

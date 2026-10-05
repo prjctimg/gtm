@@ -11,6 +11,9 @@ pub enum TrackInfoKind {
     Album,
     Artist,
     Playlist,
+    /// Row in the Playlists view's list of groups: a name, not a track and not
+    /// one particular playlist.
+    PlaylistGroup,
     SpotifyPlaylist,
     /// Drill-down row in a Spotify playlist (no local cover available).
     SpotifyTrack,

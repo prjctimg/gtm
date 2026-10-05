@@ -131,14 +131,13 @@ fn every_library_category_has_an_icon() {
 /// names a different row than its label is a whole pane dispatching on the
 /// wrong list.
 ///
-/// The four absorbed views keep their old numbers and are deliberately *not*
-/// rows any more. `LIB_CHARTS` moved because removing rows above it renumbered
-/// it, and `LIB_PODCASTS` follows; the pinned assertion is what makes that
-/// renumbering deliberate instead of accidental.
+/// The absorbed views are deliberately *not* rows any more. `Liked` went last
+/// and took a number with it, so `LIB_PLAYLISTS` and every index above it moved
+/// down one; the pinned assertion is what makes that renumbering deliberate
+/// instead of accidental.
 #[test]
 fn pinned_category_indices_do_not_move() {
     assert_eq!(LIBRARY_CATEGORIES[LIB_ALL], "Library");
-    assert_eq!(LIBRARY_CATEGORIES[LIB_LIKED], "Liked");
     assert_eq!(LIBRARY_CATEGORIES[LIB_PLAYLISTS], "Playlists");
     assert_eq!(LIBRARY_CATEGORIES[LIB_SPOTIFY], "Spotify");
     assert_eq!(LIBRARY_CATEGORIES[LIB_RADIO], "Radio");
@@ -166,7 +165,7 @@ fn pinned_category_indices_do_not_move() {
 fn every_absorbed_view_became_a_group() {
     use PlaylistGroup::{MostPlayed, RecentlyAdded, RecentlyPlayed};
     let groups: Vec<&str> = PlaylistGroup::ALL.iter().map(|g| g.label()).collect();
-    for name in ["Most Played", "Recently Played", "Recently Added"] {
+    for name in ["Most Played", "Recently Played", "Recently Added", "Liked"] {
         assert!(
             groups.contains(&name),
             "{name} lost its row and has no group to replace it"
@@ -178,13 +177,18 @@ fn every_absorbed_view_became_a_group() {
         lib.contains(&"Folders"),
         "Folders has neither a row nor a grouping"
     );
-    assert_eq!(MostPlayed.source_category(), Some(LIB_PLAYED));
-    assert_eq!(RecentlyPlayed.source_category(), Some(LIB_RECENT));
-    assert_eq!(RecentlyAdded.source_category(), Some(LIB_ADDED));
+    assert_eq!(MostPlayed.hist(), Some(HistList::Most));
+    assert_eq!(RecentlyPlayed.hist(), Some(HistList::Recent));
+    assert_eq!(RecentlyAdded.hist(), Some(HistList::Added));
     assert_eq!(
-        PlaylistGroup::Playlists.source_category(),
+        PlaylistGroup::Playlists.hist(),
         None,
         "the playlists group is pushed by the daemon, not fetched"
+    );
+    assert_eq!(
+        PlaylistGroup::Liked.hist(),
+        None,
+        "Liked is one fetch of its own, not a rank-ordered query"
     );
 }
 

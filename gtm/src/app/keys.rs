@@ -382,6 +382,18 @@ impl App {
                             if self.library_category == LIB_SPOTIFY {
                                 self.spotify.playlist_tracks_cache.clear();
                             }
+                        } else if self.playlist_open {
+                            // Back out of the group to the list of groups,
+                            // leaving the cursor on the one being closed so
+                            // stepping through the five is one key each way.
+                            let at = PlaylistGroup::ALL
+                                .iter()
+                                .position(|g| *g == self.playlist_group)
+                                .unwrap_or(0);
+                            self.playlist_open = false;
+                            self.set_list_pos(at);
+                            self.dismiss_track_popup();
+                            self.data_dirty = true;
                         } else {
                             return false;
                         }
@@ -648,6 +660,7 @@ impl App {
                                     .map_or_else(String::new, |(n, _)| n.clone());
                                 (self.motion_row_ids().unwrap_or_default(), label)
                             }
+                            LIB_PLAYLISTS if self.playlist_row() => (Vec::new(), String::new()),
                             LIB_PLAYLISTS => {
                                 // Playlist row (drill-down open): all tracks in the playlist
                                 if self.browse_detail.is_some() {
@@ -1079,13 +1092,30 @@ impl App {
                                     self.set_list_pos(0);
                                 }
                             } else if self.library_category == LIB_PLAYLISTS {
-                                // One Enter arm for all four groups. Only the
-                                // playlists group drills into a named
-                                // collection; the three history groups *are* the
-                                // track list, so Enter on one plays the
-                                // highlighted track rather than opening
-                                // anything — the same thing Enter did when they
-                                // were categories of their own.
+                                if !self.playlist_open {
+                                    // The outer level: the five groups. Enter
+                                    // opens one, which is also the first moment
+                                    // its rows are needed -- so this is where the
+                                    // fetch moved to, and it used to hang off
+                                    // entering the category.
+                                    if let Some(group) =
+                                        PlaylistGroup::ALL.get(self.list_pos()).copied()
+                                    {
+                                        self.playlist_group = group;
+                                        self.playlist_open = true;
+                                        self.set_list_pos(0);
+                                        self.dismiss_track_popup();
+                                        self.fetch_playlist_group();
+                                        self.data_dirty = true;
+                                    }
+                                    return true;
+                                }
+                                // The middle level. Only the playlists group
+                                // drills into a named collection; the other four
+                                // *are* the track list, so Enter on one plays the
+                                // highlighted track rather than opening anything
+                                // -- the same thing Enter did when they were
+                                // categories of their own.
                                 match self.playlist_group {
                                     PlaylistGroup::Playlists => {
                                         if let Some(playlist) =
@@ -1263,10 +1293,8 @@ impl App {
                                         }));
                                     }
                                 }
-                            } else if self.library_category <= 1 || self.library_category >= 7 {
-                                // Default: play track from a flat list
-                                // (All Tracks / Liked / Most Played /
-                                // Recently Played / Recently Added).
+                            } else {
+                                // Default: play a track from a flat list.
                                 self.play_filtered_highlighted();
                             }
                         }
@@ -1275,9 +1303,7 @@ impl App {
                         if !self.library_pane_focus {
                             // Playlist overview rows let the user delete the whole
                             // playlist; rows inside a playlist delete the track.
-                            if self.library_category == LIB_PLAYLISTS
-                                && self.browse_detail.is_none()
-                            {
+                            if self.playlist_row() {
                                 if let Some(pl) = self.playlist_cache.get(self.list_pos()).cloned()
                                 {
                                     self.pending_prompt = Some(PendingPrompt {

@@ -1081,6 +1081,7 @@ impl App {
                         self.tracks_cache_gen = self.tracks_cache_gen.wrapping_add(1);
                     }
                     IpcResult::MostPlayed(tracks) => self.most_played_cache = tracks,
+                    IpcResult::Favourites(tracks) => self.fav_cache = tracks,
                     IpcResult::RecentlyPlayed(tracks) => self.recently_played_cache = tracks,
                     IpcResult::RecentlyAdded(tracks) => self.recently_added_cache = tracks,
                     IpcResult::Playlists(playlists) => self.playlist_cache = playlists,

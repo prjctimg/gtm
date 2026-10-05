@@ -77,7 +77,6 @@ pub const NUM_SETTINGS_CATEGORIES: usize = 3;
 /// identity in a dozen places, and a renumbering is otherwise invisible.
 pub const LIB_CATEGORIES: &[&str] = &[
     "Library",
-    "Liked",
     "Playlists",
     "Spotify",
     "Radio",
@@ -87,32 +86,46 @@ pub const LIB_CATEGORIES: &[&str] = &[
 /// The old name, for the places that only pass the list on.
 pub const LIBRARY_CATEGORIES: &[&str] = LIB_CATEGORIES;
 pub const LIB_ALL: usize = 0;
-pub const LIB_LIKED: usize = 1;
-pub const LIB_PLAYLISTS: usize = 2;
-pub const LIB_SPOTIFY: usize = 3;
-pub const LIB_RADIO: usize = 4;
-pub const LIB_CHARTS: usize = 5;
-pub const LIB_PODCASTS: usize = 6;
+pub const LIB_PLAYLISTS: usize = 1;
+pub const LIB_SPOTIFY: usize = 2;
+pub const LIB_RADIO: usize = 3;
+pub const LIB_CHARTS: usize = 4;
+pub const LIB_PODCASTS: usize = 5;
 
-/// The categories that are now a *group* of another view rather than a row of
-/// their own.
+/// Every name that is no longer a left-pane row of its own, in the view that
+/// took it.
 ///
-/// These keep their old numeric identity, because a `left_pane_lists` saved
-/// before the move names them by string and has to keep resolving to something.
-/// Nothing renders them: `clean_left_pane` drops them and the two views they
-/// folded into own their content.
-pub const LIB_PLAYED: usize = 5;
-pub const LIB_RECENT: usize = 6;
-pub const LIB_ADDED: usize = 7;
-pub const LIB_FOLDERS: usize = 8;
-
-/// Every name that is no longer a left-pane row of its own.
+/// `Liked` was the last: it is a list of tracks by nothing more than a flag on
+/// them, which is what a playlist is too, so it is a group of Playlists rather
+/// than a row of its own. A `left_pane_lists` saved before any of these moves
+/// names the list by string, so `clean_left_pane` rewrites it to the row that
+/// now holds the content instead of dropping the list it named.
 pub const LIB_ABSORBED: &[&str] = &[
+    "All Tracks",
+    "Albums",
+    "Artists",
+    "Genres",
+    "Folders",
     "Most Played",
     "Recently Played",
     "Recently Added",
-    "Folders",
+    "Liked",
 ];
+
+/// The three library lists the Playlists view groups, named rather than
+/// numbered.
+///
+/// These were left-pane categories once, and the fetch that fills them was
+/// dispatched on those category indices. That is how `Most Played` — category
+/// 5 — came to be requested as 7 and came back as a different list: the
+/// indices outlived the rows, and by the time the rows were gone so were the
+/// indices, leaving two live categories sharing a number with a dead one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistList {
+    Most,
+    Recent,
+    Added,
+}
 
 /// How the Library view groups the same rows.
 ///
@@ -136,14 +149,17 @@ pub enum PlaylistGroup {
     RecentlyPlayed,
     /// Most recent first, by library insertion order.
     RecentlyAdded,
+    /// Favourited tracks, local and provider alike.
+    Liked,
 }
 
 impl PlaylistGroup {
-    pub const ALL: [PlaylistGroup; 4] = [
+    pub const ALL: [PlaylistGroup; 5] = [
         PlaylistGroup::Playlists,
         PlaylistGroup::MostPlayed,
         PlaylistGroup::RecentlyPlayed,
         PlaylistGroup::RecentlyAdded,
+        PlaylistGroup::Liked,
     ];
 
     /// Name shown on the header, so the pane says which group is on screen.
@@ -153,17 +169,19 @@ impl PlaylistGroup {
             PlaylistGroup::MostPlayed => "Most Played",
             PlaylistGroup::RecentlyPlayed => "Recently Played",
             PlaylistGroup::RecentlyAdded => "Recently Added",
+            PlaylistGroup::Liked => "Liked",
         }
     }
 
-    /// The library category whose fetch populates this group, for the three
-    /// history rows. `Playlists` has none: the daemon pushes that list.
-    pub fn source_category(self) -> Option<usize> {
+    /// The library list whose fetch populates this group, for the three history
+    /// rows. `Playlists` has none — the daemon pushes that list — and `Liked`
+    /// is one fetch of its own, so it answers separately.
+    pub fn hist(self) -> Option<HistList> {
         match self {
-            PlaylistGroup::Playlists => None,
-            PlaylistGroup::MostPlayed => Some(LIB_PLAYED),
-            PlaylistGroup::RecentlyPlayed => Some(LIB_RECENT),
-            PlaylistGroup::RecentlyAdded => Some(LIB_ADDED),
+            PlaylistGroup::MostPlayed => Some(HistList::Most),
+            PlaylistGroup::RecentlyPlayed => Some(HistList::Recent),
+            PlaylistGroup::RecentlyAdded => Some(HistList::Added),
+            PlaylistGroup::Playlists | PlaylistGroup::Liked => None,
         }
     }
 
@@ -186,6 +204,7 @@ impl PlaylistGroup {
             PlaylistGroup::MostPlayed => "Hint: play counts build up as you listen",
             PlaylistGroup::RecentlyPlayed => "Hint: play any track and it will show up here",
             PlaylistGroup::RecentlyAdded => "Hint: add music to your library to see it here",
+            PlaylistGroup::Liked => "Hint: press f on a track to keep it here",
         }
     }
 }
@@ -293,9 +312,11 @@ pub fn clean_left_pane(names: &[String]) -> Vec<String> {
             other => other,
         };
         // Folders is the same story one view further along: a config that named
-        // it keeps the Library row, which is where its content now lives.
+        // it keeps the Library row, which is where its content now lives. Liked
+        // is a group of Playlists, so it keeps that row.
         let name = match name {
             "Folders" => LIB_CATEGORIES[LIB_ALL],
+            "Liked" => LIB_CATEGORIES[LIB_PLAYLISTS],
             other => other,
         };
         if LIB_CATEGORIES.contains(&name) && !out.iter().any(|e| e == name) {
@@ -392,6 +413,16 @@ pub struct App {
     /// and the only group that drills into named playlists; the three history
     /// groups list their tracks directly, so `browse_detail` stays `None` there.
     pub playlist_group: PlaylistGroup,
+    /// Whether the active group's rows are on screen, or the list of groups is.
+    ///
+    /// Two levels, because one level is not a list: the five groups were five
+    /// renderings of the same pane switched with `[` / `]`, so the list of them
+    /// was never on screen and the left-pane row went on naming Playlists
+    /// whatever was showing. `browse_detail` cannot carry the outer level
+    /// either, because it also names the playlist whose tracks are showing —
+    /// one field, three levels, and the outer one would have to be spelled as a
+    /// playlist name.
+    pub playlist_open: bool,
     pub library_pane_focus: bool,
     pub settings_category: usize,
     pub settings_pane_focus: bool,
@@ -419,6 +450,8 @@ pub struct App {
     pub yt_results_cache: Vec<YTSearchResult>,
     pub playlist_cache: Vec<Playlist>,
     pub most_played_cache: Vec<TrackInfo>,
+    /// Favourites as the daemon holds them, local files and provider rows alike.
+    pub fav_cache: Vec<TrackInfo>,
     pub recently_played_cache: Vec<TrackInfo>,
     pub recently_added_cache: Vec<TrackInfo>,
     pub playlist_tracks_cache: Vec<TrackInfo>,
@@ -685,6 +718,7 @@ pub(crate) enum IpcResult {
     PodcastTranscript(Option<LrcData>, String),
     LibraryTracks(Vec<TrackInfo>),
     MostPlayed(Vec<TrackInfo>),
+    Favourites(Vec<TrackInfo>),
     RecentlyPlayed(Vec<TrackInfo>),
     RecentlyAdded(Vec<TrackInfo>),
     PlaylistTracks(Vec<TrackInfo>),
@@ -1194,6 +1228,7 @@ impl App {
             library_category: LIB_ALL,
             library_filter: LibraryFilter::Tracks,
             playlist_group: PlaylistGroup::Playlists,
+            playlist_open: false,
             library_pane_focus: false,
             settings_category: 0,
             settings_pane_focus: false,
@@ -1221,6 +1256,7 @@ impl App {
             downloading_urls: std::collections::HashSet::new(),
             playlist_cache: Vec::new(),
             most_played_cache: Vec::new(),
+            fav_cache: Vec::new(),
             recently_played_cache: Vec::new(),
             recently_added_cache: Vec::new(),
             playlist_tracks_cache: Vec::new(),
@@ -1600,6 +1636,12 @@ impl App {
             format!("Library: {}", self.library_filter.label()),
             std::time::Instant::now() + std::time::Duration::from_secs(3),
         ));
+    }
+
+    /// Whether the highlighted row names a group rather than a track or a
+    /// playlist.
+    pub fn playlist_row(&self) -> bool {
+        self.library_category == LIB_PLAYLISTS && !self.playlist_open
     }
 
     /// Switch the Playlists view's group, by the same rules as

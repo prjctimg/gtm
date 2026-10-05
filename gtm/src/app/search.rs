@@ -310,7 +310,7 @@ impl App {
         // hangs off the group that is on screen. Entering Playlists itself pulls
         // whichever one is showing; switching groups with `[` / `]` pulls the
         // next, which is the first time those rows would otherwise be needed.
-        if self.library_category == LIB_PLAYLISTS && self.browse_detail.is_none() {
+        if self.library_category == LIB_PLAYLISTS && !self.playlist_open {
             self.fetch_playlist_group();
         }
         // Spotify pane: self-heal an empty playlist cache with a single
@@ -386,8 +386,27 @@ impl App {
     }
 
     pub fn filtered_tracks(&self) -> Vec<&TrackInfo> {
-        if self.library_category == LIB_PLAYLISTS && self.browse_detail.is_some() {
-            return self.playlist_tracks_cache.iter().collect();
+        // The Playlists view is three levels deep: the groups, one group's rows,
+        // and for `Playlists` the tracks of one playlist. Only the middle and
+        // the last have tracks behind them, so the outer level answers empty
+        // rather than the whole library -- which is what it used to do, being a
+        // list of *names* drawn from `playlist_cache`.
+        if self.library_category == LIB_PLAYLISTS {
+            if !self.playlist_open {
+                return Vec::new();
+            }
+            if self.browse_detail.is_some() {
+                return self.playlist_tracks_cache.iter().collect();
+            }
+            return match self.playlist_group {
+                PlaylistGroup::MostPlayed => self.most_played_cache.iter().collect(),
+                PlaylistGroup::RecentlyPlayed => {
+                    return self.recently_played_cache.iter().collect();
+                }
+                PlaylistGroup::RecentlyAdded => return self.recently_added_cache.iter().collect(),
+                PlaylistGroup::Liked => self.fav_cache.iter().collect(),
+                PlaylistGroup::Playlists => Vec::new(),
+            };
         }
         // The Library view's Tracks list is everything the daemon knows: the
         // local library and, for an account linked to Spotify, every track of
@@ -405,19 +424,6 @@ impl App {
             }
             Self::sort_tracks(&mut tracks, self.track_sort);
             return tracks;
-        }
-        // The three history lists are groups of the Playlists view now, and each
-        // group *is* a track list rather than a list of names to drill into. So
-        // when Playlists is showing one of them, this is the rows the view draws.
-        if self.library_category == LIB_PLAYLISTS && self.browse_detail.is_none() {
-            match self.playlist_group {
-                PlaylistGroup::MostPlayed => return self.most_played_cache.iter().collect(),
-                PlaylistGroup::RecentlyPlayed => {
-                    return self.recently_played_cache.iter().collect();
-                }
-                PlaylistGroup::RecentlyAdded => return self.recently_added_cache.iter().collect(),
-                PlaylistGroup::Playlists => {}
-            }
         }
         // The Library view's rows are the merged list -- local library plus
         // every synced playlist -- so its drill-down has to start from that too.
@@ -464,9 +470,7 @@ impl App {
                     || t.title.eq_ignore_ascii_case(detail)
             });
         }
-        if self.library_category == LIB_LIKED {
-            tracks.retain(|t| t.favourite);
-        } else if self.library_category == LIB_SPOTIFY {
+        if self.library_category == LIB_SPOTIFY {
             // Spotify: category renders the synced playlist browser, not a flat
             // TrackInfo list: resolve/play goes through the daemon.
             tracks.clear();
@@ -475,10 +479,18 @@ impl App {
             // on radio:// paths, never on the flat TrackInfo list.
             tracks.clear();
         }
-        // Sorting applies to the flat track list (Favourites and the
-        // album/artist drill-downs). Playlist, Spotify and All Tracks views
-        // either sort upstream or are not sorted at all — see `playlist_union`.
-        if self.browse_detail.is_none() && self.library_category == LIB_LIKED {
+        // Sorting applies to the flat track list: the album, artist and genre
+        // drill-downs. Playlist, Spotify and All Tracks views either sort
+        // upstream or are not sorted at all — see `playlist_union`.
+        //
+        // The three history groups are ordered by the query that produced them,
+        // which is the only ordering that means anything for a play count or a
+        // last-played time, so they are left alone. `Liked` has no such order and
+        // is sorted by name upstream, the same as the library's own track list.
+        if self.browse_detail.is_some()
+            && self.library_category == LIB_ALL
+            && !matches!(self.library_filter, LibraryFilter::Tracks)
+        {
             Self::sort_tracks(&mut tracks, self.track_sort);
         }
         tracks
@@ -550,10 +562,11 @@ impl App {
     /// changes, which is the same pair of moments the old top-level categories
     /// fetched on.
     pub(crate) fn fetch_playlist_group(&mut self) {
-        let Some(cat) = self.playlist_group.source_category() else {
-            return;
-        };
-        self.fetch_list_tracks(cat);
+        if let Some(list) = self.playlist_group.hist() {
+            self.fetch_list_tracks(list);
+        } else if self.playlist_group == PlaylistGroup::Liked {
+            self.fetch_favourites();
+        }
     }
 
     pub(crate) fn motion_row_ids(&self) -> Option<Vec<i64>> {
@@ -765,11 +778,13 @@ impl App {
             return self.library_groups().len();
         }
         match self.library_category {
+            LIB_PLAYLISTS if !self.playlist_open => PlaylistGroup::ALL.len(),
             LIB_PLAYLISTS => match self.playlist_group {
                 PlaylistGroup::Playlists => self.playlist_cache.len(),
                 PlaylistGroup::MostPlayed => self.most_played_cache.len(),
                 PlaylistGroup::RecentlyPlayed => self.recently_played_cache.len(),
                 PlaylistGroup::RecentlyAdded => self.recently_added_cache.len(),
+                PlaylistGroup::Liked => self.fav_cache.len(),
             },
             LIB_SPOTIFY => self.spotify.playlists.len(),
             LIB_RADIO => self.radio.custom.len(),

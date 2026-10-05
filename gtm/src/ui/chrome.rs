@@ -6,8 +6,8 @@
 // This is free software released under the GPL-3.0 license.
 
 use crate::app::{
-    GRID_CELL_H, GRID_CELL_W, LIB_ALL, LIB_CATEGORIES, LIB_CHARTS, LIB_LIKED, LIB_PLAYLISTS,
-    LIB_PODCASTS, LIB_RADIO, LIB_SPOTIFY, LibraryFilter, PlaylistGroup, playlist_row_label,
+    GRID_CELL_H, GRID_CELL_W, LIB_ALL, LIB_CATEGORIES, LIB_CHARTS, LIB_PLAYLISTS, LIB_PODCASTS,
+    LIB_RADIO, LIB_SPOTIFY, LibraryFilter, PlaylistGroup, playlist_row_label,
 };
 use crate::ui::*;
 
@@ -868,6 +868,22 @@ impl Render {
 
         let left_focus = app.library_pane_focus;
 
+        // The lyrics take the left pane's rect, and nothing else may be painted
+        // there.
+        //
+        // On a one-column terminal the two panes below the band are one pane
+        // wide with the other at zero width, so which one the lyrics land on
+        // follows from which has focus. The old test for that was the results
+        // column's *width* being more than one, which is the same fact asked
+        // sideways -- and the left pane went on being drawn either way. It is
+        // opaque, so the lyrics covered it and a row of it, the last one, stayed
+        // visible under them: a strip of category rows and the stats line, drawn
+        // as if the pane still had contents.
+        let lyrics_in_lib = !lyrics_third_pane
+            && app.lyrics.show
+            && app.lyrics.pane_focus
+            && results_area.width <= 1;
+
         {
             // No rule under the label. The now-playing label is empty, so the
             // only thing the rule ever separated was the cover art from the
@@ -1188,8 +1204,15 @@ impl Render {
         // row the pane has and squeeze the cover art to nothing, so the number
         // of visible items is derived from what is left after reserving the
         // card and one padding row above it.
-        let left_inner = Render::pane_header(f, lib_area, app, " ", left_focus, false, false);
-        fill_pane(f, left_inner, app);
+        // The rect is derived either way, because the card below sizes itself
+        // against it, but the pane is not painted when the lyrics own it.
+        let left_inner = if lyrics_in_lib {
+            lib_area
+        } else {
+            let inner = Render::pane_header(f, lib_area, app, " ", left_focus, false, false);
+            fill_pane(f, inner, app);
+            inner
+        };
 
         // The left pane's info slot shows the track card, or the highlighted
         // Spotify playlist's cover while that list is open. Either one is
@@ -1341,7 +1364,9 @@ impl Render {
             // No scrollbar. The list scrolls with the cursor, and the count on
             // each row already says how much is below; a one-column rail drawn
             // beside them only narrowed the rows to make room for it.
-            f.render_widget(List::new(left_items), left_list_area);
+            if !lyrics_in_lib {
+                f.render_widget(List::new(left_items), left_list_area);
+            }
 
             // No indicator block on the active row.
             //
@@ -1368,6 +1393,7 @@ impl Render {
         // lists too.
         let category_label: &str = match app.library_category {
             LIB_ALL => app.library_filter.label(),
+            LIB_PLAYLISTS if app.browse_detail.is_none() && !app.playlist_open => "Playlists",
             LIB_PLAYLISTS if app.browse_detail.is_none() => app.playlist_group.label(),
             _ => category_label,
         };
@@ -1399,8 +1425,7 @@ impl Render {
         // height it reserved was a second, disagreeing estimate of its own size.
         //
         // Decided before the list is built because the list is sized around it.
-        let dock_card =
-            is_narrow && !lyrics_results_pane && app.show_preview && app.track_popup_visible;
+        let dock_card = is_narrow && !lyrics_in_lib && app.show_preview && app.track_popup_visible;
         let dock_h = if dock_card {
             Render::dock_size(results_area).1
         } else {
@@ -1654,44 +1679,58 @@ impl Render {
                 (lines, st_line)
             }
         } else if app.library_category == LIB_PLAYLISTS && app.browse_detail.is_none() {
-            // One renderer for all four groups. The three history lists used to
-            // be categories of their own with their own arms here, which is why
-            // they cost four left-pane rows to reach a playlist; the rows they
-            // draw are the same shape, so the group decides what is named and
-            // nothing else changes.
-            let names: Vec<String> = match app.playlist_group {
-                PlaylistGroup::Playlists => {
-                    app.playlist_cache.iter().map(|p| p.name.clone()).collect()
+            // Two of the three levels, drawn by one renderer: the list of
+            // groups, and the rows of whichever group is open. Both are lists of
+            // names, so the rows are the same; only what the names are and what
+            // the count calls them differ. The third level -- one playlist's
+            // tracks -- is the arm below, which has always drawn real rows.
+            let names: Vec<String> = if !app.playlist_open {
+                PlaylistGroup::ALL
+                    .iter()
+                    .map(|g| g.label().to_string())
+                    .collect()
+            } else {
+                match app.playlist_group {
+                    PlaylistGroup::Playlists => {
+                        app.playlist_cache.iter().map(|p| p.name.clone()).collect()
+                    }
+                    PlaylistGroup::MostPlayed => app
+                        .most_played_cache
+                        .iter()
+                        .map(playlist_row_label)
+                        .collect(),
+                    PlaylistGroup::RecentlyPlayed => app
+                        .recently_played_cache
+                        .iter()
+                        .map(playlist_row_label)
+                        .collect(),
+                    PlaylistGroup::RecentlyAdded => app
+                        .recently_added_cache
+                        .iter()
+                        .map(playlist_row_label)
+                        .collect(),
+                    PlaylistGroup::Liked => app.fav_cache.iter().map(playlist_row_label).collect(),
                 }
-                PlaylistGroup::MostPlayed => app
-                    .most_played_cache
-                    .iter()
-                    .map(playlist_row_label)
-                    .collect(),
-                PlaylistGroup::RecentlyPlayed => app
-                    .recently_played_cache
-                    .iter()
-                    .map(playlist_row_label)
-                    .collect(),
-                PlaylistGroup::RecentlyAdded => app
-                    .recently_added_cache
-                    .iter()
-                    .map(playlist_row_label)
-                    .collect(),
             };
             let total_len = names.len();
-            let noun = match app.playlist_group {
-                PlaylistGroup::Playlists => ("playlist", "playlists"),
-                _ => ("track", "tracks"),
+            let st_line = if !app.playlist_open {
+                format!(" {} {} ", total_len, plural(total_len, "group", "groups"))
+            } else {
+                let noun = match app.playlist_group {
+                    PlaylistGroup::Playlists => ("playlist", "playlists"),
+                    _ => ("track", "tracks"),
+                };
+                format!(" {} {} ", total_len, plural(total_len, noun.0, noun.1))
             };
-            let st_line = format!(" {} {} ", total_len, plural(total_len, noun.0, noun.1));
             let sel = app.list_pos().min(total_len.saturating_sub(1));
             let available = window_rows();
             app.viewport_items = available;
             let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
             app.list_scroll = list_scroll;
             let mut lines = vec![Line::from("")];
-            if names.is_empty() {
+            if names.is_empty() && !app.playlist_open {
+                lines.extend(empty_hint_lines(app, "", "Hint: pick a group to browse"));
+            } else if names.is_empty() {
                 lines.extend(empty_hint_lines(app, "", app.playlist_group.empty_hint()));
             } else {
                 for (i, name) in names[app.list_scroll..end].iter().enumerate() {
@@ -2193,12 +2232,14 @@ impl Render {
         if (want_playlist_card || want_row_card)
             && left_info_area.height > 0
             && (info_sep_area.height > 0 || left_info_area.height > 0)
+            && !lyrics_in_lib
         {
             Render::spot_card(f, left_info_area, app);
         } else if app.show_preview
             && app.track_popup_visible
             && left_info_area.height >= info_block_h()
             && (info_sep_area.height > 0 || left_info_area.height > 0)
+            && !lyrics_in_lib
         {
             // Narrow + lyrics: the results pane is given over to the lyrics, so
             // the block is repurposed to show the currently-highlighted list
@@ -2268,7 +2309,7 @@ impl Render {
             }
         }
 
-        {
+        if !lyrics_in_lib {
             let stats_line = library_stats_line(app);
             if !stats_line.trim().is_empty() {
                 let stats_area = Rect {
@@ -2291,21 +2332,19 @@ impl Render {
             // Medium-width screens (60-99 cols): show lyrics in the results pane
             // instead of a separate third pane.
             //
-            // The fallback is the narrow case: the results column is collapsed
-            // to nothing while the library holds the cursor, and both the `l`
-            // key and the palette action set the lyrics focus without
-            // releasing it, so the lyrics would land in a zero-width rect and
-            // be on screen nowhere.
+            // The narrow case has no results column at all while the library
+            // holds the cursor, so the lyrics take the left pane's rect in
+            // full — there is no stats row to keep clear, because the stats
+            // line is the one thing that is no longer drawn there.
             let base = if results_area.width > 1 {
-                results_area
+                Rect {
+                    height: results_area.height.saturating_sub(1),
+                    ..results_area
+                }
             } else {
                 lib_area
             };
-            let lyrics = Rect {
-                height: base.height.saturating_sub(1),
-                ..base
-            };
-            Render::lyrics_pane(f, lyrics, app);
+            Render::lyrics_pane(f, base, app);
         }
 
         if dock_card {
