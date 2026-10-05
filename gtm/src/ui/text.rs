@@ -6,8 +6,8 @@
 // This is free software released under the GPL-3.0 license.
 
 use crate::app::{
-    LIB_ADDED, LIB_ALL, LIB_CHARTS, LIB_FOLDERS, LIB_LIKED, LIB_PLAYED, LIB_PLAYLISTS,
-    LIB_PODCASTS, LIB_RADIO, LIB_RECENT, LIB_SPOTIFY, LibraryFilter,
+    LIB_ALL, LIB_CHARTS, LIB_LIKED, LIB_PLAYLISTS, LIB_PODCASTS, LIB_RADIO, LIB_SPOTIFY,
+    LibraryFilter, PlaylistGroup,
 };
 use crate::ui::*;
 
@@ -107,8 +107,30 @@ pub(crate) fn library_stats_line(app: &App) -> String {
     }
     match app.library_category {
         LIB_PLAYLISTS => {
-            let n = app.playlist_cache.len();
-            format!(" {} {} ", n, plural(n, "playlist", "playlists"))
+            // Each group counts its own rows: the playlists group counts
+            // playlists, the three history groups count tracks. Reading
+            // `playlist_cache` for all four left a rank-ordered list of tracks
+            // under a count of playlists.
+            if app.browse_detail.is_some() {
+                let f = app.filtered_tracks();
+                let total_dur: u64 = f.iter().map(|t| t.duration as u64).sum();
+                return format!(
+                    " {} {} | {}h {}m ",
+                    f.len(),
+                    plural(f.len(), "track", "tracks"),
+                    total_dur / 3600,
+                    (total_dur % 3600) / 60
+                );
+            }
+            let (n, one, many) = match app.playlist_group {
+                PlaylistGroup::Playlists => (app.playlist_cache.len(), "playlist", "playlists"),
+                PlaylistGroup::MostPlayed => (app.most_played_cache.len(), "track", "tracks"),
+                PlaylistGroup::RecentlyPlayed => {
+                    (app.recently_played_cache.len(), "track", "tracks")
+                }
+                PlaylistGroup::RecentlyAdded => (app.recently_added_cache.len(), "track", "tracks"),
+            };
+            format!(" {} {} ", n, plural(n, one, many))
         }
         LIB_SPOTIFY => {
             let n = app.spotify.playlists.len();

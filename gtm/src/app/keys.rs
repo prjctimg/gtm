@@ -1079,26 +1079,41 @@ impl App {
                                     self.set_list_pos(0);
                                 }
                             } else if self.library_category == LIB_PLAYLISTS {
-                                // Playlists: select playlist → show its tracks
-                                if self.list_pos() < self.playlist_cache.len() {
-                                    let playlist = self.playlist_cache[self.list_pos()].clone();
-                                    self.browse_detail = Some(playlist.name.clone());
-                                    // The detail is the name for these categories, so any title
-                                    // left over from a Spotify drill-down must not survive the switch.
-                                    self.browse_title = None;
-                                    self.set_list_pos(0);
-                                    self.playlist_tracks_cache.clear();
-                                    let c = self.client.clone();
-                                    let ipc_tx2 = self.ipc_tx.clone();
-                                    let pid = playlist.id;
-                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                        if let Ok(DaemonRes::Tracks { tracks }) =
-                                            c.library().get_playlist_tracks(pid).await
+                                // One Enter arm for all four groups. Only the
+                                // playlists group drills into a named
+                                // collection; the three history groups *are* the
+                                // track list, so Enter on one plays the
+                                // highlighted track rather than opening
+                                // anything — the same thing Enter did when they
+                                // were categories of their own.
+                                match self.playlist_group {
+                                    PlaylistGroup::Playlists => {
+                                        if let Some(playlist) =
+                                            self.playlist_cache.get(self.list_pos()).cloned()
                                         {
+                                            self.browse_detail = Some(playlist.name.clone());
+                                            // The detail is the name for this view, so
+                                            // any title left over from a Spotify
+                                            // drill-down must not survive the switch.
+                                            self.browse_title = None;
+                                            self.set_list_pos(0);
+                                            self.playlist_tracks_cache.clear();
+                                            let c = self.client.clone();
+                                            let ipc_tx2 = self.ipc_tx.clone();
+                                            let pid = playlist.id;
                                             let _ =
-                                                ipc_tx2.send(IpcResult::PlaylistTracks(*tracks));
+                                                tx.try_send(TuiCommand::fire(move || async move {
+                                                    if let Ok(DaemonRes::Tracks { tracks }) =
+                                                        c.library().get_playlist_tracks(pid).await
+                                                    {
+                                                        let _ = ipc_tx2.send(
+                                                            IpcResult::PlaylistTracks(*tracks),
+                                                        );
+                                                    }
+                                                }));
                                         }
-                                    }));
+                                    }
+                                    _ => self.play_filtered_highlighted(),
                                 }
                             } else if self.library_category == LIB_SPOTIFY {
                                 // Spotify: select playlist → show its cached tracks
@@ -1137,17 +1152,6 @@ impl App {
                                     let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.radio().play(&id, &station.name).await;
                                     }));
-                                }
-                            } else if self.library_category == LIB_FOLDERS {
-                                // Folders: select folder → show its tracks
-                                let folders = self.unique_folders();
-                                let pos = self.list_pos();
-                                if pos < folders.len() {
-                                    self.browse_detail = Some(folders[pos].0.clone());
-                                    // The detail is the name for these categories, so any title
-                                    // left over from a Spotify drill-down must not survive the switch.
-                                    self.browse_title = None;
-                                    self.set_list_pos(0);
                                 }
                             } else if self.library_category == LIB_PODCASTS {
                                 // Podcasts: feeds → episodes → play, mirroring
@@ -3786,9 +3790,6 @@ impl App {
                                     self.open_live_dest();
                                 } else if action == "toggle scrobbling" {
                                     self.toggle_scrobble_session();
-                                } else if action == "prev tab" {
-                                    self.cycle_pane_focus(false);
-                                    self.pickers.close_top();
                                 } else if action == "multiselect" {
                                     if !self.library_pane_focus {
                                         self.multiselect_mode = !self.multiselect_mode;

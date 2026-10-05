@@ -246,10 +246,6 @@ impl App {
             "Playlists" => self.playlist_cache.len(),
             "Spotify" => self.spotify.playlists.len(),
             "Radio" => self.radio.custom.len(),
-            "Most Played" => self.most_played_cache.len(),
-            "Recently Played" => self.recently_played_cache.len(),
-            "Recently Added" => self.recently_added_cache.len(),
-            "Folders" => self.unique_folders().len(),
             "Podcasts" => self.podcast.feeds.len(),
             _ => 0,
         }
@@ -306,12 +302,16 @@ impl App {
         self.spotify.playlist_tracks_cache.clear();
         match self.library_category {
             LIB_RADIO => self.refresh_custom_stations(),
-            LIB_PLAYED => self.fetch_list_tracks(LIB_PLAYED),
-            LIB_RECENT => self.fetch_list_tracks(LIB_RECENT),
-            LIB_ADDED => self.fetch_list_tracks(LIB_ADDED),
             LIB_CHARTS => self.fetch_chart_sources(),
             LIB_PODCASTS => self.fetch_podcast_feeds(),
             _ => {}
+        }
+        // The three history lists are groups of Playlists now, so their fetch
+        // hangs off the group that is on screen. Entering Playlists itself pulls
+        // whichever one is showing; switching groups with `[` / `]` pulls the
+        // next, which is the first time those rows would otherwise be needed.
+        if self.library_category == LIB_PLAYLISTS && self.browse_detail.is_none() {
+            self.fetch_playlist_group();
         }
         // Spotify pane: self-heal an empty playlist cache with a single
         // background sync so playlists appear without visiting Settings.
@@ -406,12 +406,17 @@ impl App {
             Self::sort_tracks(&mut tracks, self.track_sort);
             return tracks;
         }
-        if self.browse_detail.is_none() {
-            match self.library_category {
-                LIB_PLAYED => return self.most_played_cache.iter().collect(),
-                LIB_RECENT => return self.recently_played_cache.iter().collect(),
-                LIB_ADDED => return self.recently_added_cache.iter().collect(),
-                _ => {}
+        // The three history lists are groups of the Playlists view now, and each
+        // group *is* a track list rather than a list of names to drill into. So
+        // when Playlists is showing one of them, this is the rows the view draws.
+        if self.library_category == LIB_PLAYLISTS && self.browse_detail.is_none() {
+            match self.playlist_group {
+                PlaylistGroup::MostPlayed => return self.most_played_cache.iter().collect(),
+                PlaylistGroup::RecentlyPlayed => {
+                    return self.recently_played_cache.iter().collect();
+                }
+                PlaylistGroup::RecentlyAdded => return self.recently_added_cache.iter().collect(),
+                PlaylistGroup::Playlists => {}
             }
         }
         let mut tracks: Vec<&TrackInfo> = self.tracks_cache.iter().collect();
@@ -456,7 +461,7 @@ impl App {
                     };
                     genre.eq_ignore_ascii_case(detail)
                 }
-                (LIB_FOLDERS, _) => folder_dir(&t.path) == detail.as_str(),
+                (LIB_ALL, LibraryFilter::Folders) => folder_dir(&t.path) == detail.as_str(),
                 _ => {
                     t.album.eq_ignore_ascii_case(detail)
                         || t.artist.eq_ignore_ascii_case(detail)
@@ -542,51 +547,29 @@ impl App {
     /// Expand the highlighted album/artist row to the ids of every cached track
     /// in that album/artist. Returns `None` in flat views where the highlighted
     /// row maps 1:1 to `filtered_tracks()` (the caller falls back to that list).
+    /// Pull the rows of the Playlists view's active history group.
+    ///
+    /// A no-op for [`PlaylistGroup::Playlists`]: the daemon pushes that list
+    /// unprompted, and the other three are rank-ordered queries the daemon only
+    /// answers when asked. Called when the view is entered and when the group
+    /// changes, which is the same pair of moments the old top-level categories
+    /// fetched on.
+    pub(crate) fn fetch_playlist_group(&mut self) {
+        let Some(cat) = self.playlist_group.source_category() else {
+            return;
+        };
+        self.fetch_list_tracks(cat);
+    }
+
     pub(crate) fn motion_row_ids(&self) -> Option<Vec<i64>> {
         if self.library_category == LIB_ALL && self.browse_detail.is_none() {
             let groups = self.library_groups();
             let (name, _) = groups.get(self.list_pos())?;
+            let filter = self.library_filter;
             return Some(
                 self.tracks_cache
                     .iter()
-                    .filter(|t| match self.library_filter {
-                        LibraryFilter::Tracks => false,
-                        LibraryFilter::Albums => {
-                            let album = if t.album.is_empty() {
-                                "Unknown Album"
-                            } else {
-                                &t.album
-                            };
-                            album == name
-                        }
-                        LibraryFilter::Artists => {
-                            let artist = if t.artist.is_empty() {
-                                "Unknown Artist"
-                            } else {
-                                &t.artist
-                            };
-                            artist == name
-                        }
-                        LibraryFilter::Genres => {
-                            let genre = if t.genre.is_empty() {
-                                "Unknown Genre"
-                            } else {
-                                &t.genre
-                            };
-                            genre == name
-                        }
-                    })
-                    .map(|t| t.id)
-                    .collect(),
-            );
-        }
-        if self.library_category == LIB_FOLDERS {
-            let folders = self.unique_folders();
-            let (dir, _) = folders.get(self.list_pos())?;
-            return Some(
-                self.tracks_cache
-                    .iter()
-                    .filter(|t| folder_dir(&t.path) == *dir)
+                    .filter(|t| Self::group_key(filter, t) == *name)
                     .map(|t| t.id)
                     .collect(),
             );
@@ -741,10 +724,14 @@ impl App {
             return self.library_groups().len();
         }
         match self.library_category {
-            LIB_PLAYLISTS => self.playlist_cache.len(),
+            LIB_PLAYLISTS => match self.playlist_group {
+                PlaylistGroup::Playlists => self.playlist_cache.len(),
+                PlaylistGroup::MostPlayed => self.most_played_cache.len(),
+                PlaylistGroup::RecentlyPlayed => self.recently_played_cache.len(),
+                PlaylistGroup::RecentlyAdded => self.recently_added_cache.len(),
+            },
             LIB_SPOTIFY => self.spotify.playlists.len(),
             LIB_RADIO => self.radio.custom.len(),
-            LIB_FOLDERS => self.unique_folders().len(),
             _ => self.filtered_tracks().len(),
         }
     }
@@ -1015,33 +1002,37 @@ impl App {
     pub fn group_representative(&self, pos: usize) -> Option<&TrackInfo> {
         let filter = self.library_filter;
         let name = self.library_groups_of(filter).get(pos)?.0.clone();
-        self.tracks_cache.iter().find(|t| {
-            let key = match filter {
-                LibraryFilter::Albums => {
-                    if t.album.is_empty() {
-                        "Unknown Album"
-                    } else {
-                        t.album.as_str()
-                    }
-                }
-                LibraryFilter::Artists => {
-                    if t.artist.is_empty() {
-                        "Unknown Artist"
-                    } else {
-                        t.artist.as_str()
-                    }
-                }
-                LibraryFilter::Genres => {
-                    if t.genre.is_empty() {
-                        "Unknown Genre"
-                    } else {
-                        t.genre.as_str()
-                    }
-                }
-                LibraryFilter::Tracks => "",
-            };
-            key == name
-        })
+        self.tracks_cache
+            .iter()
+            .find(|t| Self::group_key(filter, t) == name)
+    }
+
+    /// The key a track is filed under for `filter` — one rule, because every
+    /// consumer has to agree or a group row stops matching its own tracks.
+    ///
+    /// Three copies of this match existed (`motion_row_ids`,
+    /// `group_representative`, and the grid's cell source), each written when
+    /// its call site was the only one that needed it. They drifted the moment a
+    /// fourth grouping arrived, and a mismatch shows up as a group row whose
+    /// drill-down is empty rather than as a compile error.
+    ///
+    /// Folders read `path` rather than a tag, which is what makes it a grouping
+    /// rather than a category: there is no folder field to read.
+    pub(crate) fn group_key(filter: LibraryFilter, t: &TrackInfo) -> String {
+        let field = |v: &str, unknown: &str| -> String {
+            if v.is_empty() {
+                unknown.to_string()
+            } else {
+                v.to_string()
+            }
+        };
+        match filter {
+            LibraryFilter::Tracks => String::new(),
+            LibraryFilter::Albums => field(&t.album, "Unknown Album"),
+            LibraryFilter::Artists => field(&t.artist, "Unknown Artist"),
+            LibraryFilter::Genres => field(&t.genre, "Unknown Genre"),
+            LibraryFilter::Folders => folder_dir(&t.path),
+        }
     }
 
     pub fn unique_folders(&self) -> Vec<(String, usize)> {

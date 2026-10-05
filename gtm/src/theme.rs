@@ -143,6 +143,71 @@ pub fn readable_fg(fg: Color, bg: Color) -> Color {
     }
 }
 
+/// A foreground guaranteed to *stand out* against `bg`.
+///
+/// [`readable_fg`] only asks that a colour be legible. The lyric line being
+/// sung needs more: it has to be distinguishable from the lines around it, so
+/// "readable" and "invisible as a highlight" are not the same requirement. A
+/// theme whose accent sits at 4.6:1 against the surface clears the legibility
+/// bar and still renders a highlight you have to hunt for.
+///
+/// So the accent is kept when it is both legible and clearly brighter (or
+/// clearly darker) than the background. When it is legible but too close, it is
+/// pushed along the lightness axis away from `bg` until it separates, which
+/// preserves the theme's hue — the thing that says *this is the active lyric* —
+/// instead of replacing it with black or white.
+pub fn standout_fg(fg: Color, bg: Color) -> Color {
+    /// WCAG AA for normal text.
+    const LEGIBLE: f64 = 4.5;
+    /// How far the highlight must differ from the surface to read as a
+    /// highlight. Well below LEGIBLE: this measures separation between two
+    /// colours, not readability of one against the other.
+    const DISTINCT: f64 = 2.0;
+    if contrast(fg, bg) < LEGIBLE {
+        return readable_fg(fg, bg);
+    }
+    if contrast(fg, bg) >= DISTINCT {
+        return fg;
+    }
+    // Too close to the background to notice: walk it away, in the direction
+    // that increases separation, until it separates. `Rgb` only, because
+    // `contrast` cannot measure a named colour and would compare 0.5 to 0.5.
+    let (Color::Rgb(r, g, b), Color::Rgb(br, bg_, bb)) = (fg, bg) else {
+        return fg;
+    };
+    let towards_light = luminance_of(r, g, b) >= luminance_of(br, bg_, bb);
+    let target = if towards_light { 255u8 } else { 0u8 };
+    for step in 1..=16u32 {
+        let t = f64::from(step) / 16.0;
+        let mix = |c: u8| (f64::from(c) + (f64::from(target) - f64::from(c)) * t).round() as u8;
+        let candidate = Color::Rgb(mix(r), mix(g), mix(b));
+        if contrast(candidate, bg) >= DISTINCT {
+            return candidate;
+        }
+    }
+    // The background is mid-grey enough that even the extremes stay close.
+    // Fall back to the endpoint, which is the most separated colour available.
+    if towards_light {
+        Color::Rgb(255, 255, 255)
+    } else {
+        Color::Rgb(0, 0, 0)
+    }
+}
+
+/// Relative luminance of one sRGB triple, for choosing which way to walk a
+/// colour away from a background.
+fn luminance_of(r: u8, g: u8, b: u8) -> f64 {
+    let chan = |v: u8| {
+        let v = f64::from(v) / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b)
+}
+
 /// WCAG 2.1 relative-luminance contrast ratio between two colours.
 ///
 /// Exported so the theme tests can assert the same number the renderer decides

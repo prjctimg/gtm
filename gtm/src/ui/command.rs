@@ -129,12 +129,12 @@ impl CommandPalette {
                 hint: "library lists",
             },
             Command {
-                label: "Library: Next Grouping",
+                label: "Next Grouping (Library, Playlists)",
                 keys: "]",
                 hint: "library next grouping",
             },
             Command {
-                label: "Library: Previous Grouping",
+                label: "Previous Grouping (Library, Playlists)",
                 keys: "[",
                 hint: "library previous grouping",
             },
@@ -154,22 +154,22 @@ impl CommandPalette {
                 hint: "spotify",
             },
             Command {
-                label: "Spotify Next",
+                label: "Spotify Device: Next",
                 keys: "",
                 hint: "spotify next",
             },
             Command {
-                label: "Spotify Previous",
+                label: "Spotify Device: Previous",
                 keys: "",
                 hint: "spotify previous",
             },
             Command {
-                label: "Spotify Shuffle",
+                label: "Spotify Device: Shuffle",
                 keys: "",
                 hint: "spotify shuffle",
             },
             Command {
-                label: "Spotify Repeat",
+                label: "Spotify Device: Repeat",
                 keys: "",
                 hint: "spotify repeat",
             },

@@ -106,15 +106,25 @@ impl Pickers {
             // The key sits in its own column, in the theme's dim colour, with
             // no brackets: the brackets were punctuation around something
             // already set apart, and on the selected row they were the only
-            // part that said which row the key belonged to. The column is as
-            // wide as the longest name, so a long one cannot push its key into
-            // its own text.
-            let key_col = commands
+            // part that said which row the key belonged to.
+            //
+            // The gap is added *after* the longest name rather than inside the
+            // measurement. Measuring `label + 5` folded the indent and the gap
+            // into one number, so the widest row's key still landed two
+            // columns past its own text while shorter rows got the slack --
+            // which is backwards: the column has to clear the longest name plus
+            // a fixed gap for every row to line up.
+            let indent = 3usize;
+            let gap = 4usize;
+            let name_col = commands
                 .iter()
-                .map(|c| c.label.chars().count() + 5)
+                .map(|c| c.label.chars().count())
                 .max()
                 .unwrap_or(0)
-                .min((row_w / 2) as usize) as u16;
+                .saturating_add(gap);
+            // One keyless row (a Spotify transport command with no binding)
+            // would otherwise widen the column for an empty string.
+            let key_col = name_col.max(indent + 8).min((row_w / 2) as usize) as u16;
             let head = format!("   {name}");
             let pad = row_pad(&head, key_col);
             let tail =

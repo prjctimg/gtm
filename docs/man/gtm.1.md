@@ -29,14 +29,14 @@ available and **[** / **]** cycle between them.
 ## Library
 
 Browse tracks through the sidebar: Library, Liked, Playlists, Spotify, Radio,
-Most Played, Recently Played, Recently Added, Folders, Top Charts, Podcasts.
-The left pane selects the view, the centre pane lists its contents. **Library**
-is the whole library and every synced playlist in one list, grouped four ways:
-**]** / **[** step between Tracks, Albums, Artists and Genres, and the same pair
-steps the source filter of an open picker. Keys: **Tab** / **Shift+Tab** (focus
-the next / previous pane), **j**/**k** or **Up**/**Down** (navigate), **Enter**
-(drill down or play), **/** (contextual search), **Alt+S** (cycle sort in the
-List context).
+Top Charts, Podcasts. The left pane selects the view, the centre pane lists its
+contents. **Library** is the whole library and every synced playlist in one
+list, grouped five ways: **]** / **[** step between Tracks, Albums, Artists,
+Genres and Folders. **Playlists** is playlists and the three history lists in
+one row, grouped four ways by the same keys. The pair also steps the source
+filter of an open picker. Keys: **Tab** / **Shift+Tab** (focus the next /
+previous pane), **j**/**k** or **Up**/**Down** (navigate), **Enter** (drill down
+or play), **/** (contextual search), **Alt+S** (cycle sort in the List context).
 
 ## Settings
 

@@ -2293,6 +2293,74 @@ fn palette_hints_all_have_a_dispatch_arm() {
     }
 }
 
+/// A palette row that no key reaches has to say so, and a dead dispatch arm has
+/// to go.
+///
+/// Both were found the same way: the four Spotify transport controls carry no
+/// key binding, so the palette drew them with an empty key column and no
+/// explanation, while `"prev tab"` had an arm and no row — a dispatch nothing
+/// could reach. The first is a presentational problem the column fix handles;
+/// the second is unreachable code, which only a check catches.
+#[test]
+fn the_palette_has_no_unreachable_or_unlabelled_rows() {
+    let palette = include_str!("../src/ui/command.rs");
+    let keys = include_str!("../src/app/keys.rs");
+
+    let mut rows: Vec<(String, String)> = Vec::new();
+    let mut label = String::new();
+    for line in palette.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("label: \"") {
+            label = rest.trim_end_matches("\",").to_string();
+        }
+        if let Some(rest) = t.strip_prefix("keys: \"") {
+            let key = rest.trim_end_matches("\",").to_string();
+            rows.push((label.clone(), key));
+        }
+    }
+    assert!(rows.len() > 30, "only parsed {} rows", rows.len());
+
+    // No arm without a row: every `action ==` comparison has to name a hint
+    // that some row declares. An arm nothing can reach is dead code, and the
+    // one that was here (`"prev tab"`) sat in a chain of 40-odd arms where
+    // nothing about it looked unreachable.
+    let hints: Vec<&str> = palette
+        .lines()
+        .filter_map(|l| {
+            let rest = l.trim().strip_prefix("hint: \"")?;
+            rest.strip_suffix("\",")
+        })
+        .collect();
+    let arms: Vec<&str> = keys
+        .match_indices("action == \"")
+        .map(|(i, _)| {
+            let start = i + "action == \"".len();
+            let end = keys[start..].find('"').map_or(keys.len(), |n| start + n);
+            &keys[start..end]
+        })
+        .collect();
+    let orphans: Vec<&str> = arms
+        .iter()
+        .copied()
+        .filter(|a| !hints.contains(a))
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        "dispatch arms for hints no palette row declares: {orphans:?}"
+    );
+
+    // A keyless row is only defensible while its label says it is reachable by
+    // palette alone.
+    for (label, key) in &rows {
+        if key.is_empty() {
+            assert!(
+                !label.contains("Device"),
+                "{label} has no key and does not say it is palette-only"
+            );
+        }
+    }
+}
+
 /// Spotify removed the endpoints the album/artist/playlist drill-downs used.
 ///
 /// Spotify's February 2026 Web API changes removed `/albums`, `/artists` and

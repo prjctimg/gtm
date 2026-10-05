@@ -130,6 +130,11 @@ fn every_library_category_has_an_icon() {
 /// (`LIB_SPOTIFY`, `LIB_CHARTS`) are part of the contract: a constant that
 /// names a different row than its label is a whole pane dispatching on the
 /// wrong list.
+///
+/// The four absorbed views keep their old numbers and are deliberately *not*
+/// rows any more. `LIB_CHARTS` moved because removing rows above it renumbered
+/// it, and `LIB_PODCASTS` follows; the pinned assertion is what makes that
+/// renumbering deliberate instead of accidental.
 #[test]
 fn pinned_category_indices_do_not_move() {
     assert_eq!(LIBRARY_CATEGORIES[LIB_ALL], "Library");
@@ -137,16 +142,49 @@ fn pinned_category_indices_do_not_move() {
     assert_eq!(LIBRARY_CATEGORIES[LIB_PLAYLISTS], "Playlists");
     assert_eq!(LIBRARY_CATEGORIES[LIB_SPOTIFY], "Spotify");
     assert_eq!(LIBRARY_CATEGORIES[LIB_RADIO], "Radio");
-    assert_eq!(LIBRARY_CATEGORIES[LIB_PLAYED], "Most Played");
-    assert_eq!(LIBRARY_CATEGORIES[LIB_RECENT], "Recently Played");
-    assert_eq!(LIBRARY_CATEGORIES[LIB_ADDED], "Recently Added");
-    assert_eq!(LIBRARY_CATEGORIES[LIB_FOLDERS], "Folders");
     assert_eq!(LIBRARY_CATEGORIES[LIB_CHARTS], "Top Charts");
     assert_eq!(LIBRARY_CATEGORIES[LIB_PODCASTS], "Podcasts");
     assert_eq!(
         LIBRARY_CATEGORIES.len(),
         LIB_PODCASTS + 1,
         "a category was inserted rather than appended"
+    );
+    // Nothing may name an absorbed view as a row: they are groups now, and a
+    // `LIB_CATEGORIES` entry for one would render a pane with no way to reach
+    // it.
+    for name in LIB_ABSORBED {
+        assert!(
+            !LIBRARY_CATEGORIES.contains(name),
+            "{name} is a group now, not a left-pane row"
+        );
+    }
+}
+
+/// Every absorbed view has to land somewhere, or the rows it used to occupy are
+/// simply gone.
+#[test]
+fn every_absorbed_view_became_a_group() {
+    use PlaylistGroup::{MostPlayed, RecentlyAdded, RecentlyPlayed};
+    let groups: Vec<&str> = PlaylistGroup::ALL.iter().map(|g| g.label()).collect();
+    for name in ["Most Played", "Recently Played", "Recently Added"] {
+        assert!(
+            groups.contains(&name),
+            "{name} lost its row and has no group to replace it"
+        );
+    }
+    // Folders joined the Library's groupings rather than the Playlists'.
+    let lib: Vec<&str> = LibraryFilter::ALL.iter().map(|f| f.label()).collect();
+    assert!(
+        lib.contains(&"Folders"),
+        "Folders has neither a row nor a grouping"
+    );
+    assert_eq!(MostPlayed.source_category(), Some(LIB_PLAYED));
+    assert_eq!(RecentlyPlayed.source_category(), Some(LIB_RECENT));
+    assert_eq!(RecentlyAdded.source_category(), Some(LIB_ADDED));
+    assert_eq!(
+        PlaylistGroup::Playlists.source_category(),
+        None,
+        "the playlists group is pushed by the daemon, not fetched"
     );
 }
 
@@ -171,6 +209,22 @@ fn stale_left_pane_lists_keep_known_categories() {
             "Spotify".to_string()
         ],
         "the four merged list names must collapse to the one row that replaced them"
+    );
+    // Folders made the same move a view further along, so a config naming it
+    // keeps the Library row rather than losing the list.
+    let out = clean_left_pane(&["Folders".to_string(), "Liked".to_string()]);
+    assert_eq!(
+        out,
+        vec!["Library".to_string(), "Liked".to_string()],
+        "a config naming Folders must keep the row that replaced it"
+    );
+    // The three history lists have no left-pane row at all, so naming one is a
+    // stale config rather than a view to open.
+    let out = clean_left_pane(&["Most Played".to_string(), "Radio".to_string()]);
+    assert_eq!(
+        out,
+        vec!["Radio".to_string()],
+        "an absorbed history list must not keep a row"
     );
 }
 

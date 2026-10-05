@@ -37,9 +37,12 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   Alt+.       Library Categories"),
     (
         "",
-        "   ]           Library: next grouping (Tracks/Albums/Artists/Genres)",
+        "   ]           next grouping (Library: Tracks/Albums/Artists/Genres/Folders)",
     ),
-    ("", "   [           Library: previous grouping"),
+    (
+        "",
+        "   [           previous grouping (Playlists: also Most Played/Recent)",
+    ),
     ("", "   (in picker) [ / ]       step that picker's filter"),
     ("", "   V           Cover grid for albums, artists, genres"),
     ("", "   (in grid)   Arrows move by cell, j/k by row"),

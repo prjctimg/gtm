@@ -81,10 +81,6 @@ pub const LIB_CATEGORIES: &[&str] = &[
     "Playlists",
     "Spotify",
     "Radio",
-    "Most Played",
-    "Recently Played",
-    "Recently Added",
-    "Folders",
     "Top Charts",
     "Podcasts",
 ];
@@ -95,32 +91,148 @@ pub const LIB_LIKED: usize = 1;
 pub const LIB_PLAYLISTS: usize = 2;
 pub const LIB_SPOTIFY: usize = 3;
 pub const LIB_RADIO: usize = 4;
+pub const LIB_CHARTS: usize = 5;
+pub const LIB_PODCASTS: usize = 6;
+
+/// The categories that are now a *group* of another view rather than a row of
+/// their own.
+///
+/// These keep their old numeric identity, because a `left_pane_lists` saved
+/// before the move names them by string and has to keep resolving to something.
+/// Nothing renders them: `clean_left_pane` drops them and the two views they
+/// folded into own their content.
 pub const LIB_PLAYED: usize = 5;
 pub const LIB_RECENT: usize = 6;
 pub const LIB_ADDED: usize = 7;
 pub const LIB_FOLDERS: usize = 8;
-pub const LIB_CHARTS: usize = 9;
-pub const LIB_PODCASTS: usize = 10;
+
+/// Every name that is no longer a left-pane row of its own.
+pub const LIB_ABSORBED: &[&str] = &[
+    "Most Played",
+    "Recently Played",
+    "Recently Added",
+    "Folders",
+];
 
 /// How the Library view groups the same rows.
 ///
 /// `[` and `]` walk it. Every arm reads the same data, so the filter is the
 /// only difference between them: which column the rows are keyed by.
+/// How the Playlists view groups its rows.
+///
+/// The three history lists were top-level categories next to Playlists, which
+/// put a *slice* of the library in the same left-pane list as the views you
+/// browse it with — four rows to flip between to reach a playlist, and four
+/// more to reach what you last played. They are lists the same way a playlist
+/// is: named collections of tracks, one row each, Enter to open. So they live
+/// here, as groups of the one view that already had that shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaylistGroup {
+    /// Playlists the user made. Opening one drills into its tracks.
+    Playlists,
+    /// Ranked by play count. Opening one lists the tracks.
+    MostPlayed,
+    /// Most recent first, by last-played time.
+    RecentlyPlayed,
+    /// Most recent first, by library insertion order.
+    RecentlyAdded,
+}
+
+impl PlaylistGroup {
+    pub const ALL: [PlaylistGroup; 4] = [
+        PlaylistGroup::Playlists,
+        PlaylistGroup::MostPlayed,
+        PlaylistGroup::RecentlyPlayed,
+        PlaylistGroup::RecentlyAdded,
+    ];
+
+    /// Name shown on the header, so the pane says which group is on screen.
+    pub fn label(self) -> &'static str {
+        match self {
+            PlaylistGroup::Playlists => "Playlists",
+            PlaylistGroup::MostPlayed => "Most Played",
+            PlaylistGroup::RecentlyPlayed => "Recently Played",
+            PlaylistGroup::RecentlyAdded => "Recently Added",
+        }
+    }
+
+    /// The library category whose fetch populates this group, for the three
+    /// history rows. `Playlists` has none: the daemon pushes that list.
+    pub fn source_category(self) -> Option<usize> {
+        match self {
+            PlaylistGroup::Playlists => None,
+            PlaylistGroup::MostPlayed => Some(LIB_PLAYED),
+            PlaylistGroup::RecentlyPlayed => Some(LIB_RECENT),
+            PlaylistGroup::RecentlyAdded => Some(LIB_ADDED),
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let at = Self::ALL.iter().position(|g| *g == self).unwrap_or(0);
+        Self::ALL[(at + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let at = Self::ALL.iter().position(|g| *g == self).unwrap_or(0);
+        Self::ALL[(at + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    /// What an empty group says, since the four do not fill up the same way: a
+    /// playlist is empty because the user has not made one, a history list is
+    /// empty because nothing has been played or scanned.
+    pub fn empty_hint(self) -> &'static str {
+        match self {
+            PlaylistGroup::Playlists => "Hint: press A to add the highlighted track to a playlist",
+            PlaylistGroup::MostPlayed => "Hint: play counts build up as you listen",
+            PlaylistGroup::RecentlyPlayed => "Hint: play any track and it will show up here",
+            PlaylistGroup::RecentlyAdded => "Hint: add music to your library to see it here",
+        }
+    }
+}
+
+/// The row label a history group shows for a track: title, with the artist
+/// disambiguating the repeats a ranked list is full of.
+///
+/// A bare title makes "Intro" indistinguishable from every other "Intro", which
+/// is the one thing a list ordered by play count or last-played time cannot
+/// afford — the order is the whole point of those rows.
+pub(crate) fn playlist_row_label(t: &TrackInfo) -> String {
+    let title = if t.title.is_empty() {
+        t.display_title()
+    } else {
+        t.title.clone()
+    };
+    if t.artist.is_empty() {
+        title
+    } else {
+        format!("{title} — {}", t.artist)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibraryFilter {
     Tracks,
     Albums,
     Artists,
     Genres,
+    /// One row per directory holding at least one track.
+    ///
+    /// A grouping rather than a category of its own: it keys off `path`, so it
+    /// is the same "one row, many tracks behind it" shape the other three are,
+    /// and it answers the same drill-down. Folders used to be a top-level
+    /// category, which put a *slice* of the library in the same list as the
+    /// views you browse it with.
+    Folders,
 }
 
 impl LibraryFilter {
     /// The filters in `[` / `]` order.
-    pub const ALL: [LibraryFilter; 4] = [
+    pub const ALL: [LibraryFilter; 5] = [
         LibraryFilter::Tracks,
         LibraryFilter::Albums,
         LibraryFilter::Artists,
         LibraryFilter::Genres,
+        LibraryFilter::Folders,
     ];
 
     /// The same name, singular and plural, for counts and prose ("12 albums",
@@ -132,6 +244,7 @@ impl LibraryFilter {
             LibraryFilter::Albums => "album",
             LibraryFilter::Artists => "artist",
             LibraryFilter::Genres => "genre",
+            LibraryFilter::Folders => "folder",
         }
     }
 
@@ -141,6 +254,7 @@ impl LibraryFilter {
             LibraryFilter::Albums => "albums",
             LibraryFilter::Artists => "artists",
             LibraryFilter::Genres => "genres",
+            LibraryFilter::Folders => "folders",
         }
     }
 
@@ -151,6 +265,7 @@ impl LibraryFilter {
             LibraryFilter::Albums => "Albums",
             LibraryFilter::Artists => "Artists",
             LibraryFilter::Genres => "Genres",
+            LibraryFilter::Folders => "Folders",
         }
     }
 
@@ -175,6 +290,12 @@ pub fn clean_left_pane(names: &[String]) -> Vec<String> {
         // than silently losing the list it named.
         let name = match n.as_str() {
             "All Tracks" | "Albums" | "Artists" | "Genres" => LIB_CATEGORIES[LIB_ALL],
+            other => other,
+        };
+        // Folders is the same story one view further along: a config that named
+        // it keeps the Library row, which is where its content now lives.
+        let name = match name {
+            "Folders" => LIB_CATEGORIES[LIB_ALL],
             other => other,
         };
         if LIB_CATEGORIES.contains(&name) && !out.iter().any(|e| e == name) {
@@ -267,6 +388,10 @@ pub struct App {
     pub library_category: usize,
     /// Grouping of the Library view. Only meaningful on [`LIB_ALL`].
     pub library_filter: LibraryFilter,
+    /// Grouping of the Playlists view. Only meaningful on [`LIB_PLAYLISTS`],
+    /// and the only group that drills into named playlists; the three history
+    /// groups list their tracks directly, so `browse_detail` stays `None` there.
+    pub playlist_group: PlaylistGroup,
     pub library_pane_focus: bool,
     pub settings_category: usize,
     pub settings_pane_focus: bool,
@@ -1069,6 +1194,7 @@ impl App {
             scroll_offset: [0; LIB_CATEGORIES.len() + LibraryFilter::ALL.len()],
             library_category: LIB_ALL,
             library_filter: LibraryFilter::Tracks,
+            playlist_group: PlaylistGroup::Playlists,
             library_pane_focus: false,
             settings_category: 0,
             settings_pane_focus: false,
@@ -1409,11 +1535,13 @@ impl App {
     /// onto different keys in the first place.
     pub(crate) fn cycle_view_filter(&mut self, back: bool) {
         let Some(top) = self.pickers.top_mut() else {
-            // No picker open: the Library view's own grouping. The other
-            // categories are flat lists with nothing to slice, so the pair does
-            // nothing there rather than moving the category.
-            if self.library_category == LIB_ALL {
-                self.cycle_library_filter(back);
+            // No picker open: whichever of the two grouped views is on screen.
+            // The other categories are flat lists with nothing to slice, so the
+            // pair does nothing there rather than moving the category.
+            match self.library_category {
+                LIB_ALL => self.cycle_library_filter(back),
+                LIB_PLAYLISTS => self.cycle_playlist_group(back),
+                _ => {}
             }
             return;
         };
@@ -1475,6 +1603,33 @@ impl App {
         ));
     }
 
+    /// Switch the Playlists view's group, by the same rules as
+    /// [`Self::cycle_library_filter`]: leaving a drill-in drops it, because a
+    /// playlist name names nothing in a history list.
+    ///
+    /// Fetching the incoming group is the part that is easy to forget and was
+    /// free before: as a category it was reached by *entering* the category, and
+    /// entering is what triggered the fetch. Now the four groups are one row in
+    /// the left pane, so switching group is the moment the data is first needed.
+    pub(crate) fn cycle_playlist_group(&mut self, back: bool) {
+        self.playlist_group = if back {
+            self.playlist_group.prev()
+        } else {
+            self.playlist_group.next()
+        };
+        if self.browse_detail.is_some() {
+            self.browse_detail = None;
+            self.browse_title = None;
+        }
+        self.set_list_pos(0);
+        self.fetch_playlist_group();
+        self.data_dirty = true;
+        self.last_action_name = Some((
+            format!("Playlists: {}", self.playlist_group.label()),
+            std::time::Instant::now() + std::time::Duration::from_secs(3),
+        ));
+    }
+
     /// Whether the highlighted row names a group rather than a track.
     ///
     /// An album, an artist or a genre: every Library filter but Tracks, and the
@@ -1500,6 +1655,7 @@ impl App {
             LibraryFilter::Albums => self.unique_albums(),
             LibraryFilter::Artists => self.unique_artists(),
             LibraryFilter::Genres => self.unique_genres(),
+            LibraryFilter::Folders => self.unique_folders(),
         }
     }
 

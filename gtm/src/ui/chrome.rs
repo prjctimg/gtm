@@ -6,9 +6,8 @@
 // This is free software released under the GPL-3.0 license.
 
 use crate::app::{
-    GRID_CELL_H, GRID_CELL_W, LIB_ADDED, LIB_ALL, LIB_CATEGORIES, LIB_CHARTS, LIB_FOLDERS,
-    LIB_LIKED, LIB_PLAYED, LIB_PLAYLISTS, LIB_PODCASTS, LIB_RADIO, LIB_RECENT, LIB_SPOTIFY,
-    LibraryFilter,
+    GRID_CELL_H, GRID_CELL_W, LIB_ALL, LIB_CATEGORIES, LIB_CHARTS, LIB_LIKED, LIB_PLAYLISTS,
+    LIB_PODCASTS, LIB_RADIO, LIB_SPOTIFY, LibraryFilter, PlaylistGroup, playlist_row_label,
 };
 use crate::ui::*;
 
@@ -910,13 +909,28 @@ impl Render {
                 // gives up the columns the text needs first, down to a 3-row
                 // thumbnail.
                 //
-                // The reserve is 16 columns, not 20. Two thirds of the band's
-                // height on a narrow terminal was going to the title block rather
-                // than the artwork: 20 columns is enough for the longest detail
-                // line at the sizes this renders, and the two columns it gave
-                // back are a whole extra row of art at a 1:2 aspect.
-                let cover_h = cover_h.min(inner.width.saturating_sub(16) / 2).max(3);
-                let cover_w = cover_h * 2;
+                // The reserve is 16 columns: enough for the longest detail line
+                // at the sizes this renders, so the artwork gets the rest.
+                //
+                // Order matters, and it was the bug. This used to be
+                // `cover_h.min((width - 16) / 2)` -- a *width* reserve folded
+                // into a *height* clamp, before the 1:2 conversion. On a
+                // single-column band that is the full terminal width, so the
+                // division returned a number large enough never to bind while
+                // `.max(3)` and the band cap fought over the height instead: the
+                // art settled at three rows in the top-left corner and the other
+                // thirty-odd columns went to a text block that needs sixteen.
+                // Clamping the width *after* deriving it from the height is the
+                // other order, and it is the one that lets the band share its
+                // space: the art takes every row it can and gives columns back
+                // only if the labels would otherwise be squeezed.
+                let mut cover_h = cover_h.max(3);
+                let mut cover_w = cover_h * 2;
+                let reserved = inner.width.saturating_sub(16);
+                if cover_w > reserved {
+                    cover_w = reserved.max(4);
+                    cover_h = (cover_w / 2).max(1);
+                }
 
                 // A live stream reports the track on air over ICY (or through
                 // the station's tracklist), and the daemon's synthesised track
@@ -1347,13 +1361,15 @@ impl Render {
             .get(app.library_category)
             .copied()
             .unwrap_or("");
-        // The Library view has four groupings behind one row, so its header
-        // names the one on screen: a pane headed "Library" over a list of
-        // albums says nothing about which list the user is looking at.
-        let category_label: &str = if app.library_category == LIB_ALL {
-            app.library_filter.label()
-        } else {
-            category_label
+        // The two grouped views have several groupings behind one row, so their
+        // headers name the one on screen: a pane headed "Library" over a list of
+        // albums says nothing about which list the user is looking at, and the
+        // Playlists row is the same story now that it owns the three history
+        // lists too.
+        let category_label: &str = match app.library_category {
+            LIB_ALL => app.library_filter.label(),
+            LIB_PLAYLISTS if app.browse_detail.is_none() => app.playlist_group.label(),
+            _ => category_label,
         };
 
         // Total rows in the active right-pane list, threaded out of the category
@@ -1637,39 +1653,108 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             }
-        } else if app.library_category == LIB_PLAYLISTS {
-            let playlists = &app.playlist_cache;
-            let total_len = playlists.len();
+        } else if app.library_category == LIB_PLAYLISTS && app.browse_detail.is_none() {
+            // One renderer for all four groups. The three history lists used to
+            // be categories of their own with their own arms here, which is why
+            // they cost four left-pane rows to reach a playlist; the rows they
+            // draw are the same shape, so the group decides what is named and
+            // nothing else changes.
+            let names: Vec<String> = match app.playlist_group {
+                PlaylistGroup::Playlists => {
+                    app.playlist_cache.iter().map(|p| p.name.clone()).collect()
+                }
+                PlaylistGroup::MostPlayed => app
+                    .most_played_cache
+                    .iter()
+                    .map(playlist_row_label)
+                    .collect(),
+                PlaylistGroup::RecentlyPlayed => app
+                    .recently_played_cache
+                    .iter()
+                    .map(playlist_row_label)
+                    .collect(),
+                PlaylistGroup::RecentlyAdded => app
+                    .recently_added_cache
+                    .iter()
+                    .map(playlist_row_label)
+                    .collect(),
+            };
+            let total_len = names.len();
+            let noun = match app.playlist_group {
+                PlaylistGroup::Playlists => ("playlist", "playlists"),
+                _ => ("track", "tracks"),
+            };
+            let st_line = format!(" {} {} ", total_len, plural(total_len, noun.0, noun.1));
             let sel = app.list_pos().min(total_len.saturating_sub(1));
-            let st_line = format!(
-                " {} {} ",
-                total_len,
-                plural(total_len, "playlist", "playlists")
-            );
             let available = window_rows();
             app.viewport_items = available;
             let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
             app.list_scroll = list_scroll;
             let mut lines = vec![Line::from("")];
-            for (i, pl) in playlists[app.list_scroll..end].iter().enumerate() {
-                let real_i = app.list_scroll + i;
-                let is_sel = real_i == sel && !left_focus;
-                let prefix = "   ";
-                let style = if is_sel {
-                    Style::default()
-                        .fg(app.theme.selection_fg_readable())
-                        .bg(app.theme.selection_bg)
-                } else {
-                    Style::default().fg(app.theme.fg)
-                };
-                let row = format!("{}{}", prefix, pl.name);
-                let row = if is_sel {
-                    let pad = row_pad(&row, results_area.width);
-                    format!("{row}{}", " ".repeat(pad))
-                } else {
-                    row
-                };
-                lines.push(Line::from(Span::styled(row, style)));
+            if names.is_empty() {
+                lines.extend(empty_hint_lines(app, "", app.playlist_group.empty_hint()));
+            } else {
+                for (i, name) in names[app.list_scroll..end].iter().enumerate() {
+                    let real_i = app.list_scroll + i;
+                    let is_sel = real_i == sel && !left_focus;
+                    let style = if is_sel {
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg)
+                    } else {
+                        Style::default().fg(app.theme.fg)
+                    };
+                    let mut row = format!("   {name}");
+                    if is_sel {
+                        let pad = row_pad(&row, results_area.width);
+                        row = format!("{row}{}", " ".repeat(pad));
+                    }
+                    lines.push(Line::from(Span::styled(row, style)));
+                }
+            }
+            {
+                lib_total_rows = total_len;
+                (lines, st_line)
+            }
+        } else if app.library_category == LIB_PLAYLISTS {
+            // Drilled into a named playlist: the track list this view always
+            // showed, unchanged.
+            let total_len = app.filtered_tracks().len();
+            let st_line = format!(" {} {} ", total_len, plural(total_len, "track", "tracks"));
+            let sel = app.list_pos().min(total_len.saturating_sub(1));
+            let available = window_rows();
+            app.viewport_items = available;
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+            app.list_scroll = list_scroll;
+            let pane_w = results_area.width as usize;
+            let mut lines = vec![Line::from("")];
+            if total_len == 0 {
+                lines.extend(empty_hint_lines(app, "No tracks", "This playlist is empty"));
+            } else {
+                // Borrowed after the viewport bookkeeping above, which mutates
+                // the app: `filtered_tracks()` hands out references into the
+                // playlist cache and cannot outlive an assignment to it.
+                let playlist_tracks = app.filtered_tracks();
+                for (t, track) in playlist_tracks[app.list_scroll..end].iter().enumerate() {
+                    let real_i = app.list_scroll + t;
+                    let is_sel = real_i == sel && !left_focus;
+                    let avail = pane_w.saturating_sub(2);
+                    let display_label =
+                        scroll_text(&track.title, avail, app.footer_title_scroll, is_sel);
+                    let style = if is_sel {
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg)
+                    } else {
+                        Style::default().fg(app.theme.fg)
+                    };
+                    let mut row = format!("   {display_label}");
+                    if is_sel {
+                        let pad = row_pad(&row, results_area.width);
+                        row = format!("{row}{}", " ".repeat(pad));
+                    }
+                    lines.push(Line::from(Span::styled(row, style)));
+                }
             }
             {
                 lib_total_rows = total_len;
@@ -1761,41 +1846,6 @@ impl Render {
                     };
                     lines.push(Line::from(Span::styled(row, style)));
                 }
-            }
-            {
-                lib_total_rows = total_len;
-                (lines, st_line)
-            }
-        } else if app.library_category == LIB_FOLDERS {
-            let folders = app.unique_folders();
-            let total_len = folders.len();
-            let sel = app.list_pos().min(total_len.saturating_sub(1));
-            let st_line = format!(" {} {} ", total_len, plural(total_len, "folder", "folders"));
-            let available = window_rows();
-            app.viewport_items = available;
-            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
-            app.list_scroll = list_scroll;
-            let mut lines = vec![Line::from("")];
-            for (i, (dir, _count)) in folders[app.list_scroll..end].iter().enumerate() {
-                let real_i = app.list_scroll + i;
-                let is_sel = real_i == sel && !left_focus;
-                let prefix = "   ";
-                let style = if is_sel {
-                    Style::default()
-                        .fg(app.theme.selection_fg_readable())
-                        .bg(app.theme.selection_bg)
-                } else {
-                    Style::default().fg(app.theme.fg)
-                };
-                let name = folder_name(dir);
-                let row = format!("{}{}", prefix, name);
-                let row = if is_sel {
-                    let pad = row_pad(&row, results_area.width);
-                    format!("{row}{}", " ".repeat(pad))
-                } else {
-                    row
-                };
-                lines.push(Line::from(Span::styled(row, style)));
             }
             {
                 lib_total_rows = total_len;
@@ -2085,25 +2135,14 @@ impl Render {
 
             let mut lines = vec![Line::from("")];
             if filtered.is_empty() {
-                let (headline, hint) = match app.library_category {
-                    LIB_PLAYED => (
-                        "No most-played tracks yet",
-                        "Hint: play counts build up as you listen",
-                    ),
-                    LIB_RECENT => (
-                        "Nothing played recently",
-                        "Hint: play any track and it will show up here",
-                    ),
-                    LIB_ADDED => (
-                        "No recent additions",
-                        "Hint: add music to your library to see it here",
-                    ),
-                    _ => (
-                        "Nothing in the library yet",
-                        "Hint: add music to your library, or link a Spotify account",
-                    ),
-                };
-                lines.extend(empty_hint_lines(app, headline, hint));
+                // The three history lists are unreachable as categories now --
+                // they are groups of Playlists, whose own renderer says what an
+                // empty group means -- so this match names only what is left.
+                lines.extend(empty_hint_lines(
+                    app,
+                    "Nothing in the library yet",
+                    "Hint: add music to your library, or link a Spotify account",
+                ));
             } else {
                 for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
                     let real_i = app.list_scroll + i;
@@ -2464,10 +2503,15 @@ impl Render {
             LyricSurface::Pane => app.surface_bg(),
             LyricSurface::Zen => app.zen_bg(),
         };
-        let lit = match surface {
-            LyricSurface::Pane => app.theme.accent,
-            LyricSurface::Zen => readable_fg(app.theme.accent, bg),
-        };
+        // The line being sung has to be findable at a glance, which is a stronger
+        // requirement than being legible: a theme whose accent clears the
+        // contrast bar but sits near the surface still hid it. `standout_fg`
+        // pushes it away from the background along the lightness axis instead of
+        // replacing it, so the theme's hue survives. Both surfaces now go
+        // through it -- the pane used to take `accent` raw, and the reactive
+        // theme means the surface under these lines is not a fixed colour
+        // anyway.
+        let lit = standout_fg(app.theme.accent, bg);
         let past = match surface {
             LyricSurface::Pane => app.theme.fg,
             LyricSurface::Zen => readable_fg(app.theme.fg, bg),

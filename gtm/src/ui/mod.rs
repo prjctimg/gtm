@@ -34,7 +34,7 @@ pub(crate) use crate::shared::resolve_command_socket;
 pub(crate) use crate::shared::spotify::{SpotifySearchKind, pretty_id};
 pub(crate) use crate::shared::track::{LrcData, TrackInfo};
 pub(crate) use crate::theme::blend_colors;
-pub use crate::theme::readable_fg;
+pub use crate::theme::{readable_fg, standout_fg};
 pub(crate) use crate::ui::pickers::settings::pre_gain_label;
 pub(crate) use crate::visualizer::VisualizerPreset;
 pub(crate) use crossterm::event::{

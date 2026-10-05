@@ -95,7 +95,12 @@ impl App {
             return match self.library_filter {
                 LibraryFilter::Albums => TrackInfoKind::Album,
                 LibraryFilter::Artists => TrackInfoKind::Artist,
-                LibraryFilter::Tracks | LibraryFilter::Genres => TrackInfoKind::Track,
+                // Genres and folders have no field of their own to describe, so
+                // the card borrows the representative track's — the same one the
+                // grid and the drill-down use.
+                LibraryFilter::Tracks | LibraryFilter::Genres | LibraryFilter::Folders => {
+                    TrackInfoKind::Track
+                }
             };
         }
         match self.library_category {
@@ -522,12 +527,7 @@ impl App {
     /// Read from the same helpers the row view reads, so the two cannot drift:
     /// a grid cell is an album, an artist or a genre because its row was one.
     pub fn grid_labels(&self) -> Vec<String> {
-        match self.library_filter {
-            LibraryFilter::Tracks => Vec::new(),
-            LibraryFilter::Albums => self.unique_albums().into_iter().map(|(n, _)| n).collect(),
-            LibraryFilter::Artists => self.unique_artists().into_iter().map(|(n, _)| n).collect(),
-            LibraryFilter::Genres => self.unique_genres().into_iter().map(|(n, _)| n).collect(),
-        }
+        self.library_groups().into_iter().map(|(n, _)| n).collect()
     }
 
     /// Whether the Library filter on screen is one of the grouped lists the
