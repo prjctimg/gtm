@@ -2496,6 +2496,14 @@ impl Daemon {
                 let mut last: Option<bool> = None;
                 loop {
                     interval.tick().await;
+                    // Nobody is watching the footer's indicator, and it is the
+                    // only consumer, so a daemon left running for its playback
+                    // was opening two connections every thirty seconds to
+                    // maintain a fact no one reads. Probe on demand instead:
+                    // once there is a client, the answer is worth its cost.
+                    if net_inner.active_clients.load(Ordering::Relaxed) == 0 {
+                        continue;
+                    }
                     let online = network::probe_online().await;
                     if last != Some(online) {
                         last = Some(online);
@@ -2523,17 +2531,6 @@ impl Daemon {
             // Periodically flush any scrobbles that failed transiently (network
             // drop, server 5xx). Runs in the background so retries never block
             // playback; the queue is persisted on disk and survives restarts.
-            let flush_inner = Arc::clone(&provider_inner);
-            tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(Duration::from_secs(300));
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                ticker.tick().await;
-                loop {
-                    ticker.tick().await;
-                    let lastfm = flush_inner.lastfm.lock().await;
-                    lastfm.flush_retries().await;
-                }
-            });
         });
 
         // Resume exactly as the user left it: if the saved state carried a
@@ -2656,7 +2653,13 @@ impl Daemon {
                     }
                 }
                 _ = save_interval.tick() => {
+                    // The state save and the retry flush were two tasks waking on
+                    // two timers to write to disk; the flush's queue is on disk
+                    // already, so it rides the save rather than keeping a task
+                    // alive for a five-minute tick.
                     Self::save_state(&self.inner);
+                    let lastfm = self.inner.lastfm.lock().await;
+                    lastfm.flush_retries().await;
                 }
                 result = self.listener.accept() => {
                     match result {

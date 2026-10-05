@@ -1812,11 +1812,26 @@ const HEARTBEAT_TIMEOUT_SECS: u64 = 60;
 const IPC_TIMEOUT_SECS: u64 = 30;
 
 impl IpcWorker {
+    /// One wake-up per event, not twenty per second.
+    ///
+    /// This loop used to poll the socket on a 50 ms timeout so it could get back
+    /// and look at the command channel -- twenty wake-ups a second for the life
+    /// of the process, each one to notice that nothing had happened. On a phone
+    /// that is a measurable share of a core spent on the scheduler, and the
+    /// commands it was making room for were then delayed by up to a frame of it
+    /// anyway.
+    ///
+    /// The socket and the command channel are now the two arms of one select,
+    /// plus a slow tick for the heartbeat deadline, so the task sleeps until
+    /// something actually arrives. Nothing else runs here, which is why there is
+    /// no third source of work to miss.
     async fn run(mut self) {
         let mut tmp = [0u8; 4096];
+        let mut beat = tokio::time::interval(Duration::from_secs(10));
+        beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            // Heartbeat check: if no heartbeat received within timeout,
-            // the daemon or connection is stale: force reconnect immediately.
+            // If no heartbeat arrived within the timeout the daemon or the
+            // connection is stale, and a stale socket read never returns.
             if self.last_heartbeat_at.lock().unwrap().elapsed()
                 > Duration::from_secs(HEARTBEAT_TIMEOUT_SECS)
             {
@@ -1829,52 +1844,56 @@ impl IpcWorker {
                 *self.last_heartbeat_at.lock().unwrap() = Instant::now();
                 continue;
             }
-
-            // Drain pending requests from the channel and send them.
-            let mut sent_any = false;
-            while let Ok(pending) = self.cmd_rx.try_recv() {
-                let id = self.next_id;
-                self.next_id = self.next_id.wrapping_add(1);
-                if let Err(e) = self.send_by_id(id, &pending).await {
-                    log(&format!("IPC worker send error: {e}"));
-                    if let Some(tx) = pending.response_tx {
-                        let _ = tx.send(Err(CoreError::Daemon("send failed".into())));
+            let frame = Self::read_frame(&mut self.reader, &mut self.buf, &mut tmp);
+            tokio::select! {
+                // Biased towards commands: a keypress the user is waiting on
+                // should not queue behind a burst of daemon events.
+                biased;
+                pending = self.cmd_rx.recv() => {
+                    let Some(pending) = pending else {
+                        // The TUI dropped the channel: nothing left to send to.
+                        self.fail_all_pending("channel closed");
+                        return;
+                    };
+                    let id = self.next_id;
+                    self.next_id = self.next_id.wrapping_add(1);
+                    if let Err(e) = self.send_by_id(id, &pending).await {
+                        log(&format!("IPC worker send error: {e}"));
+                        if let Some(tx) = pending.response_tx {
+                            let _ = tx.send(Err(CoreError::Daemon("send failed".into())));
+                        }
+                        self.fail_all_pending("send failed");
+                        self.reconnect().await;
+                        continue;
                     }
-                    self.fail_all_pending("send failed");
-                    self.reconnect().await;
-                    break;
+                    if let Some(tx) = pending.response_tx {
+                        let cmd = pending.req.cmd_name().to_string();
+                        self.pending.insert(id, (cmd, tx));
+                    }
+                    if !self.pending.is_empty()
+                        && let Err(e) = tokio::time::timeout(
+                            Duration::from_secs(5),
+                            self.writer.flush(),
+                        ).await
+                    {
+                        log(&format!("IPC worker flush error: {e}"));
+                        self.fail_all_pending("flush failed");
+                        self.reconnect().await;
+                    }
                 }
-                if let Some(tx) = pending.response_tx {
-                    let cmd = pending.req.cmd_name().to_string();
-                    self.pending.insert(id, (cmd, tx));
-                }
-                sent_any = true;
-            }
-            if sent_any
-                && !self.pending.is_empty()
-                && let Err(e) =
-                    tokio::time::timeout(Duration::from_secs(5), self.writer.flush()).await
-            {
-                log(&format!("IPC worker flush error: {e}"));
-                self.fail_all_pending("flush failed");
-                self.reconnect().await;
-                continue;
-            }
-
-            // Read from socket with a small timeout so we can loop back
-            // to check for requests.
-            match self.read_with_timeout(&mut tmp).await {
-                Ok(true) => {
-                    // Parse all complete frames, dispatching responses by ID
-                    while self.parse_next().await {}
-                }
-                Ok(false) => {} // timeout, loop back to check for requests
-                Err(e) => {
-                    log(&format!("IPC worker read error: {e}"));
-                    self.fail_all_pending("read error");
-                    self.reconnect().await;
-                    continue;
-                }
+                read = frame => match read {
+                    Ok(true) => {
+                        // Parse all complete frames, dispatching responses by ID
+                        while self.parse_next().await {}
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        log(&format!("IPC worker read error: {e}"));
+                        self.fail_all_pending("read error");
+                        self.reconnect().await;
+                    }
+                },
+                _ = beat.tick() => {}
             }
         }
     }
@@ -1916,32 +1935,36 @@ impl IpcWorker {
         }
     }
 
-    async fn read_with_timeout(&mut self, tmp: &mut [u8; 4096]) -> Result<bool> {
-        match tokio::time::timeout(Duration::from_millis(50), self.reader.read(tmp)).await {
-            Ok(Ok(n)) => {
-                if n == 0 {
-                    Err(CoreError::Daemon("connection closed".into()))
-                } else {
-                    self.buf.extend_from_slice(&tmp[..n]);
-                    if self.buf.len() > 16_777_216 {
-                        // Bound memory without silently discarding in-flight
-                        // data: drop only the fully-received lines at the
-                        // front, preserving the incomplete trailing frame.
-                        if let Some(last_nl) = self.buf.iter().rposition(|&b| b == b'\n') {
-                            self.buf.drain(..=last_nl);
-                        } else {
-                            // Single oversized / unterminated frame: nothing
-                            // safe to salvage, clear and report.
-                            self.buf.clear();
-                            return Err(CoreError::Daemon("buffer exceeded 16MB".into()));
-                        }
-                        log("IPC read buffer exceeded 16MB; dropped oldest lines");
+    /// One read into the frame buffer. A free function, not a method, so the
+    /// wait in [`Self::run`] can hold this future and the command-channel one
+    /// at the same time: two `&mut self` borrows cannot coexist in a `select!`,
+    /// two disjoint fields can.
+    async fn read_frame(
+        reader: &mut tokio::net::unix::OwnedReadHalf,
+        buf: &mut Vec<u8>,
+        tmp: &mut [u8; 4096],
+    ) -> Result<bool> {
+        match reader.read(tmp).await {
+            Ok(0) => Err(CoreError::Daemon("connection closed".into())),
+            Ok(n) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.len() > 16_777_216 {
+                    // Bound memory without silently discarding in-flight
+                    // data: drop only the fully-received lines at the
+                    // front, preserving the incomplete trailing frame.
+                    if let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') {
+                        buf.drain(..=last_nl);
+                    } else {
+                        // Single oversized / unterminated frame: nothing
+                        // safe to salvage, clear and report.
+                        buf.clear();
+                        return Err(CoreError::Daemon("buffer exceeded 16MB".into()));
                     }
-                    Ok(true)
+                    log("IPC read buffer exceeded 16MB; dropped oldest lines");
                 }
+                Ok(true)
             }
-            Ok(Err(e)) => Err(CoreError::Daemon(format!("read error: {e}"))),
-            Err(_) => Ok(false),
+            Err(e) => Err(CoreError::Daemon(format!("read error: {e}"))),
         }
     }
 
