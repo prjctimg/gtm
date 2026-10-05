@@ -419,7 +419,15 @@ impl App {
                 PlaylistGroup::Playlists => {}
             }
         }
-        let mut tracks: Vec<&TrackInfo> = self.tracks_cache.iter().collect();
+        // The Library view's rows are the merged list -- local library plus
+        // every synced playlist -- so its drill-down has to start from that too.
+        // Starting from `tracks_cache` made an album row count its remote tracks
+        // and then open a list without them.
+        let mut tracks: Vec<&TrackInfo> = if self.library_category == LIB_ALL {
+            self.library_tracks()
+        } else {
+            self.tracks_cache.iter().collect()
+        };
         if !self.search_query.is_empty() {
             let q = self.search_query.to_lowercase();
             tracks.retain(|t| {
@@ -436,37 +444,24 @@ impl App {
             // as "Unknown Album"/"Unknown Artist".
             // The grouped lists share one drill-down; the filter says which
             // field the detail names.
-            tracks.retain(|t| match (self.library_category, self.library_filter) {
-                (LIB_ALL, LibraryFilter::Albums) => {
-                    let album: &str = if t.album.is_empty() {
-                        "Unknown Album"
-                    } else {
-                        &t.album
-                    };
-                    album.eq_ignore_ascii_case(detail)
+            // The grouped Library lists all match on the same key the grouping
+            // was counted by -- `group_key` -- rather than each re-deriving the
+            // field and its "Unknown ..." fallback. A fourth copy is how a group
+            // row ended up able to name tracks it does not contain.
+            let grouped = matches!(
+                (self.library_category, self.library_filter),
+                (LIB_ALL, LibraryFilter::Albums)
+                    | (LIB_ALL, LibraryFilter::Artists)
+                    | (LIB_ALL, LibraryFilter::Genres)
+                    | (LIB_ALL, LibraryFilter::Folders)
+            );
+            tracks.retain(|t| {
+                if grouped {
+                    return Self::group_key(self.library_filter, t).eq_ignore_ascii_case(detail);
                 }
-                (LIB_ALL, LibraryFilter::Artists) => {
-                    let artist: &str = if t.artist.is_empty() {
-                        "Unknown Artist"
-                    } else {
-                        &t.artist
-                    };
-                    artist.eq_ignore_ascii_case(detail)
-                }
-                (LIB_ALL, LibraryFilter::Genres) => {
-                    let genre: &str = if t.genre.is_empty() {
-                        "Unknown Genre"
-                    } else {
-                        &t.genre
-                    };
-                    genre.eq_ignore_ascii_case(detail)
-                }
-                (LIB_ALL, LibraryFilter::Folders) => folder_dir(&t.path) == detail.as_str(),
-                _ => {
-                    t.album.eq_ignore_ascii_case(detail)
-                        || t.artist.eq_ignore_ascii_case(detail)
-                        || t.title.eq_ignore_ascii_case(detail)
-                }
+                t.album.eq_ignore_ascii_case(detail)
+                    || t.artist.eq_ignore_ascii_case(detail)
+                    || t.title.eq_ignore_ascii_case(detail)
             });
         }
         if self.library_category == LIB_LIKED {
@@ -567,8 +562,8 @@ impl App {
             let (name, _) = groups.get(self.list_pos())?;
             let filter = self.library_filter;
             return Some(
-                self.tracks_cache
-                    .iter()
+                self.library_tracks()
+                    .into_iter()
                     .filter(|t| Self::group_key(filter, t) == *name)
                     .map(|t| t.id)
                     .collect(),
@@ -676,28 +671,74 @@ impl App {
     }
 
     /// Unique album names with track counts, sorted by album.
+    ///
+    /// Built from `library_tracks()` -- the same rows the Tracks list draws --
+    /// rather than from `tracks_cache` alone. The two differ exactly when an
+    /// account is linked: `tracks_cache` is the local library, while the Tracks
+    /// list is the local library *and* every synced playlist. So a Spotify row's
+    /// album had no album row to group under, and switching from Tracks to
+    /// Albums silently dropped every remote track: the list you were looking at
+    /// one keypress earlier.
     pub fn unique_albums(&self) -> Vec<(String, usize)> {
-        if let Ok(guard) = self.cached_albums.lock()
+        self.grouped_by("album")
+    }
+
+    /// Count the rows of `library_tracks()` by one tag, memoised per generation.
+    ///
+    /// One implementation for the tag groupings because they differ only in
+    /// which field they read, and four hand-written ones is how the albums and
+    /// artists lists came to disagree about what a track is.
+    fn grouped_by(&self, field: &str) -> Vec<(String, usize)> {
+        let cache = match field {
+            "album" => &self.cached_albums,
+            "artist" => &self.cached_artists,
+            "genre" => &self.cached_genres,
+            _ => &self.cached_folders,
+        };
+        let generation = self.library_gen();
+        if let Ok(guard) = cache.lock()
             && let Some((cached_gen, cached)) = guard.as_ref()
-            && *cached_gen == self.tracks_cache_gen
+            && *cached_gen == generation
         {
             return cached.clone();
         }
-        let mut albums: std::collections::BTreeMap<String, usize> =
+        let mut counts: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
-        for t in &self.tracks_cache {
-            let key = if t.album.is_empty() {
-                "Unknown Album".into()
-            } else {
-                t.album.clone()
+        for t in self.library_tracks() {
+            let value = match field {
+                "album" => &t.album,
+                "artist" => &t.artist,
+                _ => &t.genre,
             };
-            *albums.entry(key).or_insert(0) += 1;
+            let key = if value.is_empty() {
+                match field {
+                    "album" => "Unknown Album".to_string(),
+                    "artist" => "Unknown Artist".to_string(),
+                    _ => "Unknown Genre".to_string(),
+                }
+            } else {
+                value.clone()
+            };
+            *counts.entry(key).or_insert(0) += 1;
         }
-        let out: Vec<(String, usize)> = albums.into_iter().collect();
-        if let Ok(mut guard) = self.cached_albums.lock() {
-            *guard = Some((self.tracks_cache_gen, out.clone()));
+        let out: Vec<(String, usize)> = counts.into_iter().collect();
+        if let Ok(mut guard) = cache.lock() {
+            *guard = Some((generation, out.clone()));
         }
         out
+    }
+
+    /// Generation the grouped-row caches are valid for.
+    ///
+    /// `tracks_cache_gen` alone is not enough now that the groupings read
+    /// `library_tracks()`: a playlist sync changes the union without replacing
+    /// `tracks_cache`, so a cached album list outlived the rows it counted and
+    /// the counts went stale until the next scan. Folding the union's own length
+    /// in makes a change to either half invalidate them.
+    pub(crate) fn library_gen(&self) -> u64 {
+        self.tracks_cache_gen
+            .wrapping_mul(1_000_003)
+            .wrapping_add(self.playlist_tracks.len() as u64)
     }
 
     /// Length of the list currently visible in the library right pane,
@@ -942,51 +983,11 @@ impl App {
 
     /// Unique artist names with track counts, sorted by artist.
     pub fn unique_artists(&self) -> Vec<(String, usize)> {
-        if let Ok(guard) = self.cached_artists.lock()
-            && let Some((cached_gen, cached)) = guard.as_ref()
-            && *cached_gen == self.tracks_cache_gen
-        {
-            return cached.clone();
-        }
-        let mut artists: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        for t in &self.tracks_cache {
-            let key = if t.artist.is_empty() {
-                "Unknown Artist".into()
-            } else {
-                t.artist.clone()
-            };
-            *artists.entry(key).or_insert(0) += 1;
-        }
-        let out: Vec<(String, usize)> = artists.into_iter().collect();
-        if let Ok(mut guard) = self.cached_artists.lock() {
-            *guard = Some((self.tracks_cache_gen, out.clone()));
-        }
-        out
+        self.grouped_by("artist")
     }
 
     pub fn unique_genres(&self) -> Vec<(String, usize)> {
-        if let Ok(guard) = self.cached_genres.lock()
-            && let Some((cached_gen, cached)) = guard.as_ref()
-            && *cached_gen == self.tracks_cache_gen
-        {
-            return cached.clone();
-        }
-        let mut genres: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        for t in &self.tracks_cache {
-            let key = if t.genre.is_empty() {
-                "Unknown Genre".into()
-            } else {
-                t.genre.clone()
-            };
-            *genres.entry(key).or_insert(0) += 1;
-        }
-        let out: Vec<(String, usize)> = genres.into_iter().collect();
-        if let Ok(mut guard) = self.cached_genres.lock() {
-            *guard = Some((self.tracks_cache_gen, out.clone()));
-        }
-        out
+        self.grouped_by("genre")
     }
 
     /// The track a grouped row at `pos` stands for: the first track of the
@@ -1002,8 +1003,8 @@ impl App {
     pub fn group_representative(&self, pos: usize) -> Option<&TrackInfo> {
         let filter = self.library_filter;
         let name = self.library_groups_of(filter).get(pos)?.0.clone();
-        self.tracks_cache
-            .iter()
+        self.library_tracks()
+            .into_iter()
             .find(|t| Self::group_key(filter, t) == name)
     }
 
@@ -1035,6 +1036,12 @@ impl App {
         }
     }
 
+    /// One row per directory holding at least one local track.
+    ///
+    /// Deliberately *not* [`Self::grouped_by`]'s `library_tracks()`: a remote
+    /// row has no local directory, so counting them would file every synced
+    /// track under a "spotify:track:..." pseudo-folder. Folders is a view of the
+    /// filesystem, and the filesystem is the local library.
     pub fn unique_folders(&self) -> Vec<(String, usize)> {
         if let Ok(guard) = self.cached_folders.lock()
             && let Some((cached_gen, cached)) = guard.as_ref()
