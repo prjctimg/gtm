@@ -937,8 +937,14 @@ impl DaemonReq {
                 }
             }
             "toggle_fav_uri" => {
-                let x: TrackInfo = p(params)?;
-                DaemonReq::ToggleFavUri { track: Box::new(x) }
+                #[derive(Deserialize)]
+                struct Params {
+                    track: TrackInfo,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::ToggleFavUri {
+                    track: Box::new(x.track),
+                }
             }
             "yt_search" => {
                 #[derive(Deserialize)]

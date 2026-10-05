@@ -16,7 +16,6 @@ use crate::ui::*;
 // survivors on the wrong glyphs.
 pub(crate) const LIBRARY_ICONS_NERD: &[&str] = &[
     "\u{f001}",  // Library: nf-md-music_note
-    "\u{f004}",  // Liked: nf-md-heart
     "\u{f03a}",  // Playlists: nf-md-playlist_music
     "\u{f04c7}", // Spotify
     "\u{f0439}", // Radio: nf-md-radio (official MDI)
@@ -24,7 +23,7 @@ pub(crate) const LIBRARY_ICONS_NERD: &[&str] = &[
     "\u{f0994}", // Podcasts: nf-md-podcast (same glyph as provider_icon)
 ];
 
-pub(crate) const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "♥", "≡", "☊", "◉", "#", "◉"];
+pub(crate) const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "≡", "☊", "◉", "#", "◉"];
 
 pub(crate) fn use_nerd_fonts() -> bool {
     !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")

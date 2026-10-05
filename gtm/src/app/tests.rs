@@ -209,17 +209,17 @@ fn stale_left_pane_lists_keep_known_categories() {
         out,
         vec![
             "Library".to_string(),
-            "Liked".to_string(),
+            "Playlists".to_string(),
             "Spotify".to_string()
         ],
-        "the four merged list names must collapse to the one row that replaced them"
+        "the merged list names must collapse to the row that replaced them"
     );
     // Folders made the same move a view further along, so a config naming it
     // keeps the Library row rather than losing the list.
     let out = clean_left_pane(&["Folders".to_string(), "Liked".to_string()]);
     assert_eq!(
         out,
-        vec!["Library".to_string(), "Liked".to_string()],
+        vec!["Library".to_string(), "Playlists".to_string()],
         "a config naming Folders must keep the row that replaced it"
     );
     // The three history lists have no left-pane row at all, so naming one is a

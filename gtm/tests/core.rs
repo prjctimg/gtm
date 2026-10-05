@@ -1298,6 +1298,9 @@ const REQUEST_SOURCES: &str = concat!(
     include_str!("../src/shared/ipc.rs"),
     "\n",
     include_str!("../src/shared/state.rs"),
+    // `TrackInfo` is declared here, and a request carries one whole.
+    "\n",
+    include_str!("../src/shared/track.rs"),
 );
 
 /// Bodies of every `struct <name> { ... }` in [`REQUEST_SOURCES`], brace
@@ -1355,7 +1358,16 @@ fn fields_of(body: &str) -> Vec<ParamField> {
         let Some((name, ty)) = line.split_once(':') else {
             continue;
         };
-        let (name, ty) = (name.trim(), ty.trim().trim_end_matches(','));
+        // `pub id: i64` is a field named `id`, not one named `pub id` -- and the
+        // visibility is what the lowercase check below would trip over, which is
+        // why every field it had ever read came from a private `Params` struct.
+        let name = name
+            .trim()
+            .strip_prefix("pub(crate) ")
+            .or_else(|| name.trim().strip_prefix("pub "))
+            .unwrap_or(name.trim())
+            .trim();
+        let (name, ty) = (name, ty.trim().trim_end_matches(','));
         // `#[serde(default)] fn ...` lines and stray attributes slip
         // through the naive split; a field name is always lowercase.
         let valid = !name.is_empty()
@@ -1480,6 +1492,10 @@ fn sample_for(ty: &str, depth: usize) -> serde_json::Value {
             vec![sample_for(inner, depth - 1)]
         });
     }
+    // `Box` is a pointer, not a shape: the wire sees the value inside it.
+    if let Some(inner) = ty.strip_prefix("Box<").and_then(|r| r.strip_suffix('>')) {
+        return sample_for(inner, depth);
+    }
     match ty {
         "String" | "&str" | "PathBuf" => return Value::String(String::new()),
         "bool" => return Value::Bool(false),
@@ -1495,6 +1511,20 @@ fn sample_for(ty: &str, depth: usize) -> serde_json::Value {
     // variant decodes from a bare string; a struct variant from an object that
     // is either externally tagged (`{"scan": {...}}`) or internally tagged
     // (`{"action": "scan", ...}`) depending on the enum's attributes.
+    // A struct the wire sees whole: every declared field, sampled by its own
+    // type. `TrackInfo` is the only one, and it is the reason -- a request that
+    // carries a track row cannot be round-tripped if `sample_for` cannot build
+    // one.
+    if let Some(body) = struct_bodies(REQUEST_SOURCES, ty).into_iter().next() {
+        let mut obj = serde_json::Map::new();
+        for f in fields_of(body) {
+            if f.name == "$tag" {
+                continue;
+            }
+            obj.insert(f.name, sample_for(&f.ty, depth - 1));
+        }
+        return serde_json::Value::Object(obj);
+    }
     let Some(meta) = enum_meta(REQUEST_SOURCES, ty) else {
         return Value::Null;
     };
@@ -2516,9 +2546,13 @@ fn the_palette_has_no_unreachable_or_unlabelled_rows() {
         dup_arms.is_empty(),
         "two dispatch arms for one palette row, so the second is unreachable: {dup_arms:?}"
     );
+    // Only rows that name a key. The keyless ones share an empty column on
+    // purpose -- they are the Spotify transport rows, reachable by palette alone
+    // -- and are covered by the label assertion below.
     let dup_rows: Vec<String> = rows
         .iter()
         .map(|(_, key)| key)
+        .filter(|key| !key.is_empty())
         .filter(|key| rows.iter().filter(|(_, other)| other == *key).count() > 1)
         .cloned()
         .collect();
@@ -3499,15 +3533,19 @@ fn the_lyrics_pane_carries_no_chrome() {
 
     // One call site shape, so neither layout can reintroduce a fit-dependent
     // header by way of the argument that used to select it.
+    for call in [
+        "Render::lyrics_pane(f, lyrics_area, app)",
+        "Render::lyrics_pane(f, base, app)",
+    ] {
+        assert!(
+            chrome.contains(call),
+            "the lyrics pane is no longer called without a layout argument: {call}"
+        );
+    }
     assert_eq!(
-        chrome
-            .matches("Render::lyrics_pane(f, lyrics_area, app)")
-            .count()
-            + chrome
-                .matches("Render::lyrics_pane(f, lyrics, app)")
-                .count(),
+        chrome.matches("Render::lyrics_pane(f, ").count(),
         2,
-        "the lyrics pane is no longer called without a layout argument"
+        "a third lyrics-pane call site appeared, and nothing says which layout it is for"
     );
     assert!(
         !chrome.contains("LyricsFit"),
@@ -3741,7 +3779,7 @@ fn narrow_docks_the_card_and_the_list_yields_its_rows() {
 
     assert!(
         squish(chrome).contains(&squish(
-            "let dock_card = is_narrow && !lyrics_results_pane && app.show_preview && app.track_popup_visible;"
+            "let dock_card = is_narrow && !lyrics_in_lib && app.show_preview && app.track_popup_visible;"
         )),
         "the docked card is not gated to narrow screens with the list on screen"
     );
@@ -4601,10 +4639,17 @@ fn the_grid_refuses_where_it_cannot_work() {
     let cover = include_str!("../src/app/cover.rs");
     let chrome = include_str!("../src/ui/chrome.rs");
 
-    let at = keys
-        .find("Some(KeyboardAction::ToggleGrid) =>")
-        .expect("the grid toggle moved");
-    let block = &keys[at..(at + 1800).min(keys.len())];
+    // The refusals are one method now, because the key and the palette row are
+    // one command. Inline in the key's arm the palette row had no way to reach
+    // them, and the two answers could drift.
+    assert!(
+        keys.contains("if !self.grid_ready() {"),
+        "the grid key does not ask whether the grid can be shown"
+    );
+    let at = cover
+        .find("pub fn grid_ready(&mut self) -> bool {")
+        .expect("grid_ready is gone: the refusals are back inside the key's arm");
+    let block = &cover[at..(at + 1200).min(cover.len())];
     assert!(
         block.contains("!self.group_row()"),
         "the grid is offered on a list with no covers to show"
