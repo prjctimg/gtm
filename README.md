@@ -1,16 +1,12 @@
 # [gtm](https://gtmd.dev) 📻
 
-
 [![Crates.io](https://img.shields.io/crates/v/gtm)](https://crates.io/crates/gtm)
 [![Crates.io downloads](https://img.shields.io/crates/d/gtm)](https://crates.io/crates/gtm)
 [![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
 [![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm/ci.yml?label=CI)](https://github.com/prjctimg/gtm/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/prjctimg/gtm)](https://github.com/prjctimg/gtm/blob/main/LICENSE)
 
-
-
 ![](./screenshots/1.png)
-
 
 `gtm` is a reimagined audio player built for terminal enthusiasts.
 
@@ -22,7 +18,6 @@
 - [Contributing](#contributing)
 - [Acknowledgements](#acknowledgements)
 - [Contributors](#contributors)
-
 
 ## Features
 
@@ -64,9 +59,7 @@ curl -fsSL https://gtmd.dev/install.sh | bash -s -- --nightly
 
 Or grab an archive [releases page](https://github.com/prjctimg/gtm/releases/latest), extract it, and run the `./install.sh` in its directory
 
-
 See [CONTRIBUTING](./CONTRIBUTING.md#build-from-source) for more installation routes.
-
 
 ## Documentation
 
@@ -85,7 +78,6 @@ See [the contributing guide](CONTRIBUTING.md) & [the Code of Conduct](CODE_OF_CO
 ---
 
 ## Acknowledgements
-
 
 ![](./logo.png)
 
