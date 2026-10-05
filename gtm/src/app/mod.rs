@@ -925,7 +925,6 @@ pub enum TuiCommand {
         title: Option<String>,
         artist: Option<String>,
     },
-    YtResolve(String),
     SetEqPreset(EqPreset),
     Search(String),
     AddFavourite(i64),

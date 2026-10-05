@@ -3470,8 +3470,26 @@ impl App {
                                     let query = self.yt_results_cache[idx].url.clone();
                                     let _ = tx.send(TuiCommand::YtSearch(query)).await;
                                 } else {
+                                    // Play the row, rather than resolving it and
+                                    // dropping the answer. `YtResolve` answered
+                                    // with the extracted CDN URL and the handler
+                                    // discarded it, so Enter on a search result
+                                    // spent a yt-dlp run and did nothing visible.
+                                    // `play_stream` is the same resolve the
+                                    // daemon does for Alt+O: it labels the queue
+                                    // row from the extractor's title and starts
+                                    // playback, and the row keeps the page URL so
+                                    // a later replay re-resolves instead of
+                                    // replaying an expired CDN link.
                                     let url = self.yt_results_cache[idx].url.clone();
-                                    let _ = tx.send(TuiCommand::YtResolve(url)).await;
+                                    self.pickers.close_top();
+                                    let c = self.client.clone();
+                                    let ipc_tx2 = self.ipc_tx.clone();
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
+                                        if let Err(e) = c.play_stream(&url).await {
+                                            self_err(&ipc_tx2, format!("yt-dlp: {e}"));
+                                        }
+                                    }));
                                 }
                             } else {
                                 // Initiate a new search
@@ -4263,7 +4281,17 @@ impl App {
                 if !self.yt_results_cache.is_empty() {
                     let url = self.yt_results_cache[idx].url.clone();
                     if self.yt_results_cache[idx].is_playlist {
-                        let _ = tx.send(TuiCommand::YtResolve(url)).await;
+                        // A playlist URL cannot be queued as itself -- nothing
+                        // can play a playlist -- so it drills in the same way
+                        // Enter does, and the entries come back as a result
+                        // list. `YtResolve` on a playlist was the old answer,
+                        // and it resolved the URL and then discarded the result,
+                        // which is why this key did nothing at all.
+                        if let Some(top) = self.pickers.top_mut() {
+                            top.query = url.clone();
+                        }
+                        let _ = tx.send(TuiCommand::YtSearch(url)).await;
+                        let _ = tx.send(TuiCommand::RefreshYt).await;
                     } else {
                         let _ = tx.send(TuiCommand::QueueAdd(url)).await;
                     }

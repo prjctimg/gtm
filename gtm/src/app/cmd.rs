@@ -316,13 +316,6 @@ impl App {
                     ));
                 });
             }
-            TuiCommand::YtResolve(u) => {
-                tokio::spawn(async move {
-                    if let Err(e) = client.yt().resolve_stream(&u).await {
-                        error_handler2(e);
-                    }
-                });
-            }
             TuiCommand::SetEqPreset(preset) => {
                 tokio::spawn(async move {
                     if let Err(e) = client.set_eq_preset(preset).await {

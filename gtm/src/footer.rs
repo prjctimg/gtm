@@ -899,6 +899,17 @@ pub(crate) fn classify_remote_source(path: &str) -> Option<(&'static str, &'stat
 /// and bare `http(s)://` stream URLs (LoadStream). These have no track
 /// length, so progress timestamps and progress bars must not be rendered.
 pub(crate) fn is_live_stream(path: &str) -> bool {
+    // A yt-dlp extractor URL is on-demand whatever the host. `classify_remote_
+    // source` names SoundCloud, Bandcamp and the rest after the provider, and
+    // only a bare `http(s)://` stream falls through to the Radio/Stream pair --
+    // so asking it first is what keeps a three-minute SoundCloud track from
+    // being drawn with no progress bar and no seek.
+    if path.starts_with("http://") || path.starts_with("https://") {
+        if let Some(label) = ytdlp_label(path) {
+            let _ = label;
+            return false;
+        }
+    }
     path.starts_with("radio://") || matches!(classify_remote_source(path), Some(("Radio", _)))
 }
 

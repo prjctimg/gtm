@@ -417,9 +417,54 @@ impl Cmd {
             // a `spotify:` uri that cannot stream natively, and what resolved is
             // an ordinary path. Without the box the two futures are mutually
             // recursive and neither gets a size.
-            Ok(path) => Box::pin(Self::play(inner, &path, start_pos, auto_advanced)).await,
+            Ok(path) => {
+                // Carry the resolved Spotify metadata onto the local file the
+                // download produced, and write its cover into the row.
+                //
+                // The download lands in the cache as `spotify-web-<id>.m4a`, a
+                // filename that names nothing: no title, no artist, no album.
+                // So the row the user sees is whatever the tag reader makes of
+                // that name, and the cover and the lyrics -- which both key off
+                // title/artist, and both of which the web API just answered --
+                // have nothing to work with. This is the offline-playback path
+                // the fallback exists for, so it is exactly where losing the
+                // metadata costs the most.
+                Self::adopt_metadata(&path, &meta);
+                Self::warm_spotify_cover(inner, uri_path, &meta).await;
+                Box::pin(Self::play(inner, &path, start_pos, auto_advanced)).await
+            }
             Err(message) => Ok(DaemonRes::Error { message }),
         }
+    }
+
+    /// Write the resolved Spotify metadata into the downloaded file's tags.
+    ///
+    /// Best effort by design: a read-only cache directory or an unwritable tag
+    /// must not stop the track playing, so every failure is logged and dropped.
+    /// The alternative -- leaving the tags as the filename says -- is a playing
+    /// track with no title in any pane, which is the state this avoids.
+    fn adopt_metadata(path: &str, meta: &OwnedMeta) {
+        let tags = MetadataToWrite {
+            title: meta.title.clone(),
+            artist: meta.artist.clone(),
+            album: meta.album.clone(),
+            genre: None,
+            year: None,
+            track_number: None,
+        };
+        if let Err(e) = write_tags(path, &tags, None) {
+            warn!("yt-dlp fallback: tagging {path} failed: {e}");
+        }
+    }
+
+    /// Warm the cover for a fallback row, so the pane that plays it has art
+    /// without a second lookup -- and, more to the point, so the row's
+    /// `cover_path` is set before `PlaybackStarted` is broadcast. A cover
+    /// written after that event races the client's first request, which is how a
+    /// resolved Spotify track played with the placeholder instead of its sleeve.
+    async fn warm_spotify_cover(inner: &DaemonInner, uri_path: &str, meta: &OwnedMeta) {
+        let borrowed: StreamMeta<'_> = meta.into();
+        Spotify::warm_cover(inner, uri_path, &borrowed).await;
     }
 
     /// Play a `spotify:track:<id>` URI through the librespot streaming
@@ -696,6 +741,30 @@ impl Cmd {
 const STREAM_SNIFF_BYTES: usize = 256 * 1024;
 
 impl Cmd {
+    /// The four fields a resolved yt-dlp row is labelled with.
+    ///
+    /// The title comes from the extractor, the provider from the host, and the
+    /// duration from a probe of the resolved stream when it can be read cheaply.
+    /// Duration is what turns a URL row into a track row: without it the pane
+    /// has no progress bar and `is_live_stream` has nothing to contradict.
+    fn label_ytdlp_row(url: &str, title: &str, label: &str) -> (String, String, String, f64) {
+        // `decode_file` hands back the decoded source, whose `total_duration` is
+        // the length of the *stream*, not the track: a radio stream reports none
+        // and a VOD URL reports its whole length, which is what a progress bar
+        // needs. It is only a label, so a failure is not fatal here.
+        let duration = AudioMixer::decode_file(url)
+            .map(|src| src.total_duration().map_or(0.0, |d| d.as_secs_f64()))
+            .unwrap_or(0.0);
+        (
+            title.to_string(),
+            label.to_string(),
+            label.to_string(),
+            duration,
+        )
+    }
+}
+
+impl Cmd {
     /// Play a raw HTTP(S) stream URL, transparently resolving M3U/PLS
     /// playlists fetched from the URL. Remaining playlist entries stay in the
     /// queue so `next` rotates through them.
@@ -711,22 +780,33 @@ impl Cmd {
                     let yt = inner.youtube.lock().await;
                     yt.yt_extras()
                 };
-                let (title, direct) =
+                let (title, _direct) =
                     match crate::youtube::resolve_info_ytdlp(&sem, &gate, &auth, url).await {
                         Ok(v) => v,
                         Err(e) => return Ok(DaemonRes::Error { message: e }),
                     };
+                // The queue row keeps the *page* URL, not the CDN URL the
+                // extractor just handed back. A googlevideo URL carries an
+                // `expire` parameter and answers 403 an hour later, so a row
+                // holding one plays once and then fails — and because the path
+                // is then a bare http URL, `parse_remote_path` classified it as
+                // an endless stream: no duration, no progress bar, no seeking,
+                // and ICY titles read as the track name. Holding the page URL
+                // keeps the row a `YtDlp` remote, which re-resolves on every
+                // play and is on-demand by construction.
+                let (title, artist, album, duration) = Self::label_ytdlp_row(url, &title, label);
                 {
                     let mut state = inner.state.write().await;
                     state.queue.push(TrackInfo {
-                        path: direct.clone(),
+                        path: url.to_string(),
                         title,
-                        artist: label.to_string(),
-                        album: label.to_string(),
+                        artist,
+                        album,
+                        duration,
                         ..Default::default()
                     });
                 }
-                return Cmd::play(inner, &direct, 0.0, false).await;
+                return Cmd::play(inner, url, 0.0, false).await;
             }
             #[cfg(not(feature = "youtube"))]
             {
@@ -3810,6 +3890,14 @@ impl Daemon {
             return true;
         }
         if path.starts_with("http://") || path.starts_with("https://") {
+            // A yt-dlp extractor URL is on-demand whatever the host: a
+            // SoundCloud track is as finite as a YouTube one, and this test
+            // read `!is_youtube` so every non-YouTube extractor URL counted as
+            // endless. The row kept no duration, so the pane drew no progress
+            // bar and no seek was offered for a three-minute track.
+            if ytdlp_label(path).is_some() {
+                return false;
+            }
             return !is_youtube(path);
         }
         false
