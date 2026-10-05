@@ -2301,6 +2301,21 @@ fn palette_hints_all_have_a_dispatch_arm() {
 /// explanation, while `"prev tab"` had an arm and no row — a dispatch nothing
 /// could reach. The first is a presentational problem the column fix handles;
 /// the second is unreachable code, which only a check catches.
+/// Every `action == "..."` string in the palette dispatcher, in source order.
+///
+/// A free function so the counts below and the reachability check read the
+/// source once, the same way: a change that moves an arm and a row together
+/// would otherwise slip between two independent parsers of it.
+fn arms_in(keys: &str) -> Vec<&str> {
+    keys.match_indices("action == \"")
+        .map(|(i, _)| {
+            let start = i + "action == \"".len();
+            let end = keys[start..].find('"').map_or(keys.len(), |n| start + n);
+            &keys[start..end]
+        })
+        .collect()
+}
+
 #[test]
 fn the_palette_has_no_unreachable_or_unlabelled_rows() {
     let palette = include_str!("../src/ui/command.rs");
@@ -2331,14 +2346,7 @@ fn the_palette_has_no_unreachable_or_unlabelled_rows() {
             rest.strip_suffix("\",")
         })
         .collect();
-    let arms: Vec<&str> = keys
-        .match_indices("action == \"")
-        .map(|(i, _)| {
-            let start = i + "action == \"".len();
-            let end = keys[start..].find('"').map_or(keys.len(), |n| start + n);
-            &keys[start..end]
-        })
-        .collect();
+    let arms = arms_in(keys);
     let orphans: Vec<&str> = arms
         .iter()
         .copied()
@@ -2347,6 +2355,29 @@ fn the_palette_has_no_unreachable_or_unlabelled_rows() {
     assert!(
         orphans.is_empty(),
         "dispatch arms for hints no palette row declares: {orphans:?}"
+    );
+
+    // The other direction, and the multiplicities. Containment cannot see a
+    // duplicate: two arms for one row still satisfy "every arm has a row", and
+    // two rows for one arm still satisfy "every row has an arm". Nothing notices
+    // except counting both sides.
+    let dup_arms: Vec<&&str> = arms
+        .iter()
+        .filter(|a| arms.iter().filter(|b| *b == *a).count() > 1)
+        .collect();
+    assert!(
+        dup_arms.is_empty(),
+        "two dispatch arms for one palette row, so the second is unreachable: {dup_arms:?}"
+    );
+    let dup_rows: Vec<String> = rows
+        .iter()
+        .map(|(_, key)| key)
+        .filter(|key| rows.iter().filter(|(_, other)| other == *key).count() > 1)
+        .cloned()
+        .collect();
+    assert!(
+        dup_rows.is_empty(),
+        "two palette rows share one key column, so they read as one row: {dup_rows:?}"
     );
 
     // A keyless row is only defensible while its label says what it is. The

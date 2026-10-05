@@ -965,11 +965,9 @@ impl<'a> Yt<'a> {
         self.client.send_raw(DaemonReq::YtDownloadPoll).await
     }
 
-    /// Cancel the current daemon-side download.
-    pub async fn cancel_download(&self, url: String) -> Result<()> {
-        self.client
-            .send_ok(DaemonReq::YtCancelDownload { url })
-            .await
+    /// Cancel the download in flight, whichever row asked for it.
+    pub async fn cancel_download(&self) -> Result<()> {
+        self.client.send_ok(DaemonReq::YtCancelDownload).await
     }
 
     /// Poll for a finished playlist fetch.

@@ -170,7 +170,7 @@ impl App {
                         let deadline = std::time::Instant::now() + Duration::from_secs(600);
                         let file_path = loop {
                             if std::time::Instant::now() > deadline {
-                                let _ = client2.yt().cancel_download(url.clone()).await;
+                                let _ = client2.yt().cancel_download().await;
                                 return "Download timed out".to_string();
                             }
                             let res = match client2.yt().download_poll().await {

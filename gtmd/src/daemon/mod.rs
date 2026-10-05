@@ -3103,7 +3103,7 @@ impl Daemon {
                     ))
                 }
             }
-            DaemonReq::YtCancelDownload { url: _ } => {
+            DaemonReq::YtCancelDownload => {
                 #[cfg(feature = "youtube")]
                 {
                     let mut yt = inner.youtube.lock().await;

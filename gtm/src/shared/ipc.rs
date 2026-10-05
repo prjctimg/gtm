@@ -307,9 +307,15 @@ pub enum DaemonReq {
         channel: Option<String>,
     },
     YtDownloadPoll,
-    YtCancelDownload {
-        url: String,
-    },
+    /// Cancel the download in flight.
+    ///
+    /// No url, because there is only ever one: the provider manager holds a
+    /// single cancel channel and a single task. The request used to carry a url
+    /// the daemon ignored (`url: _`) while the client believed it had targeted
+    /// a particular row -- so cancelling the second of two downloads killed the
+    /// first. A request that means what it says beats one that carries a field
+    /// to look precise with.
+    YtCancelDownload,
     YtFetchPlaylist {
         url: String,
     },
@@ -619,7 +625,7 @@ impl DaemonReq {
             DaemonReq::YtResolveStream { .. } => "yt_resolve_stream",
             DaemonReq::YtDownload { .. } => "yt_download",
             DaemonReq::YtDownloadPoll => "yt_download_poll",
-            DaemonReq::YtCancelDownload { .. } => "yt_cancel_download",
+            DaemonReq::YtCancelDownload => "yt_cancel_download",
             DaemonReq::YtFetchPlaylist { .. } => "yt_fetch_playlist",
             DaemonReq::YtFetchPlaylistPoll => "yt_playlist_poll",
             DaemonReq::YtSetConfig { .. } => "yt_set_config",
@@ -968,14 +974,7 @@ impl DaemonReq {
                     channel: x.channel,
                 }
             }
-            "yt_cancel_download" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    url: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::YtCancelDownload { url: x.url }
-            }
+            "yt_cancel_download" => DaemonReq::YtCancelDownload,
             "yt_fetch_playlist" => {
                 #[derive(Deserialize)]
                 struct Params {
