@@ -2347,7 +2347,7 @@ fn every_advertised_key_is_the_key_that_is_bound() {
     for (label, key, _) in &entries {
         for want in key_fragment(key) {
             if let Some((_, other)) = seen.iter().find(|(k, _)| *k == want) {
-                assert!(false, "{label} and {other} both advertise {want}");
+                panic!("{label} and {other} both advertise {want}");
             }
             seen.push((want, label.clone()));
         }

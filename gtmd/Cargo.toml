@@ -34,7 +34,7 @@ debug-fail = ["gtm/debug-fail"]
 # `gtmd` sat on crates.io at 0.2.83 while `gtm` moved to 0.2.84. `scripts/build/
 # publish.sh` checks the two version strings against each other before it
 # uploads anything.
-gtm = { version = "0.2.87", path = "../gtm" }
+gtm = { version = "0.2.88", path = "../gtm" }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
