@@ -134,18 +134,33 @@ impl Queue {
                 // before writing the row, because a queue that shows
                 // "Spotify Track" for everything is what this replaced.
                 let mut tracks = tracks.clone();
-                for track in tracks.iter_mut() {
-                    if !track.path.starts_with("spotify:") || is_labelled(track) {
-                        continue;
-                    }
-                    if let Some(meta) = Spotify::uri_meta(inner, &track.path).await {
-                        let borrowed: StreamMeta<'_> = (&meta).into();
-                        track.title = borrowed.title.to_string();
-                        track.artist = borrowed.artist.to_string();
-                        track.album = borrowed.album.to_string();
-                        track.duration = borrowed.duration.unwrap_or(track.duration);
-                        track.cover_url = borrowed.image_url.map(str::to_string);
-                    }
+                //
+                // Concurrently, because this is the whole cost of the request and
+                // the caller is waiting to play something. One web call per
+                // unlabelled row, run one after the other, is N round trips
+                // before the first sample -- and it is all under the daemon's
+                // exclusive lock, so every cover request in the app is refused
+                // for the duration. The client sends this immediately before
+                // `Play`, so that is the delay between the keypress and audio.
+                let bare: Vec<(usize, String)> = tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.path.starts_with("spotify:") && !is_labelled(t))
+                    .map(|(i, t)| (i, t.path.clone()))
+                    .collect();
+                let fetched = futures::future::join_all(
+                    bare.iter().map(|(_, path)| Spotify::uri_meta(inner, path)),
+                )
+                .await;
+                for ((at, _), meta) in bare.iter().zip(fetched) {
+                    let Some(meta) = meta else { continue };
+                    let track = &mut tracks[*at];
+                    let borrowed: StreamMeta<'_> = (&meta).into();
+                    track.title = borrowed.title.to_string();
+                    track.artist = borrowed.artist.to_string();
+                    track.album = borrowed.album.to_string();
+                    track.duration = borrowed.duration.unwrap_or(track.duration);
+                    track.cover_url = borrowed.image_url.map(str::to_string);
                 }
                 // Tag reads and directory walks are blocking, so the rows the
                 // caller did not label are resolved off the async thread.

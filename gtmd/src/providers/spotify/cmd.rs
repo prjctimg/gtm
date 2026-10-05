@@ -767,8 +767,6 @@ impl Spotify {
             drop(state);
             w
         };
-        Self::warm_cover(inner, uri, &meta).await;
-
         // Start playback reliably: on an empty queue, and always when the
         // caller asked to play (Enter) — `Cmd::play` stops the current source
         // first, so switching from another source is smooth. A rejected
@@ -779,6 +777,17 @@ impl Spotify {
         {
             return Ok(DaemonRes::Error { message });
         }
+
+        // The artwork, after the audio rather than before it.
+        //
+        // This used to run first, and it is not a cheap step: it takes the
+        // daemon-wide cover-cache mutex across a Spotify CDN fetch, a 500x500
+        // re-encode and a disk write, and every eighth write walks both cover
+        // directories to prune them. Audio waited for all of that. The row
+        // already carries its metadata, so the warm is only needed to give the
+        // client a `cover_path` to read, and a cover that arrives one frame
+        // after the audio is a cover that arrives.
+        Self::warm_cover(inner, uri, &meta).await;
 
         Daemon::push_queue_state(inner).await;
         Daemon::save_state(inner);
@@ -1044,6 +1053,30 @@ impl Spotify {
         // Clone the client before touching the cover cache: the cache guard
         // must never be alive while the Spotify manager is locked, or this and
         // `Cover::artist` acquire the two in opposite orders and deadlock.
+        // Cache first, and only then the account.
+        //
+        // The link check used to come first and answered `spotify not linked`
+        // outright, without touching the cache -- so a row whose image was
+        // already on disk, written by the left pane's own URL fetch or by a
+        // previous link, still showed nothing. The cache is keyed on the image
+        // URL, which is the same URL this endpoint is asked about, so the two
+        // paths converge on one file: there is nothing to be gained by asking
+        // the provider for something already downloaded.
+        //
+        // The guard is dropped before the manager is locked: the two are taken in
+        // opposite orders elsewhere and holding both deadlocks.
+        let hit = {
+            let cache = inner.cover_cache().await;
+            match cache.as_ref() {
+                Some(cc) => cc.get_url(image_url, || async { None::<Vec<u8>> }).await,
+                None => None,
+            }
+        };
+        if let Some(cd) = hit {
+            return Ok(DaemonRes::SpotifyImageRes {
+                data: Some(base64::engine::general_purpose::STANDARD.encode(&cd.data)),
+            });
+        }
         let client = match linked(inner).await {
             Ok(client) => client,
             Err(res) => return Ok(*res),
