@@ -2332,7 +2332,7 @@ fn every_advertised_key_is_the_key_that_is_bound() {
         // A keyless row is a palette-only command by construction; the
         // reachability test covers those.
         for want in key_fragment(key) {
-            let ok = bound(keymap, &want);
+            let ok = bound(keymap, want);
             assert!(
                 ok,
                 "{label} advertises {key}, and keymap.rs does not bind it (hint {hint:?})"
