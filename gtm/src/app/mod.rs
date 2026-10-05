@@ -963,7 +963,11 @@ pub enum TuiCommand {
     Search(String),
     AddFavourite(i64),
     /// Favourite toggle for a provider row, which carries no library id.
-    ToggleFavUri(TrackInfo),
+    ///
+    /// Boxed: `TrackInfo` is the widest thing this enum could carry and the rest
+    /// of it is a `String` or nothing, so every command in the channel paid for
+    /// a whole track row to move a keypress.
+    ToggleFavUri(Box<TrackInfo>),
     RemoveFavourite(i64),
     Refresh,
     RefreshLibrary,

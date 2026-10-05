@@ -732,7 +732,7 @@ impl App {
                         // what the daemon has to store, and it has no row to
                         // read any of it back from.
                         for t in rows.iter() {
-                            let _ = tx.send(TuiCommand::ToggleFavUri(t.clone())).await;
+                            let _ = tx.send(TuiCommand::ToggleFavUri(Box::new(t.clone()))).await;
                         }
                         if !label.is_empty() {
                             let verb = if new_fav { "added to" } else { "removed from" };
