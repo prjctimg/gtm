@@ -2349,15 +2349,26 @@ fn the_palette_has_no_unreachable_or_unlabelled_rows() {
         "dispatch arms for hints no palette row declares: {orphans:?}"
     );
 
-    // A keyless row is only defensible while its label says it is reachable by
-    // palette alone.
-    for (label, key) in &rows {
-        if key.is_empty() {
-            assert!(
-                !label.contains("Device"),
-                "{label} has no key and does not say it is palette-only"
-            );
-        }
+    // A keyless row is only defensible while its label says what it is. The
+    // four Connect-device rows sit beside `Next Track` / `Prev Track` /
+    // `Shuffle Library` / `Repeat Mode`, which drive the *local* queue, so an
+    // unlabelled "Spotify Next" was indistinguishable from them at a glance --
+    // and with no key column to read, indistinguishable from a broken row.
+    // The "Device:" prefix is what distinguishes them.
+    let keyless: Vec<&String> = rows
+        .iter()
+        .filter(|(_, k)| k.is_empty())
+        .map(|(label, _)| label)
+        .collect();
+    assert!(
+        !keyless.is_empty(),
+        "the keyless Spotify transport rows are gone: check the Connect controls moved"
+    );
+    for label in keyless {
+        assert!(
+            label.contains("Device"),
+            "{label} has no key and nothing in its label says what it acts on"
+        );
     }
 }
 
@@ -3370,9 +3381,20 @@ fn now_playing_starts_at_the_results_column() {
     // the title, artist, album and progress need. The reserve is 16 rather than
     // 20: 20 sent two thirds of a narrow band's height to the title block, and
     // at a 1:2 aspect those two columns are a whole extra row of artwork.
+    //
+    // The clamp is on the *width*, after it is derived from the height. Folding
+    // the reserve into the height instead -- `cover_h.min((width - 16) / 2)` --
+    // is the same arithmetic with the aspect ratio inverted, and on a
+    // single-column band it pinned the artwork to three rows in the corner
+    // while thirty columns went to a text block that needs sixteen.
     assert!(
-        chrome.contains("let cover_h = cover_h.min(inner.width.saturating_sub(16) / 2).max(3);"),
+        chrome.contains("let reserved = inner.width.saturating_sub(16);")
+            && chrome.contains("if cover_w > reserved {"),
         "the now-playing cover is not capped by the width left for the details"
+    );
+    assert!(
+        !chrome.contains("cover_h.min(inner.width.saturating_sub(16) / 2)"),
+        "the width reserve is folded into the height again, before the 1:2 aspect"
     );
 }
 
@@ -4143,7 +4165,7 @@ fn zen_lyrics_re_derive_their_foreground() {
     let block = &chrome[at..(at + 3200).min(chrome.len())];
     for (need, why) in [
         (
-            "readable_fg(app.theme.accent, bg)",
+            "standout_fg(app.theme.accent, bg)",
             "the sung line is still the theme's accent, unchecked against its own background",
         ),
         (
@@ -4245,15 +4267,34 @@ fn the_grid_browses_covers_and_moves_by_cell() {
     let search = include_str!("../src/app/search.rs");
     let keymap = include_str!("../src/keymap.rs");
 
-    // Three groupings of one list, one renderer, both views.
-    for (filter, source) in [
-        ("LibraryFilter::Albums", "self.unique_albums()"),
-        ("LibraryFilter::Artists", "self.unique_artists()"),
-        ("LibraryFilter::Genres", "self.unique_genres()"),
-    ] {
+    // Every grouping of one list, one renderer, both views: the cells come from
+    // the same accessor the row view draws, so a cell and its row cannot
+    // disagree about what the group is. There is no per-grouping cell source to
+    // point at any more -- that was four copies of `unique_*` that had to be
+    // edited in four places when Folders joined the list.
+    assert!(
+        cover.contains("self.library_groups().into_iter().map(|(n, _)| n).collect()"),
+        "the grid's cell labels are not the list's own rows"
+    );
+    // The rule itself lives in `group_key`, one match for every grouping --
+    // four per-grouping cell sources and four drill-down arms were the copies
+    // that disagreed about which field a group row is keyed by.
+    assert!(
+        search.contains("pub(crate) fn group_key(")
+            && search.contains("LibraryFilter::Albums => field(")
+            && search.contains("LibraryFilter::Artists => field(")
+            && search.contains("LibraryFilter::Genres => field(")
+            && search.contains("LibraryFilter::Folders => folder_dir(&t.path),"),
+        "the groupings do not all resolve through one rule"
+    );
+    assert!(
+        search.contains("let grouped = matches!("),
+        "the drill-down does not ask which grouping it is filtering by"
+    );
+    for filter in ["Albums", "Artists", "Genres", "Folders"] {
         assert!(
-            cover.contains(&format!("{filter} => {source}")),
-            "the grid has no cell source for {filter}"
+            search.contains(&format!("LibraryFilter::{filter}")),
+            "no grouping rule for LibraryFilter::{filter}"
         );
     }
     assert!(

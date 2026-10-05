@@ -3662,9 +3662,6 @@ impl App {
                                     self.pending_quit = true;
                                 } else if action == "quit" {
                                     self.pending_quit = true;
-                                } else if action == "tab cycle" {
-                                    self.cycle_pane_focus(true);
-                                    self.pickers.close_top();
                                 } else if action == "settings" {
                                     self.pickers.open(PickerId::Settings);
                                 } else if action == "queue" {
@@ -3732,8 +3729,6 @@ impl App {
                                     } else {
                                         self.pickers.open(PickerId::Notifications);
                                     }
-                                } else if action == "search" {
-                                    self.pickers.open(PickerId::SearchLibrary);
                                 } else if action == "spotify" {
                                     self.pickers.open(PickerId::SpotifySearch);
                                 } else if action == "fetch lyrics" {
