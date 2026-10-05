@@ -169,6 +169,44 @@ impl App {
     /// Record a notice in history only — never a floating card, never a
     /// footer line — regardless of the category's configured mode. Errors are
     /// still persisted to the log file so failures stay reviewable.
+    /// Whether an action about the rows in the list can run, and why not if it
+    /// cannot.
+    ///
+    /// Nine of the palette's actions are about the list beside the library, and
+    /// every one of them was guarded by the same silent early return: with the
+    /// left pane holding the cursor they did nothing at all, with no word on
+    /// screen. A command that refuses is a command that answers; one that goes
+    /// quiet reads as a broken key. One refusal, said once, so the nine cannot
+    /// drift into nine different excuses.
+    pub fn needs_list(&mut self, what: &str) -> bool {
+        if !self.library_pane_focus {
+            return true;
+        }
+        self.notify_silent(
+            "System",
+            format!("{what} acts on the list \u{2014} press Tab to reach it"),
+            NotificationKind::Info,
+        );
+        false
+    }
+
+    /// Whether a multiselect step can move a row, naming the missing half.
+    ///
+    /// Two preconditions, and the arm used to check both in one condition and
+    /// then say nothing about either: with multiselect off, or with the library
+    /// holding the cursor, the row moved the palette and stopped.
+    pub fn multiselect_ready(&mut self, what: &str) -> bool {
+        if !self.multiselect_mode {
+            self.notify_silent(
+                "System",
+                format!("{what} needs multiselect \u{2014} press v first"),
+                NotificationKind::Info,
+            );
+            return false;
+        }
+        self.needs_list(what)
+    }
+
     pub fn notify_silent(
         &mut self,
         title: &str,

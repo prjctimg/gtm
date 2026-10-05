@@ -3729,11 +3729,8 @@ impl App {
                                     self.pickers.open(PickerId::Libraries);
                                     self.on_picker_opened(PickerId::Libraries);
                                 } else if action == "multiselect up" {
-                                    // Fully implemented already -- these two
-                                    // arms were simply missing, so the rows did
-                                    // nothing when chosen.
                                     self.pickers.close_top();
-                                    if self.multiselect_mode && !self.library_pane_focus {
+                                    if self.multiselect_ready("Multiselect Up") {
                                         let pos = self.list_pos().saturating_sub(1);
                                         self.set_list_pos(pos);
                                         self.update_track_popup();
@@ -3741,7 +3738,7 @@ impl App {
                                     }
                                 } else if action == "multiselect down" {
                                     self.pickers.close_top();
-                                    if self.multiselect_mode && !self.library_pane_focus {
+                                    if self.multiselect_ready("Multiselect Down") {
                                         let max = self.library_list_len().saturating_sub(1);
                                         let pos = (self.list_pos() + 1).min(max);
                                         self.set_list_pos(pos);
@@ -3816,6 +3813,12 @@ impl App {
                                             true,
                                             NotifType::Playback,
                                         );
+                                    } else {
+                                        self.notify_silent(
+                                            "System",
+                                            "Nothing is playing",
+                                            NotificationKind::Info,
+                                        );
                                     }
                                 } else if action == "clear queue" {
                                     let tx = self.cmd_tx();
@@ -3850,7 +3853,7 @@ impl App {
                                 } else if action == "toggle scrobbling" {
                                     self.toggle_scrobble_session();
                                 } else if action == "multiselect" {
-                                    if !self.library_pane_focus {
+                                    if !self.needs_list("Multiselect") {
                                         self.multiselect_mode = !self.multiselect_mode;
                                         if !self.multiselect_mode {
                                             self.clear_selection();
@@ -3867,7 +3870,7 @@ impl App {
                                         ));
                                     }
                                 } else if action == "add to queue" {
-                                    if !self.library_pane_focus {
+                                    if !self.needs_list("Add to Queue") {
                                         // Single row: its play target. Batch:
                                         // the whole key-based selection.
                                         let targets =
@@ -3889,7 +3892,7 @@ impl App {
                                         );
                                     }
                                 } else if action == "add to playlist" {
-                                    if !self.library_pane_focus {
+                                    if !self.needs_list("Add to Playlist") {
                                         let indices: Vec<i64> =
                                             if self.multiselect_mode && self.selected_count() > 0 {
                                                 self.selected_library_ids()
@@ -3922,7 +3925,7 @@ impl App {
                                         }
                                     }
                                 } else if action == "delete from list" {
-                                    if !self.library_pane_focus {
+                                    if !self.needs_list("Delete from List") {
                                         if self.library_category == LIB_CHARTS {
                                             self.notify_typed(
                                                 "System",
@@ -3971,12 +3974,12 @@ impl App {
                                         }
                                     }
                                 } else if action == "jump to end" {
-                                    if !self.library_pane_focus {
+                                    if !self.needs_list("Jump to End") {
                                         let max = self.library_list_len().saturating_sub(1);
                                         self.set_list_pos(max);
                                     }
                                 } else if action == "edit metadata" {
-                                    if !self.library_pane_focus {
+                                    if !self.needs_list("Edit Metadata") {
                                         if self.library_category == LIB_CHARTS {
                                             // Chart tracks are streamed — they
                                             // have no library metadata to edit.
