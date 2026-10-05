@@ -4265,6 +4265,7 @@ fn the_grid_browses_covers_and_moves_by_cell() {
     let keys = include_str!("../src/app/keys.rs");
     let state = include_str!("../src/app/state.rs");
     let search = include_str!("../src/app/search.rs");
+    let app = include_str!("../src/app/mod.rs");
     let keymap = include_str!("../src/keymap.rs");
 
     // Every grouping of one list, one renderer, both views: the cells come from
@@ -4324,18 +4325,23 @@ fn the_grid_browses_covers_and_moves_by_cell() {
         block.contains("Render::evolving(f, right_inner, right_para, \"lib\", app, false);"),
         "the row list is drawn without an `else`, so both are on screen at once"
     );
-    // Labels come from the same helpers the rows come from, so a cell cannot
-    // drift from its row.
-    for helper in [
-        "self.unique_albums()",
-        "self.unique_artists()",
-        "self.unique_genres()",
-    ] {
-        assert!(
-            cover.contains(helper),
-            "the grid's labels do not come from {helper}, so a cell and its row can disagree"
-        );
-    }
+    // Labels come from the same accessor the rows come from, so a cell cannot
+    // drift from its row. It used to be three per-grouping helpers
+    // (`unique_albums`/`unique_artists`/`unique_genres`) with the grid calling
+    // its own: four places to keep in step, and Folders had no entry in either,
+    // so its cells came from wherever the fallthrough went.
+    assert!(
+        cover.contains("self.library_groups().into_iter().map(|(n, _)| n).collect()"),
+        "the grid's cell labels are not the grouped rows themselves"
+    );
+    assert!(
+        chrome.contains("let groups = app.library_groups();"),
+        "the row list does not draw the same grouped rows the grid labels from"
+    );
+    assert!(
+        app.contains("pub fn library_groups(&self)") && app.contains("fn library_groups_of("),
+        "there is no single accessor both views resolve the grouped rows through"
+    );
     // A representative track behind every cell, so a cell has a cover to ask
     // for. Genres had none and fell through to indexing the track list, which
     // is how a genre cell showed an unrelated album's sleeve. One rule for all
