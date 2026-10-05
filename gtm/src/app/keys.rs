@@ -517,29 +517,9 @@ impl App {
                         self.notify_volume(new_vol);
                     }
                     Some(KeyboardAction::ToggleZen) => {
-                        self.set_last_action(
-                            if self.zen {
-                                "Leave Zen Mode"
-                            } else {
-                                "Zen Mode"
-                            },
-                            &key,
-                        );
-                        self.zen = !self.zen;
-                        if self.zen {
-                            // Enter Zen on the now-playing surface whatever was
-                            // last cycled to: the lyrics and the visualizer are
-                            // Tab's, not the key's.
-                            self.zen_surface = ZenSurface::NowPlaying;
-                            self.dismiss_track_popup();
-                        }
-                        // The cover for this track may never have been asked
-                        // for: the band can be hidden behind a list, a picker's
-                        // preview claim the slot, or the fetch answered before
-                        // the track settled. Zen draws the same bytes, so ask
-                        // for them on the way in rather than showing the
-                        // placeholder to full screen.
-                        self.fetch_np_cover();
+                        let was = self.zen;
+                        self.toggle_zen();
+                        self.set_last_action(if was { "Leave Zen Mode" } else { "Zen Mode" }, &key);
                     }
                     Some(KeyboardAction::SeekForward) => {
                         self.set_last_action("Seek Forward", &key);
@@ -1445,37 +1425,7 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::ToggleGrid) => {
-                        // Refuses, out loud, on a list with nothing to show as
-                        // a grid — pressing a key that does nothing is worse
-                        // than one that says why.
-                        if !self.group_row() {
-                            self.notify_typed(
-                                "System",
-                                "The grid is for albums, artists and genres",
-                                NotificationKind::Info,
-                                false,
-                                NotifType::Library,
-                            );
-                            return true;
-                        }
-                        if self.browse_detail.is_some() {
-                            self.notify_typed(
-                                "System",
-                                "Backspace out of this list to use the grid",
-                                NotificationKind::Info,
-                                false,
-                                NotifType::Library,
-                            );
-                            return true;
-                        }
-                        if no_image_protocol() {
-                            self.notify_typed(
-                                "System",
-                                "The cover grid needs image rendering",
-                                NotificationKind::Info,
-                                false,
-                                NotifType::Library,
-                            );
+                        if !self.grid_ready() {
                             return true;
                         }
                         let on = self.toggle_grid();
@@ -3708,13 +3658,48 @@ impl App {
                                     self.pending_quit = true;
                                 } else if action == "quit" {
                                     self.pending_quit = true;
+                                } else if action == "cover grid" {
+                                    self.pickers.close_top();
+                                    if self.grid_ready() {
+                                        let on = self.toggle_grid();
+                                        self.grid.first = 0;
+                                        self.grid.ids.clear();
+                                        self.grid.round = self.grid.round.wrapping_add(1);
+                                        self.last_action_name = Some((
+                                            if on {
+                                                "Cover grid: on"
+                                            } else {
+                                                "Cover grid: off"
+                                            }
+                                            .to_string(),
+                                            std::time::Instant::now()
+                                                + std::time::Duration::from_secs(3),
+                                        ));
+                                    }
+                                } else if action == "zen mode" {
+                                    self.pickers.close_top();
+                                    let was = self.zen;
+                                    self.toggle_zen();
+                                    self.last_action_name = Some((
+                                        if was { "Leave Zen Mode" } else { "Zen Mode" }.to_string(),
+                                        std::time::Instant::now()
+                                            + std::time::Duration::from_secs(3),
+                                    ));
+                                } else if action == "cycle theme" {
+                                    self.pickers.close_top();
+                                    self.toggle_theme();
+                                } else if action == "cycle sort" {
+                                    self.pickers.close_top();
+                                    self.cycle_track_sort();
+                                } else if action == "podcasts" {
+                                    self.pickers.open(PickerId::PodcastFeeds);
                                 } else if action == "settings" {
                                     self.pickers.open(PickerId::Settings);
                                 } else if action == "queue" {
                                     self.pickers.open(PickerId::Queue);
                                 } else if action == "youtube" {
                                     self.pickers.open(PickerId::YTSearch);
-                                } else if action == "search lib" {
+                                } else if action == "search library" {
                                     self.pickers.open(PickerId::SearchLibrary);
                                 } else if action == "search this list" {
                                     // `/` in normal mode. The palette listed
@@ -3746,12 +3731,12 @@ impl App {
                                         self.preload_row_covers();
                                         self.add_row_selection(pos);
                                     }
-                                } else if action == "eq" {
+                                } else if action == "equalizer" {
                                     self.pickers.open(PickerId::Equalizer);
-                                } else if action == "sleeptimer" {
+                                } else if action == "sleep timer" {
                                     self.sleep_timer.focus = 0;
                                     self.pickers.open(PickerId::SleepTimer);
-                                } else if action == "themepicker" {
+                                } else if action == "theme picker" {
                                     self.pickers.open_with_selection(
                                         PickerId::ThemePicker,
                                         self.theme_index,
@@ -4032,13 +4017,13 @@ impl App {
                                             }
                                         }
                                     }
-                                } else if action == "toggle help" {
+                                } else if action == "help" {
                                     if self.pickers.top().is_some_and(|o| o.id == PickerId::Help) {
                                         self.pickers.close_top();
                                     } else {
                                         self.pickers.open(PickerId::Help);
                                     }
-                                } else if action == "hide help bar" {
+                                } else if action == "toggle help bar" {
                                     self.hide_help_bar = !self.hide_help_bar;
                                 } else if action == "health check" {
                                     self.send_high(TuiCommand::CheckHealth);

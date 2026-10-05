@@ -69,12 +69,12 @@ impl CommandPalette {
                 hint: "volume down",
             },
             Command {
-                label: "Mute: Toggle",
+                label: "Mute",
                 keys: "m",
                 hint: "mute",
             },
             Command {
-                label: "Mono: Toggle",
+                label: "Toggle Mono",
                 keys: "Alt+1",
                 hint: "toggle mono",
             },
@@ -84,7 +84,7 @@ impl CommandPalette {
                 hint: "repeat",
             },
             Command {
-                label: "Shuffle Library",
+                label: "Toggle Shuffle",
                 keys: "S",
                 hint: "shuffle",
             },
@@ -104,24 +104,24 @@ impl CommandPalette {
                 hint: "like spotify",
             },
             Command {
-                label: "Add live track to Spotify",
-                keys: "Alt+L",
+                label: "Add Live Track to Spotify",
+                keys: "Alt+l",
                 hint: "add to spotify",
             },
             Command {
-                label: "Toggle Last.fm Scrobbling",
+                label: "Toggle Scrobbling",
                 keys: "&",
                 hint: "toggle scrobbling",
             },
             Command {
-                label: "Search",
+                label: "Search This List",
                 keys: "/",
                 hint: "search this list",
             },
             Command {
                 label: "Search Library",
                 keys: "Alt+/",
-                hint: "search lib",
+                hint: "search library",
             },
             Command {
                 label: "Library Categories",
@@ -129,28 +129,28 @@ impl CommandPalette {
                 hint: "library lists",
             },
             Command {
-                label: "Next Grouping (Library, Playlists)",
+                label: "Next Grouping",
                 keys: "]",
                 hint: "library next grouping",
             },
             Command {
-                label: "Previous Grouping (Library, Playlists)",
+                label: "Previous Grouping",
                 keys: "[",
                 hint: "library previous grouping",
             },
             Command {
                 label: "Queue",
-                keys: "Alt+Q",
+                keys: "Alt+q",
                 hint: "queue",
             },
             Command {
                 label: "YouTube Search",
-                keys: "Alt+Y",
+                keys: "Alt+y",
                 hint: "youtube",
             },
             Command {
                 label: "Spotify",
-                keys: "Alt+S",
+                keys: "Alt+s",
                 hint: "spotify",
             },
             Command {
@@ -234,33 +234,58 @@ impl CommandPalette {
                 hint: "focus pane back",
             },
             Command {
+                label: "Cover Grid",
+                keys: "V",
+                hint: "cover grid",
+            },
+            Command {
+                label: "Zen Mode",
+                keys: "z",
+                hint: "zen mode",
+            },
+            Command {
+                label: "Cycle Theme",
+                keys: "Alt+T",
+                hint: "cycle theme",
+            },
+            Command {
+                label: "Cycle Sort",
+                keys: "Alt+S",
+                hint: "cycle sort",
+            },
+            Command {
+                label: "Podcasts",
+                keys: "Alt+p",
+                hint: "podcasts",
+            },
+            Command {
                 label: "Settings",
                 keys: "Alt+,",
                 hint: "settings",
             },
             Command {
                 label: "Equalizer",
-                keys: "Alt+E",
-                hint: "eq",
+                keys: "Alt+e",
+                hint: "equalizer",
             },
             Command {
                 label: "Sleep Timer",
-                keys: "Alt+Z",
-                hint: "sleeptimer",
+                keys: "Alt+z",
+                hint: "sleep timer",
             },
             Command {
-                label: "Theme",
-                keys: "Alt+C",
-                hint: "themepicker",
+                label: "Theme Picker",
+                keys: "Alt+c",
+                hint: "theme picker",
             },
             Command {
                 label: "About",
-                keys: "Alt+A",
+                keys: "Alt+a",
                 hint: "about",
             },
             Command {
                 label: "Notifications",
-                keys: "Alt+N",
+                keys: "Alt+n",
                 hint: "notifications",
             },
             Command {
@@ -270,7 +295,7 @@ impl CommandPalette {
             },
             Command {
                 label: "Visualizer Preset",
-                keys: "Alt+V",
+                keys: "Alt+v",
                 hint: "visualizer preset",
             },
             Command {
@@ -284,14 +309,14 @@ impl CommandPalette {
                 hint: "quit daemon",
             },
             Command {
-                label: "Toggle Help",
+                label: "Help",
                 keys: "?",
-                hint: "toggle help",
+                hint: "help",
             },
             Command {
-                label: "Hide Help Bar",
-                keys: "Ctrl+H",
-                hint: "hide help bar",
+                label: "Toggle Help Bar",
+                keys: "Ctrl+h",
+                hint: "toggle help bar",
             },
             Command {
                 label: "Health Check",
@@ -300,17 +325,17 @@ impl CommandPalette {
             },
             Command {
                 label: "Setup Services",
-                keys: "Alt+X",
+                keys: "Alt+x",
                 hint: "setup",
             },
             Command {
                 label: "Radio Browser",
-                keys: "Alt+R",
+                keys: "Alt+r",
                 hint: "radio browse",
             },
             Command {
                 label: "Play Stream URL",
-                keys: "Alt+O",
+                keys: "Alt+o",
                 hint: "play stream url",
             },
         ]
@@ -325,6 +350,6 @@ impl CommandPalette {
 pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("Playback", 14),
     ("Library & Queue", 25),
-    ("View & Overlays", 10),
+    ("View & Overlays", 15),
     ("System", 8),
 ];

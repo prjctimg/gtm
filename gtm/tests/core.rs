@@ -2301,6 +2301,153 @@ fn palette_hints_all_have_a_dispatch_arm() {
 /// explanation, while `"prev tab"` had an arm and no row — a dispatch nothing
 /// could reach. The first is a presentational problem the column fix handles;
 /// the second is unreachable code, which only a check catches.
+/// The key column has to be the key that works.
+///
+/// The column is the only place the palette documents a binding, and it was
+/// written as if `Alt` implied `Shift`: thirteen rows advertised `Alt+Y` for a
+/// key bound to `Alt+y`, and two rows both claimed `Alt+Z` -- the sleep timer and
+/// the equalizer -- for one key bound to `Alt+z`. `Alt+S` was the worst of it:
+/// claimed by Spotify, and actually bound to cycle sort, which had no row at
+/// all.
+///
+/// Parsed out of `keymap.rs` rather than restated, so a key that is renamed or
+/// dropped is caught here instead of by the user pressing it.
+///
+/// What this cannot check is whether the key opens *this* command: the palette
+/// reaches its rows by name, not by action, so there is no mapping in the source
+/// to compare against and inventing one would only assert the invention. So the
+/// two properties it does check are that every advertised key is bound at all,
+/// and that no two rows claim the same one.
+#[test]
+fn every_advertised_key_is_the_key_that_is_bound() {
+    let palette = include_str!("../src/ui/command.rs");
+    let keymap = include_str!("../src/keymap.rs");
+
+    let entries = rows_of(palette);
+
+    for (label, key, hint) in &entries {
+        if key.is_empty() {
+            continue;
+        }
+        // A keyless row is a palette-only command by construction; the
+        // reachability test covers those.
+        for want in key_fragment(key) {
+            let ok = bound(keymap, &want);
+            assert!(
+                ok,
+                "{label} advertises {key}, and keymap.rs does not bind it (hint {hint:?})"
+            );
+        }
+    }
+    // No two rows may claim one key. Two rows advertising the same key is the
+    // worst of the column's failures, because the key works and opens the wrong
+    // thing: the equalizer and the sleep timer both claimed `Alt+Z`, and which
+    // one you got depended on the order they happened to be typed in.
+    let mut seen: Vec<(&'static str, String)> = Vec::new();
+    for (label, key, _) in &entries {
+        for want in key_fragment(key) {
+            if let Some((_, other)) = seen.iter().find(|(k, _)| *k == want) {
+                assert!(false, "{label} and {other} both advertise {want}");
+            }
+            seen.push((want, label.clone()));
+        }
+    }
+
+    assert!(
+        entries.len() > 50
+            && entries
+                .iter()
+                .filter(|(_, k, _)| key_fragment(k).iter().any(|f| bound(keymap, f)))
+                .count()
+                > 40,
+        "a parser stopped matching: only {} of {} rows resolved",
+        entries
+            .iter()
+            .filter(|(_, k, _)| key_fragment(k).iter().any(|f| bound(keymap, f)))
+            .count(),
+        entries.len()
+    );
+}
+
+/// `(label, keys, hint)` for every palette row, in table order.
+///
+/// One field per line, which is how `rustfmt` leaves the table; scanning for
+/// `Command { label:` finds nothing at all, because the brace and the field are
+/// not adjacent, and a parser that matches nothing passes every assertion made
+/// against it.
+fn rows_of(palette: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let mut label = String::new();
+    let mut keys = String::new();
+    let mut hint;
+    for line in palette.lines() {
+        let t = line.trim();
+        if let Some(v) = t.strip_prefix("label: \"") {
+            label = v.trim_end_matches("\",").to_string();
+        } else if let Some(v) = t.strip_prefix("keys: \"") {
+            keys = v.trim_end_matches("\",").to_string();
+        } else if let Some(v) = t.strip_prefix("hint: \"") {
+            hint = v.trim_end_matches("\",").to_string();
+            out.push((
+                std::mem::take(&mut label),
+                std::mem::take(&mut keys),
+                hint.clone(),
+            ));
+        }
+    }
+    out
+}
+
+/// The table fragment that has to appear in `keymap.rs` for one palette cell's
+/// key, or nothing for a cell with no key.
+///
+/// Written out rather than derived, because every one of these is spelled
+/// differently in the two files and a rule that tries to be clever about it
+/// gets it wrong in a way that reads as a broken binding. `Shift+Tab` is
+/// `BackTab`, `Space` is a space character, and the table writes a plain letter
+/// on one line for some entries and across four for others, so a plain key is
+/// checked without the `b!(`.
+fn key_fragment(cell: &str) -> Vec<&'static str> {
+    match cell {
+        "" => Vec::new(),
+        "Q/Ctrl+Q" => vec![
+            "KeyCode::Char('Q')",
+            "KeyCode::Char('q'), KeyModifiers::CONTROL",
+        ],
+        "Space" => vec!["KeyCode::Char(' ')"],
+        "Shift+Tab" => vec!["KeyCode::BackTab"],
+        "Shift+Up" => vec!["KeyCode::Up, KeyModifiers::SHIFT"],
+        "Shift+Down" => vec!["KeyCode::Down, KeyModifiers::SHIFT"],
+        "Tab" => vec!["KeyCode::Tab"],
+        "End" => vec!["KeyCode::End"],
+        "Home" => vec!["KeyCode::Home"],
+        "Delete" => vec!["KeyCode::Delete"],
+        "Esc" => vec!["KeyCode::Esc"],
+        "PageUp" => vec!["KeyCode::PageUp"],
+        "PageDown" => vec!["KeyCode::PageDown"],
+        other => match other.split_once('+') {
+            Some(("Alt", k)) => vec![leak(format!("KeyCode::Char('{k}'), KeyModifiers::ALT"))],
+            Some(("Ctrl", k)) => vec![leak(format!("KeyCode::Char('{k}'), KeyModifiers::CONTROL"))],
+            Some(_) => vec![],
+            None => vec![leak(format!("KeyCode::Char('{other}')"))],
+        },
+    }
+}
+
+/// The fragment strings are built per row and compared immediately, so they do
+/// not need to outlive the loop; leaking one short string per palette row keeps
+/// the signature free of a lifetime for no measurable cost at test scale.
+fn leak(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+/// Whether `keymap.rs` writes exactly this binding.
+///
+/// A literal substring, deliberately: see the note on `key_fragment`.
+fn bound(keymap: &str, key: &str) -> bool {
+    keymap.contains(key)
+}
+
 /// Every `action == "..."` string in the palette dispatcher, in source order.
 ///
 /// A free function so the counts below and the reachability check read the

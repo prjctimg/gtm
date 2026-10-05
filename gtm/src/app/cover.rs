@@ -519,6 +519,64 @@ impl App {
         });
     }
 
+    /// Whether the cover grid can be shown now, saying why not if it cannot.
+    ///
+    /// Refuses out loud on a list with nothing to show as a grid: a key that
+    /// does nothing is worse than one that says why. Shared by the `V` key and
+    /// the palette row, which are one command and used to be able to disagree
+    /// about it.
+    pub fn grid_ready(&mut self) -> bool {
+        if !self.group_row() {
+            self.notify_typed(
+                "System",
+                "The grid is for albums, artists and genres",
+                NotificationKind::Info,
+                false,
+                NotifType::Library,
+            );
+            return false;
+        }
+        if self.browse_detail.is_some() {
+            self.notify_typed(
+                "System",
+                "Backspace out of this list to use the grid",
+                NotificationKind::Info,
+                false,
+                NotifType::Library,
+            );
+            return false;
+        }
+        if no_image_protocol() {
+            self.notify_typed(
+                "System",
+                "The cover grid needs image rendering",
+                NotificationKind::Info,
+                false,
+                NotifType::Library,
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Enter or leave zen, always on the now-playing surface.
+    ///
+    /// That surface whatever was cycled to last: the lyrics and the visualizer
+    /// are Tab's to choose, not the key's.
+    pub fn toggle_zen(&mut self) {
+        self.zen = !self.zen;
+        if self.zen {
+            self.zen_surface = ZenSurface::NowPlaying;
+            self.dismiss_track_popup();
+        }
+        // The cover for this track may never have been asked for: the band can
+        // be hidden behind a list, a picker's preview can claim the slot, or the
+        // fetch answered before the track settled. Zen draws the same bytes, so
+        // ask for them on the way in rather than showing the placeholder to
+        // full screen.
+        self.fetch_np_cover();
+    }
+
     /// Switch the album/artist/genre lists between rows and a cover grid.
     ///
     /// The setting is per-app, not per-category, and it survives switching
