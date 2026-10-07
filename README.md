@@ -80,16 +80,15 @@ See [CONTRIBUTING](./CONTRIBUTING.md#build-from-source) for more installation ro
 
 ## Contributing
 
-See [the contributing guide](CONTRIBUTING.md) & [the Code of Conduct](CODE_OF_CONDUCT.md).
+See [the contributing guide](CONTRIBUTING.md) and [the Code of Conduct](CODE_OF_CONDUCT.md) first.
 
----
 
 ## Acknowledgements
 
 
 ![](./logo.png)
 
-This wouldn't be possible without the amazing open source community! 
+This project wouldn't be possible without the amazing open source community! 
 
 - [color-thief](https://crates.io/crates/color-thief)
 - [rustfft](https://crates.io/crates/rustfft)
@@ -102,6 +101,15 @@ This wouldn't be possible without the amazing open source community!
 - [LRCLIB](https://lrclib.net)
 - [Myx](https://github.com/HaseebKhalid1507/Myx)
 - [spotify-player](https://github.com/aome510/spotify-player)  
+
+
+<a href="https://www.star-history.com/?repos=prjctimg%2Fgtm&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=prjctimg/gtm&type=date&theme=auto&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=prjctimg/gtm&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=prjctimg/gtm&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## Contributors
 
