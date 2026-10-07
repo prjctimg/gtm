@@ -484,6 +484,18 @@ impl Cmd {
             let spotify = inner.spotify.lock().await;
             (spotify.linked(), spotify.is_premium())
         };
+        // `premium` starts false and is only set by a `/me/player` probe. The
+        // startup link deliberately does no network I/O, so between boot and
+        // the background sync's first probe every row takes the fallback --
+        // including the one the resume task is trying to restore on a Premium
+        // account that has paid for exactly this. One bounded probe answers it.
+        let premium = if linked && !premium {
+            let mut spotify = inner.spotify.lock().await;
+            let _ = tokio::time::timeout(Duration::from_secs(10), spotify.refresh_playback()).await;
+            spotify.is_premium()
+        } else {
+            premium
+        };
         if !linked || !premium {
             // A `spotify:` row is not a Premium-only format. The web API
             // resolves the metadata for any linked account and a yt-dlp search
@@ -1693,6 +1705,16 @@ pub(crate) struct DaemonInner {
     #[cfg(feature = "youtube")]
     pub(crate) youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
     pub(crate) spotify: Arc<tokio::sync::Mutex<SpotifyManager>>,
+    /// Fires once the Spotify manager has been through its startup link.
+    ///
+    /// The resume task and the link task are both spawned here with nothing
+    /// between them, so which one wins is a scheduler's decision: the resume
+    /// routinely read `linked() == false` and sent a Premium account's saved
+    /// track down the yt-dlp fallback, which downloads a file and plays that
+    /// instead. One `bool` of shared state is enough to order them, and a
+    /// release-and-forget `Notify` would be wrong -- a resume that arrives
+    /// *before* the link starts must still wait rather than miss the edge.
+    pub(crate) spotify_linked: tokio::sync::watch::Sender<bool>,
     pub(crate) podcast: tokio::sync::Mutex<PodcastManager>,
     pub(crate) radio: tokio::sync::Mutex<RadioBrowserManager>,
     /// The playing station's tracklist binding: which station is current and
@@ -2150,6 +2172,7 @@ impl Daemon {
             AudioBackendKind::Rodio => "rodio",
         };
 
+        let (spotify_linked_tx, _) = tokio::sync::watch::channel(false);
         let inner = Arc::new(DaemonInner {
             state,
             mixer: tokio::sync::Mutex::new(mixer),
@@ -2165,6 +2188,7 @@ impl Daemon {
             spotify: Arc::new(tokio::sync::Mutex::new(SpotifyManager::new(
                 config_dir.clone(),
             ))),
+            spotify_linked: spotify_linked_tx,
             podcast: tokio::sync::Mutex::new(PodcastManager::new(config_dir)),
             radio: tokio::sync::Mutex::new(RadioBrowserManager::new()),
             radio_list: tokio::sync::Mutex::new(None),
@@ -2321,6 +2345,7 @@ impl Daemon {
         }
 
         let spotify_inner = Arc::clone(&self.inner);
+        let spotify_linked_tx = self.inner.spotify_linked.clone();
         tokio::spawn(async move {
             // Local-only link: read the token file and build the client with
             // no network I/O, so startup never stalls on a stalled network
@@ -2344,6 +2369,11 @@ impl Daemon {
                     }
                 }
             };
+            // Signalled on both outcomes. A daemon with no token file never
+            // links, and a resume that waited for a link that will never come
+            // would sit there instead of playing.
+            let _ = spotify_linked_tx.send(linked);
+
             if linked {
                 let _ = spotify_inner
                     .event_tx
@@ -2538,6 +2568,7 @@ impl Daemon {
         // position. A failed resume (e.g. missing file) clears the ghost
         // entry so the TUI doesn't show a stale track.
         let resume_inner = Arc::clone(&self.inner);
+        let mut resume_linked = resume_inner.spotify_linked.subscribe();
         tokio::spawn(async move {
             let (path, start_pos, was_playing) = {
                 let state = resume_inner.state.read().await;
@@ -2549,14 +2580,53 @@ impl Daemon {
                     None => return,
                 }
             };
-            if let Err(e) = Cmd::play(&resume_inner, &path, start_pos, false).await {
-                warn!("failed to resume last track at startup: {e}");
-                let mut state = resume_inner.state.write().await;
-                state.current_track = None;
-                state.time_pos = 0.0;
-                state.status = PlaybackStatus::Stopped;
-            } else if !was_playing {
-                let _ = Cmd::pause(&resume_inner).await;
+            // Wait for the Spotify link, because a saved `spotify:` row that
+            // finds an unlinked manager does not fail: it falls back to yt-dlp,
+            // downloads a file and plays that, and the queue ends up holding the
+            // cache copy instead of the uri. Waiting is only worth it for a row
+            // that needs the link at all, and only for as long as linking can
+            // take -- a token file read, so seconds, not the 300 s the background
+            // playlist sync may spend.
+            if path.starts_with("spotify:") && !*resume_linked.borrow() {
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(20), resume_linked.changed()).await;
+            }
+            let res = Cmd::play(&resume_inner, &path, start_pos, false).await;
+            // Both shapes are a failed resume. `Cmd::play` reports most of its
+            // refusals as `Ok(DaemonRes::Error)` rather than `Err`, so matching
+            // only the latter left the state cleared on half the failures and
+            // not cleared on the rest.
+            let failure = match &res {
+                Err(e) => Some(e.to_string()),
+                Ok(DaemonRes::Error { message }) => Some(message.clone()),
+                _ => None,
+            };
+            if let Some(message) = failure {
+                warn!("failed to resume last track at startup: {message}");
+                {
+                    let mut state = resume_inner.state.write().await;
+                    state.current_track = None;
+                    state.time_pos = 0.0;
+                    state.status = PlaybackStatus::Stopped;
+                }
+                // The daemon has just given up on the track it told the world it
+                // was playing. Saying so is the only thing that reconciles a
+                // client that connected during boot and read the saved state:
+                // without the event its mirror keeps the abandoned track until
+                // something else happens to correct it.
+                Daemon::push_event(&resume_inner, DaemonEvent::PlaybackStopped);
+                Daemon::push_queue_state(&resume_inner).await;
+                Self::save_state(&resume_inner);
+            } else {
+                // `Cmd::play` rotated the queue to put the resumed track under
+                // the cursor and never broadcasts that from any caller, so a
+                // client that attaches after the resume sees a pre-rotation
+                // queue until its own poll.
+                Daemon::push_queue_state(&resume_inner).await;
+                Self::save_state(&resume_inner);
+                if !was_playing {
+                    let _ = Cmd::pause(&resume_inner).await;
+                }
             }
         });
 

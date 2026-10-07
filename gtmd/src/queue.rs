@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use gtm::shared::global::DaemonState;
+use gtm::shared::state::PlaybackStatus;
 use gtm::shared::track::TrackInfo;
 
 use crate::library::extract_metadata;
@@ -274,6 +275,19 @@ pub fn set_resolved(state: &mut DaemonState, tracks: Vec<TrackInfo>) {
     state.default_list.clear();
     state.default_cursor = 0;
     state.fallback_disabled = false;
+    // Whatever was playing is now in neither the queue nor the library, so
+    // now-playing names a row the user cannot reach. The caller sends `Set`
+    // immediately before `Play` for the row it meant to start, which usually
+    // corrects this microseconds later -- so the invariant held by accident, and
+    // a `Play` that failed left the daemon reporting a track from a list that no
+    // longer exists.
+    if let Some(cur) = state.current_track.clone()
+        && !state.queue.iter().any(|t| t.path == cur.path)
+    {
+        state.current_track = None;
+        state.time_pos = 0.0;
+        state.status = PlaybackStatus::Stopped;
+    }
 }
 
 /// Remove the entry at a merged-view index.  Returns the removed track, or
