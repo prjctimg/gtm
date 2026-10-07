@@ -68,6 +68,28 @@ Or grab an archive [releases page](https://github.com/prjctimg/gtm/releases/late
 See [CONTRIBUTING](./CONTRIBUTING.md#build-from-source) for more installation routes.
 
 
+### Install via AUR 
+
+`gtm` is now available in the AUR as `gtm-player` (Compiles it) and `gtm-player-bin` (Binary/No compilation):
+
+```bash
+# Using yay
+yay -S gtm-player
+
+# Using paru
+paru -S gtm-player
+```
+
+You can also install the binary directly instead of the above:
+
+```bash
+# Using yay
+yay -S gtm-player-bin
+
+# Using paru
+paru -S gtm-player-bin
+```
+
 ## Documentation
 
 - [gtmd.dev](https://gtmd.dev) 
