@@ -635,8 +635,8 @@ jobs:
           name: ${{ needs.tag.outputs.version }}
           draft: false
           prerelease: ${{ needs.tag.outputs.nightly == 'true' }}
-          generate_release_notes: true
           overwrite_files: true
+          body_path: release-notes.md
           files: |
             gtm-*.tar.gz
             *.deb
@@ -644,7 +644,6 @@ jobs:
             *.pkg.tar.zst
             *.apk
             checksums.txt
-            release-notes.md
 
       - name: Prune stale nightly assets
         if: needs.tag.outputs.nightly == 'true'
