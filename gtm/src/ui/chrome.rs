@@ -3220,7 +3220,17 @@ pub fn run_tui(
 
     let _original_stderr = redirect_stderr();
 
-    let rt = tokio::runtime::Runtime::new()?;
+    // Sized, like the daemon's (gtmd/src/main.rs). `Runtime::new` is
+    // worker-per-core with 512 blocking threads and a 2 MiB stack each: on a
+    // sixteen-core box that is thirty-odd megabytes of stacks faulted in before
+    // the first frame, for an event loop that is one 16 ms timer and a handful of
+    // IPC round trips.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(8)
+        .thread_name("gtm")
+        .enable_all()
+        .build()?;
     rt.block_on(async {
         color_eyre::install()?;
 

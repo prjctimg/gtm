@@ -25,8 +25,17 @@ pub(crate) const LIBRARY_ICONS_NERD: &[&str] = &[
 
 pub(crate) const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "≡", "☊", "◉", "#", "◉"];
 
+/// Whether the terminal has the nerd-font glyphs, read once.
+///
+/// The footer asks this fourteen times per frame and the environment cannot
+/// change under a running process, so it was fourteen `env::var` calls and
+/// fourteen `String` allocations every frame forever.
+static NERD_FONTS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(
+    || !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no"),
+);
+
 pub(crate) fn use_nerd_fonts() -> bool {
-    !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")
+    *NERD_FONTS
 }
 
 pub(crate) fn provider_icon(name: &str) -> Option<&'static str> {

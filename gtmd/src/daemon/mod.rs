@@ -2549,7 +2549,12 @@ impl Daemon {
             });
         }
 
-        purge_retired_secrets();
+        // Four D-Bus round trips to the login keyring, each of which on a
+        // machine with no unlocked secret-service is a session-bus connect that
+        // can take seconds. It was inline here, between the spawns and the
+        // accept loop, so a slow keyring delayed the daemon's first answer to a
+        // client that had already connected successfully.
+        tokio::task::spawn_blocking(purge_retired_secrets);
 
         let provider_inner = Arc::clone(&self.inner);
         tokio::spawn(async move {

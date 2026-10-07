@@ -994,7 +994,20 @@ pub fn merged_themes() -> Vec<ThemeEntry> {
 ///
 /// Returns `None` when every probe is unavailable so the caller keeps its
 /// existing (persisted) choice instead of flipping the theme.
+/// The OS colour scheme, asked once.
+///
+/// `theme_mode` defaults to `auto`, so this ran on every TUI start and it forks
+/// `gsettings`: a process spawn, a pipe read and a `wait` between the key press
+/// and the first frame. Nothing in the running app changes the answer, so it is
+/// memoised rather than re-derived.
+static OS_THEME: std::sync::LazyLock<Option<ThemeMode>> =
+    std::sync::LazyLock::new(detect_os_theme_uncached);
+
 pub fn detect_os_theme() -> Option<ThemeMode> {
+    *OS_THEME
+}
+
+fn detect_os_theme_uncached() -> Option<ThemeMode> {
     // Explicit override always wins.
     if let Ok(v) = std::env::var("GTM_THEME_MODE") {
         match v.to_ascii_lowercase().as_str() {

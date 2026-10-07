@@ -234,22 +234,25 @@ impl SpotifyManager {
     /// a quota-spent reconnect can serve anything — silently skipping the write
     /// when the dir happens to be missing would leave the feature dead exactly
     /// where it is needed, with nothing in the log but a swallowed error.
-    fn save_snapshot(&self, user: Option<String>, playlists: &[SpotifyPlaylist]) {
+    /// The serialised snapshot and where it belongs, or `None` if it will not
+    /// serialise. Split out of the write so the expensive half runs without the
+    /// manager lock held against it.
+    fn snapshot_json(
+        &self,
+        user: Option<String>,
+        playlists: &[SpotifyPlaylist],
+    ) -> Option<(std::path::PathBuf, String)> {
         let snap = PlaylistSnapshot {
             user,
             playlists: playlists.to_vec(),
             synced_at: Some(Utc::now().timestamp()),
         };
-        let Ok(json) = serde_json::to_string(&snap) else {
-            warn!("spotify: could not serialise the playlist snapshot");
-            return;
-        };
-        if let Err(e) = std::fs::create_dir_all(&self.config_dir) {
-            warn!("spotify: could not create the config dir for the snapshot: {e}");
-            return;
-        }
-        if let Err(e) = std::fs::write(self.playlists_path(), json) {
-            warn!("spotify: could not write playlist snapshot: {e}");
+        match serde_json::to_string(&snap) {
+            Ok(json) => Some((self.playlists_path(), json)),
+            Err(_) => {
+                warn!("spotify: could not serialise the playlist snapshot");
+                None
+            }
         }
     }
 
@@ -804,9 +807,26 @@ impl SpotifyManager {
             return;
         }
         self.error = None;
-        self.save_snapshot(user.clone(), &playlists);
+        // Snapshot first, outside the state swap. The caller holds the manager
+        // mutex across all of this, and serialising a large account's playlists
+        // into a multi-megabyte string took hundreds of milliseconds inside it --
+        // so every other Spotify command (status, playlists, resolve,
+        // uri_meta) queued behind a disk write that has nothing to do with them.
+        let json = self.snapshot_json(user.clone(), &playlists);
         self.user = user;
         self.playlists = playlists;
+        if let Some((path, json)) = json {
+            let dir = self.config_dir.clone();
+            tokio::spawn(async move {
+                if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+                    warn!("spotify: could not create the config dir for the snapshot: {e}");
+                    return;
+                }
+                if let Err(e) = tokio::fs::write(path, json).await {
+                    warn!("spotify: could not write playlist snapshot: {e}");
+                }
+            });
+        }
     }
 
     async fn fetch_saved_tracks(client: &AuthCodePkceSpotify) -> Vec<SpotifyTrack> {

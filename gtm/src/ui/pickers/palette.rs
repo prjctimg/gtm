@@ -31,6 +31,19 @@ impl Pickers {
             Span::styled(" ", cursor_style.unwrap_or_default()),
         ]);
 
+        // Where the key column starts, from the widest label in the table. A
+        // property of the command list, not of the row being drawn, so it is
+        // worked out once per frame rather than once per visible row -- which
+        // was every label char-counted for every row on screen.
+        let name_col = std::sync::LazyLock::new(|| {
+            commands
+                .iter()
+                .map(|c| c.label.chars().count())
+                .max()
+                .unwrap_or(0)
+                .saturating_add(4)
+        });
+
         let show_groups = query.is_empty();
         let mut rows: Vec<(Option<&'static str>, Option<usize>)> = Vec::new();
         if show_groups {
@@ -116,12 +129,8 @@ impl Pickers {
             // a fixed gap for every row to line up.
             let indent = 3usize;
             let gap = 4usize;
-            let name_col = commands
-                .iter()
-                .map(|c| c.label.chars().count())
-                .max()
-                .unwrap_or(0)
-                .saturating_add(gap);
+            let name_col = *name_col;
+            let _ = gap;
             // One keyless row (a Spotify transport command with no binding)
             // would otherwise widen the column for an empty string.
             let key_col = name_col.max(indent + 8).min((row_w / 2) as usize) as u16;
