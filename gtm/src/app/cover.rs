@@ -346,12 +346,28 @@ impl App {
             self.clear_popup_cover();
             return;
         };
-        if self.spotify_popup_slot.id.as_deref() == Some(&url)
-            && self.spotify_popup_slot.version.is_some()
-        {
+        if no_image_protocol() {
             return;
         }
-        if no_image_protocol() {
+        // Repaint from what we still hold, which is what makes the latch safe.
+        //
+        // The latch used to be the slot alone, and returning on it dropped the
+        // card on the floor. "All Tracks" is where that shows: its rows are
+        // named by album-image url, so scrolling onto a neighbour cleared the
+        // bytes this row had already fetched -- the fetch path assigns `None`
+        // before it starts -- and coming back hit the latch, returned, and
+        // painted nothing. The row then stayed blank for the rest of the
+        // session, because nothing would ever fetch it again. A miss still
+        // re-fetches, so a url whose image failed is not memoised as a hit.
+        if let Some(bytes) = self
+            .popup_cover_bytes
+            .as_ref()
+            .filter(|(u, _)| u == &url)
+            .map(|(_, b)| b.clone())
+        {
+            self.track_popup_cover = Some(bytes);
+            self.popup_cover_sync();
+            self.cover_art_dirty = true;
             return;
         }
         let fetch_gen = self.next_cover_gen();

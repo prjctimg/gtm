@@ -1252,6 +1252,7 @@ impl App {
                             && self.spotify_popup_slot.id.as_deref() == Some(&url)
                             && self.spotify_popup_slot.matches(fetch_gen)
                         {
+                            self.popup_cover_bytes = cover.clone().map(|bytes| (url, bytes));
                             self.track_popup_cover = cover;
                             self.popup_cover_sync();
                             self.cover_art_dirty = true;

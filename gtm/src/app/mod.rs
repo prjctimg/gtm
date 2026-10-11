@@ -648,6 +648,11 @@ pub struct App {
     /// In-flight fetch slot for the Spotify drill-down popup cover, keyed by
     /// the track's album-image URL instead of a local library id.
     pub(crate) spotify_popup_slot: FetchSlot<String>,
+    /// The last url-addressed popup cover fetched, kept so scrolling back onto
+    /// it repaints instead of showing a blank card. One entry on purpose: it is
+    /// a cursor-move memo, not a cache, and "All Tracks" is a union of whole
+    /// playlists that would make a growing map hold the library in RAM.
+    pub(crate) popup_cover_bytes: Option<(String, Vec<u8>)>,
     /// Cover art for the SearchLibrary picker preview window.
     pub picker_preview_cover: Option<Vec<u8>>,
     pub picker_preview_stateful: Option<StatefulProtocol>,
@@ -1446,6 +1451,7 @@ impl App {
             popup_cover_stateful: None,
             popup_slot: FetchSlot::default(),
             spotify_popup_slot: FetchSlot::default(),
+            popup_cover_bytes: None,
             picker_preview_cover: None,
             picker_preview_stateful: None,
             picker_slot: FetchSlot::default(),
