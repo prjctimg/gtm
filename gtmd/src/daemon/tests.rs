@@ -50,6 +50,46 @@ fn other_failures_keep_the_fast_ladder() {
     );
 }
 
+/// A dead refresh token has to be told apart from a transient fault, and from a
+/// quota, because it is the only one of the three worth a browser.
+///
+/// Nothing classified it before, so a revoked grant surfaced as an opaque
+/// `spotify token refresh failed: ...` and sat there.
+#[test]
+fn a_dead_grant_is_recognised() {
+    // What the token endpoint answers a refresh it will not renew with, as
+    // rspotify renders it: the OAuth body, with no status in front of it.
+    assert!(is_dead_token("spotify token refresh failed: invalid_grant"));
+    assert!(is_dead_token(
+        "spotify playlist sync failed: me: invalid_grant: Refresh token revoked"
+    ));
+    // The body sometimes arrives with its own phrasing instead.
+    assert!(is_dead_token("Refresh token revoked"));
+}
+
+/// A `429` is not a dead grant. The two want opposite things -- one is worth
+/// waiting out, the other is worth a browser -- and treating the first as the
+/// second would open an authorize page for a quota that recovers on its own.
+#[test]
+fn a_quota_refusal_is_not_a_dead_grant() {
+    assert!(!is_dead_token(
+        "me: http error: status code 429 Too Many Requests"
+    ));
+    assert!(!is_dead_token("spotify not linked"));
+    assert!(!is_dead_token(
+        "me: http error: status code 500 Internal Server Error"
+    ));
+}
+
+/// A longer token must not match, for the same reason `4291` is not `429`.
+#[test]
+fn a_token_in_a_word_is_not_a_dead_grant() {
+    assert!(
+        !is_dead_token("me: invalid_granted something"),
+        "invalid_granted is not invalid_grant"
+    );
+}
+
 /// The quota wait has to fit the window Spotify actually hands out.
 ///
 /// A live refusal answered `Retry-After: 17`, so waiting minutes to retry a

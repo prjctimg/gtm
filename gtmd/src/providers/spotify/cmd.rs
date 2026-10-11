@@ -201,6 +201,10 @@ impl Spotify {
             }
             mgr.web_client_id()
         };
+        {
+            let mgr = inner.spotify.lock().await;
+            mgr.save_oauth_port(port);
+        }
         let cid = resolved.as_str();
         // Log the app the flow is actually running under, at the point it
         // starts. The link-time log only fires once the flow completes, so a

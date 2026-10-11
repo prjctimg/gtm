@@ -1919,6 +1919,38 @@ pub(crate) fn is_rate_limit(err: &str) -> bool {
     })
 }
 
+/// Whether an error says the stored refresh token is no longer usable.
+///
+/// Distinct from [`is_rate_limit`] because the two want opposite things: a
+/// spent quota is worth waiting out, and a dead grant is worth a browser.
+/// There was no predicate for the second at all, so a revoked or expired
+/// refresh token surfaced as the string `spotify token refresh failed: ...`
+/// wrapped around an OAuth error and stopped there -- nothing classified it,
+/// nothing re-opened the authorize page, and nothing in Settings said the
+/// account needed relinking.
+///
+/// `invalid_grant` is what the token endpoint answers a refresh token it will
+/// not renew with, whether it was revoked, expired, or replayed. The two
+/// `401`s are what a Web API call answers once the grant really is gone.
+///
+/// A `401` is read at a boundary for the same reason `429` is: `status code
+/// 4010` is not a `401`, and a track title that happens to contain one is not a
+/// status.
+pub(crate) fn is_dead_token(err: &str) -> bool {
+    const INVALID_GRANT: &str = "invalid_grant";
+    if let Some(i) = err.find(INVALID_GRANT)
+        && err[i + INVALID_GRANT.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric())
+    {
+        return true;
+    }
+    // rspotify renders the refresh failure as the bare error message, so the
+    // OAuth body can arrive with no status code in front of it at all.
+    err.contains("Refresh token revoked") || err.contains("refresh token revoked")
+}
+
 /// Drop keychain entries left behind by removed providers. Their commands and
 /// readers are gone, so the values can never be used again and would otherwise
 /// sit in the OS keyring (or the config-dir file fallback) indefinitely. This
@@ -2486,6 +2518,18 @@ impl Daemon {
                                 // and retry on `RATE_LIMIT_RETRY`, which is safe
                                 // to be short because the latch keeps every other
                                 // path quiet until a call comes back clean.
+                                // The one failure a retry cannot fix. The
+                                // ladder below doubles to a 300s ceiling and
+                                // then repeats forever, so a revoked grant
+                                // spent the rest of the daemon's life being
+                                // re-refused on a timer while the account read
+                                // as connected in Settings.
+                                if is_dead_token(&e) {
+                                    Self::relaunch_authorization(&sync_inner).await;
+                                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                                    delay_secs = (delay_secs * 2).min(300);
+                                    continue;
+                                }
                                 if is_rate_limit(&e) {
                                     let cached = {
                                         let mut spotify = sync_inner.spotify.lock().await;
@@ -4311,6 +4355,49 @@ impl Daemon {
     /// a slow source cannot stall the tick. A station publishing no tracklist
     /// leaves the list empty and the queue falls back to the station name,
     /// exactly as before.
+    /// Open the authorize page again because the stored grant is dead.
+    ///
+    /// A revoked or expired refresh token does not come back on its own, and
+    /// this is the only case where a browser is the answer: the user has to
+    /// consent again, and no amount of retrying reaches that.
+    ///
+    /// Two guards, both load-bearing. It never runs while a flow of the user's
+    /// own is open, because `oauth_start` aborts whatever occupies the slot --
+    /// so a background relaunch landing during a manual link would cancel the
+    /// thing the user was in the middle of. And the ladder calls this on every
+    /// rung, so the slot being empty is what makes it once-per-streak rather
+    /// than once-per-failure: after the flow is spawned the slot is occupied,
+    /// so the next rung steps aside.
+    ///
+    /// The port comes off disk rather than being assumed. Only the client id
+    /// was persisted, so a user who registered their app with anything but the
+    /// default would otherwise be handed an authorize URL pointing at a
+    /// listener nobody bound, and the flow would sit until it timed out.
+    async fn relaunch_authorization(inner: &Arc<DaemonInner>) {
+        if inner.oauth_task.lock().await.is_some() {
+            debug!("spotify: the stored grant is dead but an authorization is already open");
+            return;
+        }
+        let port = {
+            let spotify = inner.spotify.lock().await;
+            spotify.oauth_port()
+        };
+        match Spotify::oauth_start(inner, port, None).await {
+            Ok(DaemonRes::SpotifyOauthStarted { url }) => {
+                // Opened here rather than left to the TUI: there is no picker
+                // waiting on this one, so nobody would ever see the URL.
+                if !gtm::oauth::open_browser(&url).await {
+                    warn!(
+                        "spotify: could not open a browser for the new grant — authorize at {url}"
+                    );
+                }
+                warn!("spotify: the stored grant was rejected — opened the authorize page again");
+            }
+            Ok(_) => warn!("spotify: could not start a re-authorization for the dead grant"),
+            Err(e) => warn!("spotify: could not start a re-authorization: {e}"),
+        }
+    }
+
     async fn sync_radio_list(inner: &Arc<DaemonInner>) {
         let station = {
             let state = inner.state.read().await;

@@ -87,6 +87,14 @@ const CLIENT_ID_FILE: &str = "spotify_client_id";
 /// because `api.spotify.com` accepts any valid app's token. One token can only
 /// be minted by one app, so the two legs need one each.
 const STREAM_FILE: &str = "spotify_stream.json";
+/// The loopback port the authorize redirect is registered on.
+///
+/// Persisted for the same reason as [`CLIENT_ID_FILE`]: an unattended
+/// re-authorization has to present the redirect URI the app was actually
+/// registered with, and there is nobody in front of it to correct a guess. The
+/// TUI re-seeds its field to the default on every open, so a user who
+/// registered anything else had that port nowhere but in their own memory.
+const OAUTH_PORT_FILE: &str = "spotify_oauth_port";
 const TOKEN_ACCESS_PERMS: u32 = 0o600;
 /// OAuth scope required for librespot native playback. Tokens issued before it
 /// was requested keep working for the Web API but cannot stream audio.
@@ -363,6 +371,39 @@ impl SpotifyManager {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(TOKEN_ACCESS_PERMS))
         {
             warn!("spotify: could not chmod the client id: {e}");
+        }
+    }
+
+    /// The loopback port the last authorize flow ran on.
+    ///
+    /// Falls back to [`DEFAULT_OAUTH_PORT`], which is what the TUI seeds the
+    /// field with, so an install that predates the file behaves as it always
+    /// did rather than failing to re-authorize.
+    pub fn oauth_port(&self) -> u16 {
+        std::fs::read_to_string(self.config_dir.join(OAUTH_PORT_FILE))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(oauth::DEFAULT_OAUTH_PORT)
+    }
+
+    /// Record the port an authorize flow ran on. Best-effort, like
+    /// [`Self::save_client_id`]: a failure costs a wrong redirect on the next
+    /// unattended re-authorization, so it must not fail the link that
+    /// succeeded.
+    pub(crate) fn save_oauth_port(&self, port: u16) {
+        let path = self.config_dir.join(OAUTH_PORT_FILE);
+        if let Err(e) = std::fs::create_dir_all(&self.config_dir) {
+            warn!("spotify: could not create the config dir for the oauth port: {e}");
+            return;
+        }
+        if let Err(e) = std::fs::write(&path, port.to_string()) {
+            warn!("spotify: could not write the oauth port: {e}");
+            return;
+        }
+        if let Err(e) =
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(TOKEN_ACCESS_PERMS))
+        {
+            warn!("spotify: could not chmod the oauth port: {e}");
         }
     }
 
