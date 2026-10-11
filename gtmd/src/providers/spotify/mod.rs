@@ -883,9 +883,39 @@ impl SpotifyManager {
         saved
     }
 
+    /// Re-read one playlist from the Web API into the cache.
+    ///
+    /// Used after a write. `playlist_add` pushed the track to Spotify and left
+    /// the cache describing the list as it was, so the picker kept showing the
+    /// pre-write track list -- and the snapshot is fresh for six hours, so
+    /// "refresh" was not a thing the user could do about it. Adding to a
+    /// playlist looked like it did nothing.
+    ///
+    /// Re-read rather than appended-to because the caller knows a uri and
+    /// nothing else: a synthetic entry would carry no name, no artist and no
+    /// album, and the list it lands in is the same list "All Tracks" is built
+    /// from, where a row with an empty title is worse than a row that is a
+    /// moment late. Re-reading also renumbers `index` for us, and `index` is
+    /// positional and is what `SpotifyResolve` resolves against.
+    ///
+    /// Best-effort: a playlist that will not re-read keeps the list it had,
+    /// which is the pre-write truth rather than a lie about a successful add.
+    pub async fn refresh_one_playlist(&mut self, client: &AuthCodePkceSpotify, id: &str) {
+        let Ok(playlist_id) = PlaylistId::from_id(id) else {
+            return;
+        };
+        let tracks = Self::fetch_playlist_tracks(client, playlist_id).await;
+        if tracks.is_empty() {
+            return;
+        }
+        if let Some(pl) = self.playlists.iter_mut().find(|p| p.id == id) {
+            pl.tracks = tracks;
+        }
+    }
+
     async fn fetch_playlist_tracks(
         client: &AuthCodePkceSpotify,
-        playlist_id: PlaylistId<'static>,
+        playlist_id: PlaylistId<'_>,
     ) -> Vec<SpotifyTrack> {
         let mut tracks = Vec::new();
         let mut items = client.playlist_items(playlist_id, None, None);

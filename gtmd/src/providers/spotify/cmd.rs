@@ -1133,6 +1133,15 @@ impl Spotify {
         playlist_add(&client, playlist_id, uri)
             .await
             .map_err(CoreError::Daemon)?;
+        // The write succeeded, so make the list say so. Best-effort and off the
+        // lock: the network round trip above is the slow half and the manager
+        // mutex is what playback, cover art and search all queue behind.
+        inner
+            .spotify
+            .lock()
+            .await
+            .refresh_one_playlist(&client, playlist_id)
+            .await;
         Ok(DaemonRes::Ok)
     }
 }
