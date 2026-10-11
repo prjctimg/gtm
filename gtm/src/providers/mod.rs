@@ -12,6 +12,7 @@
 
 pub mod charts;
 pub mod lastfm;
+pub mod playlist;
 pub mod podcast;
 pub mod radio;
 pub mod spotify;

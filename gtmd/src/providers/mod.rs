@@ -16,6 +16,7 @@ pub mod deezer;
 pub mod lastfm;
 pub mod lrclib;
 pub mod musicbrainz;
+pub mod playlists;
 pub mod podcast;
 pub mod radio;
 pub mod spotify;

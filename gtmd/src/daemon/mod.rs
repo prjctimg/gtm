@@ -58,6 +58,7 @@ use crate::library::{Library, extract_metadata};
 use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
 use crate::network;
 use crate::podcast::PodcastManager;
+use crate::providers::playlists::PlaylistRegistry;
 use crate::providers::spotify::cmd::{OwnedMeta, StreamMeta};
 use crate::providers::spotify::cover::{PRELOAD_LEAD, preload};
 use crate::providers::spotify::stream::{SessionSpec, StreamManager};
@@ -1734,6 +1735,12 @@ pub(crate) struct DaemonInner {
     /// Chart providers registry (Spotify first; more sources plug in via the
     /// same `ChartProvider` trait).
     pub(crate) charts: tokio::sync::Mutex<ChartsRegistry>,
+    /// Every provider that owns playlists, routed by `source_id`.
+    ///
+    /// Held separately from `spotify` because it is the registry the verbs are
+    /// dispatched through, not a Spotify thing: a second provider registers here
+    /// and answers the same seven verbs without a new command variant.
+    pub(crate) playlists: tokio::sync::Mutex<PlaylistRegistry>,
     /// librespot streaming bridge for Premium Spotify playback.
     pub(crate) stream: tokio::sync::Mutex<StreamManager>,
     /// Pending OAuth link flow task; aborted when a new flow starts or the
@@ -2235,6 +2242,7 @@ impl Daemon {
             radio: tokio::sync::Mutex::new(RadioBrowserManager::new()),
             radio_list: tokio::sync::Mutex::new(None),
             charts: tokio::sync::Mutex::new(ChartsRegistry::empty()),
+            playlists: tokio::sync::Mutex::new(PlaylistRegistry::empty()),
             stream: tokio::sync::Mutex::new(StreamManager::new(event_tx.clone())),
             oauth_task: tokio::sync::Mutex::new(None),
             oauth_lastfm_task: tokio::sync::Mutex::new(None),
@@ -2267,6 +2275,16 @@ impl Daemon {
         {
             let mut charts = inner.charts.lock().await;
             charts.add_free_defaults();
+        }
+        // Registered here rather than in `Daemon::new`, because the registry
+        // needs the `Arc<DaemonInner>` it is reached through: a Spotify
+        // implementation holding the manager is what lets the verbs clone a
+        // client and release the lock before touching the network.
+        {
+            let mut playlists = inner.playlists.lock().await;
+            if playlists.is_empty() {
+                *playlists = PlaylistRegistry::with_defaults(Arc::clone(&inner));
+            }
         }
 
         if let Some(addr) = web_addr {
