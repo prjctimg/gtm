@@ -4,6 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,9 +15,26 @@ use tracing::warn;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Shared slot that receives the latest ICY `StreamTitle` parsed off a live
-/// stream. Written on the decode thread; polled at ~1 Hz by the daemon.
-pub type IcySlot = Arc<Mutex<Option<String>>>;
+/// How many ICY titles are kept. A tracklist, not a log: forty entries is about
+/// a radio hour and is the depth the published tracklists themselves reach.
+const ICY_HISTORY: usize = 40;
+
+/// The titles seen on the current stream, oldest first.
+pub type IcyTitles = VecDeque<String>;
+
+/// Shared slot that receives the ICY `StreamTitle`s parsed off a live stream.
+/// Written on the decode thread; polled at ~1 Hz by the daemon.
+///
+/// A history rather than a single value, because a single value is all the
+/// three registered sources need and everything else needs this. lauth.de,
+/// SomaFM and dancewave each publish a tracklist, and the long tail of
+/// radio-browser results matches none of them -- `track_fetch` answers
+/// "no tracklist source for <host>" and the queue shows the station name alone.
+/// ICY is the one thing every one of them carries, so the list can be read off
+/// the stream rather than found, and it costs nothing on a station that already
+/// has a source: those keep publishing theirs, which carries artist, album art
+/// and timestamps ICY does not.
+pub type IcySlot = Arc<Mutex<IcyTitles>>;
 
 /// Shoutcast/ICEcast transparently tag a request with `Icy-MetaData: 1` so it
 /// advertises metadata mode.
@@ -93,6 +111,24 @@ impl IcyReader {
         }
     }
 
+    /// Record a title against the stream's history.
+    ///
+    /// ICY re-sends the same `StreamTitle` on every metaint block, so an
+    /// unconditional push fills the history with one track repeated a thousand
+    /// times and evicts every real one before the listener scrolls. Only a
+    /// change is recorded, which is also the only thing that makes a scroll of
+    /// the list meaningful.
+    fn push_title(slot: &IcySlot, title: String) {
+        let mut titles = slot.lock().unwrap();
+        if titles.back() == Some(&title) {
+            return;
+        }
+        titles.push_back(title);
+        while titles.len() > ICY_HISTORY {
+            titles.pop_front();
+        }
+    }
+
     /// Pull the `StreamTitle='...'` value out of a metadata block body.
     fn capture_title(meta: &[u8]) -> Option<String> {
         let text = String::from_utf8_lossy(meta);
@@ -151,7 +187,7 @@ impl Read for IcyReader {
                 let mut meta = vec![0u8; block_len];
                 self.read_exact(&mut meta)?;
                 if let Some(title) = Self::capture_title(&meta) {
-                    *self.slot.lock().unwrap() = Some(title);
+                    Self::push_title(&self.slot, title);
                 }
             }
             self.audio_remaining = self.metaint;

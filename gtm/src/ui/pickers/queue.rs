@@ -162,6 +162,12 @@ impl Pickers {
     /// has no queue to reorder, so this is strictly a view: no move, no
     /// remove, no play. Timestamps come from the source and order the list
     /// chronologically, so the entry on air is the newest.
+    ///
+    /// Only ever called with a non-empty list: `render_queue` routes here on
+    /// exactly that condition. A station that publishes no tracklist is not a
+    /// panel with a line saying so -- it is the ordinary queue view, because a
+    /// panel whose entire content is "nothing to show" is one more thing
+    /// between the listener and the station.
     fn render_live(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let sel = app.pickers.top().map_or(0, |o| o.selected);
         let block = Self::picker_panel(
@@ -173,12 +179,6 @@ impl Pickers {
         f.render_widget(block, area);
 
         let total = app.live_queue().len();
-        if total == 0 {
-            let p = Paragraph::new("No tracklist published")
-                .style(Style::default().fg(app.theme.fg_dim));
-            f.render_widget(p, inner);
-            return;
-        }
         let on_air = app.state.radio_tracks.at;
         let now = app.state.radio_tracks.at_time;
         let visible = inner.height as usize;

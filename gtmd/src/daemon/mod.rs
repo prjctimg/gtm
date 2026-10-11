@@ -33,7 +33,7 @@ use gtm::shared::ipc::{
     LibraryAction, QueueAction, SyncKind, WireReq,
 };
 use gtm::shared::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
-use gtm::shared::radio::RadioTracklist;
+use gtm::shared::radio::{RadioTrack, RadioTracklist};
 use gtm::shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, delete_secret, get_secret, set_secret,
 };
@@ -43,6 +43,7 @@ use gtm::shared::wire;
 use gtm::shared::{CoreError, MetadataPatch};
 #[cfg(feature = "pulseaudio")]
 use gtm::shared::{ensure_termux_pulse, is_termux};
+use std::collections::VecDeque;
 
 use crate::charts::ChartsRegistry;
 use crate::cleaner::{
@@ -660,7 +661,7 @@ impl Cmd {
         // Fetch + probe the provider's stream off the async thread. Live radio
         // does not reconnect for seeks; podcast streams do. Reset any stale
         // live title before (re)connecting.
-        *inner.icy_title.lock().unwrap() = None;
+        *inner.icy_title.lock().unwrap() = std::collections::VecDeque::new();
         {
             let mut state = inner.state.write().await;
             state.radio_title = None;
@@ -2210,7 +2211,7 @@ impl Daemon {
             stream_recovered_for: tokio::sync::Mutex::new(None),
             cover_preloaded_for: tokio::sync::Mutex::new(None),
             last_pos_broadcast: tokio::sync::Mutex::new(None),
-            icy_title: Arc::new(std::sync::Mutex::new(None)),
+            icy_title: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             sleep_gen: Arc::new(AtomicU64::new(0)),
             sleep_at_end: Arc::new(AtomicBool::new(false)),
             play_session: Arc::new(AtomicU64::new(0)),
@@ -4183,7 +4184,9 @@ impl Daemon {
     /// playback clears any stale title so it never leaks onto a local track.
     /// Called from the ~1 Hz position tick.
     async fn sync_radio_title(inner: &Arc<DaemonInner>) {
-        let slot_title = inner.icy_title.lock().unwrap().clone();
+        let titles = inner.icy_title.lock().unwrap().clone();
+        let slot_title = titles.back().cloned();
+        let history_len = titles.len();
         let mut state = inner.state.write().await;
         let is_live = state
             .current_track
@@ -4205,8 +4208,61 @@ impl Daemon {
             state.radio_title = None;
         }
         let title = state.radio_title.clone();
+        let from_icy = state.radio_tracks.tracks.is_empty() && history_len > 1;
         drop(state);
         Self::push_event(inner, DaemonEvent::RadioTitleChanged { title });
+        if from_icy {
+            Self::publish_icy_history(inner, titles).await;
+        }
+    }
+
+    /// Turn the stream's own ICY history into a tracklist, for a station no
+    /// registered source answers for.
+    ///
+    /// `sync_radio_list` owns the station's tracklist and publishes a fetched
+    /// one, which carries the artist split, the album art and the timestamps
+    /// ICY cannot. This runs only when that list is still empty, so a station
+    /// with a source keeps the better one and the two never argue. Between
+    /// them a station is never empty: either its source answered, or the
+    /// stream did.
+    ///
+    /// Only a change in length is published. The titles themselves cannot
+    /// change without the length changing -- they are appended, never edited --
+    /// so this fires once per track rather than once per second.
+    async fn publish_icy_history(inner: &Arc<DaemonInner>, titles: VecDeque<String>) {
+        if titles.is_empty() {
+            return;
+        }
+        let tracks: Vec<RadioTrack> = titles
+            .into_iter()
+            .map(|title| RadioTrack {
+                title,
+                artist: String::new(),
+                start: None,
+                art: None,
+            })
+            .collect();
+        // Oldest first, so the entry on air is the tail -- the opposite end
+        // from the fetched sources, which lead with it.
+        let list = RadioTracklist {
+            at: tracks.len() - 1,
+            tracks,
+            at_time: chrono::Utc::now().timestamp(),
+        };
+        {
+            let mut state = inner.state.write().await;
+            if !state.radio_tracks.tracks.is_empty() {
+                return;
+            }
+            state.radio_tracks = list.clone();
+        }
+        Self::push_event(
+            inner,
+            DaemonEvent::RadioTracksChanged {
+                list: Box::new(list),
+                artist: None,
+            },
+        );
     }
 
     /// Refetch the playing station's tracklist on its interval and mirror it
