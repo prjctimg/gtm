@@ -111,6 +111,24 @@ impl PlaylistCaps {
     }
 }
 
+/// One registered provider, as the client sees it.
+///
+/// Lives here rather than in the daemon's registry because the client has to
+/// decode it: the whole point of the list is that the UI greys out what a
+/// provider will refuse, and it cannot do that without being told.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistSource {
+    pub source_id: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub caps: PlaylistCaps,
+    /// Why this provider is not usable right now, if it is registered and not
+    /// usable. The charts registry had no way to say this and went on offering
+    /// a provider whose endpoints had been removed.
+    #[serde(default)]
+    pub unavailable: Option<String>,
+}
+
 /// The seven verbs, named for the capability check and for error messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

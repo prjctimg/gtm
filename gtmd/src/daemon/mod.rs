@@ -30,7 +30,7 @@ use gtm::shared::global::{
 };
 use gtm::shared::ipc::{
     CacheKind, ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus,
-    LibraryAction, QueueAction, SyncKind, WireReq,
+    LibraryAction, PlaylistAction, QueueAction, SyncKind, WireReq,
 };
 use gtm::shared::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
 use gtm::shared::radio::{RadioTrack, RadioTracklist};
@@ -2027,6 +2027,9 @@ fn is_read_only(req: &DaemonReq) -> bool {
                     | LibraryAction::GetRecent { .. }
                     | LibraryAction::SyncStatus,
             }
+            | DaemonReq::Playlist {
+                action: PlaylistAction::Sources,
+            }
     )
 }
 
@@ -2081,6 +2084,19 @@ fn is_spotify_slow(req: &DaemonReq) -> bool {
             | DaemonReq::SpotifyMatch { .. }
             | DaemonReq::SpotifyLike { .. }
             | DaemonReq::SpotifyPlaylistAdd { .. }
+    )
+}
+
+/// Whether a playlist command reaches the network.
+///
+/// Every verb ends in a refresh of the playlist list, which is a Web API round
+/// trip plus a paginator walk. Unclassified it would land on `cmd_lock.write()`
+/// and stall `get_status` and `ping` behind all of that. `Sources` reads the
+/// registry and answers without a request, so it is left read-only.
+fn playlist_reaches_network(req: &DaemonReq) -> bool {
+    matches!(
+        req,
+        DaemonReq::Playlist { action } if !matches!(action, PlaylistAction::Sources)
     )
 }
 
@@ -3142,7 +3158,10 @@ impl Daemon {
         } else if request_is_playback(&req) {
             let _guard = inner.play_lock.write().await;
             Self::handle_request(&inner, &req, client_id).await
-        } else if is_spotify_slow(&req) {
+        } else if is_spotify_slow(&req) || playlist_reaches_network(&req) {
+            // Playlist writes share the Spotify slow lock because they are
+            // Spotify writes today and end in the same refresh `SpotifySync`
+            // does. `Sources` answers out of the registry and stays read-only.
             let _guard = inner.spotify_slow_lock.lock().await;
             Self::handle_request(&inner, &req, client_id).await
         } else if is_yt_slow(&req) {
@@ -3221,6 +3240,7 @@ impl Daemon {
                 .await
             }
             DaemonReq::Library { action } => LibraryHandler::handle(inner, action).await,
+            DaemonReq::Playlist { action } => Self::playlist(inner, action.clone()).await,
             DaemonReq::Search { query } => Search::handle(inner, query).await,
             DaemonReq::GetFavourites => Favourites::list(inner).await,
             DaemonReq::AddFavourite { track_id } => Favourites::add(inner, *track_id).await,
@@ -4413,6 +4433,113 @@ impl Daemon {
             }
             Ok(_) => warn!("spotify: could not start a re-authorization for the dead grant"),
             Err(e) => warn!("spotify: could not start a re-authorization: {e}"),
+        }
+    }
+
+    /// Dispatch one playlist verb through the registry.
+    ///
+    /// The provider is looked up by the id's own source, and the capability is
+    /// checked before anything is sent: offering `follow` on a provider that
+    /// cannot follow and answering with a provider error is worse than not
+    /// offering it, and a registry that lists a verb it will refuse is exactly
+    /// the failure the charts provider turned into.
+    async fn playlist(
+        inner: &Arc<DaemonInner>,
+        action: PlaylistAction,
+    ) -> Result<DaemonRes, CoreError> {
+        use gtm::providers::playlist::{PlaylistError, Verb};
+        let bad = |e: PlaylistError| CoreError::Daemon(e.to_string());
+
+        if let PlaylistAction::Sources = action {
+            let linked = inner.spotify.lock().await.linked();
+            let sources = inner.playlists.lock().await.sources(linked);
+            return Ok(DaemonRes::PlaylistSources { sources });
+        }
+
+        // Each arm looks the provider up by the id's own source and has the
+        // registry refuse an unsupported verb before anything is sent. The
+        // lookup returns an `Arc`, so the registry lock is dropped here and the
+        // call is awaited without it: a provider clones a client and releases
+        // the Spotify manager before it awaits, and a registry held across that
+        // would serialise the source list and every other provider behind one
+        // slow verb.
+        match action {
+            PlaylistAction::Sources => unreachable!("answered above"),
+            PlaylistAction::Create { source, spec } => {
+                let provider = inner.playlists.lock().await.get(&source).ok_or_else(|| {
+                    CoreError::Daemon(format!("no playlist provider named {source}"))
+                })?;
+                if !provider.caps().offers(Verb::Create) {
+                    return Err(CoreError::Daemon(
+                        Verb::unsupported(Verb::Create).to_string(),
+                    ));
+                }
+                let made = provider.create(spec).await.map_err(bad)?;
+                Ok(DaemonRes::PlaylistCreated { id: Some(made.id) })
+            }
+            PlaylistAction::Rename { id, spec } => {
+                let provider = inner
+                    .playlists
+                    .lock()
+                    .await
+                    .check(&id, Verb::Rename)
+                    .map_err(bad)?;
+                provider.rename(&id, spec).await.map_err(bad)?;
+                Ok(DaemonRes::Ok)
+            }
+            PlaylistAction::Add { id, items, at } => {
+                let provider = inner
+                    .playlists
+                    .lock()
+                    .await
+                    .check(&id, Verb::Add)
+                    .map_err(bad)?;
+                provider.add_items(&id, &items, at).await.map_err(bad)?;
+                Ok(DaemonRes::Ok)
+            }
+            PlaylistAction::Remove { id, slots } => {
+                let provider = inner
+                    .playlists
+                    .lock()
+                    .await
+                    .check(&id, Verb::Remove)
+                    .map_err(bad)?;
+                provider
+                    .remove_occurrences(&id, &slots)
+                    .await
+                    .map_err(bad)?;
+                Ok(DaemonRes::Ok)
+            }
+            PlaylistAction::Delete { id } => {
+                let provider = inner
+                    .playlists
+                    .lock()
+                    .await
+                    .check(&id, Verb::Delete)
+                    .map_err(bad)?;
+                provider.delete(&id).await.map_err(bad)?;
+                Ok(DaemonRes::Ok)
+            }
+            PlaylistAction::Subscribe { id, on } => {
+                let provider = inner
+                    .playlists
+                    .lock()
+                    .await
+                    .check(&id, Verb::Subscribe)
+                    .map_err(bad)?;
+                provider.subscribe(&id, on).await.map_err(bad)?;
+                Ok(DaemonRes::Ok)
+            }
+            PlaylistAction::Copy { id, name } => {
+                let provider = inner
+                    .playlists
+                    .lock()
+                    .await
+                    .check(&id, Verb::Copy)
+                    .map_err(bad)?;
+                let made = provider.copy(&id, name.as_deref()).await.map_err(bad)?;
+                Ok(DaemonRes::PlaylistCreated { id: Some(made.id) })
+            }
         }
     }
 

@@ -4,6 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use crate::providers::playlist::{NewPlaylist, PlaylistId, PlaylistItem, PlaylistSlot};
 use crate::shared::chart::{ChartPlaylist, ChartSource, ChartTrack};
 use crate::shared::global::{DaemonState, EqPreset, RepeatMode, YTFilter};
 use crate::shared::playlist::PlaylistFormatKind;
@@ -73,6 +74,51 @@ pub enum QueueAction {
     /// how a queue full of rows titled "Spotify Track" happened.
     Set {
         tracks: Vec<TrackInfo>,
+    },
+}
+
+/// A playlist write, in provider-neutral terms.
+///
+/// Shaped like [`LibraryAction`] on purpose: one tagged command carrying a verb
+/// reads better than seven top-level variants, and the daemon dispatches the
+/// whole set through one registry entry instead of a match arm per provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum PlaylistAction {
+    /// What every registered provider offers, and which are usable.
+    Sources,
+    Create {
+        source: String,
+        #[serde(default)]
+        spec: NewPlaylist,
+    },
+    Rename {
+        id: PlaylistId,
+        spec: NewPlaylist,
+    },
+    Add {
+        id: PlaylistId,
+        items: Vec<PlaylistItem>,
+        /// Where to insert. `None` appends, which is the only position most
+        /// callers mean.
+        #[serde(default)]
+        at: Option<u32>,
+    },
+    Remove {
+        id: PlaylistId,
+        slots: Vec<PlaylistSlot>,
+    },
+    Delete {
+        id: PlaylistId,
+    },
+    Subscribe {
+        id: PlaylistId,
+        on: bool,
+    },
+    Copy {
+        id: PlaylistId,
+        #[serde(default)]
+        name: Option<String>,
     },
 }
 
@@ -272,6 +318,11 @@ pub enum DaemonReq {
     Library {
         #[serde(flatten)]
         action: LibraryAction,
+    },
+    /// Playlist writes, dispatched through the provider registry.
+    Playlist {
+        #[serde(flatten)]
+        action: PlaylistAction,
     },
     Search {
         query: String,
@@ -614,6 +665,7 @@ impl DaemonReq {
             DaemonReq::ListEqPresets => "list_eq_presets",
             DaemonReq::Queue { .. } => "queue",
             DaemonReq::Library { .. } => "library",
+            DaemonReq::Playlist { .. } => "playlist",
             DaemonReq::Search { .. } => "search",
             DaemonReq::GetFavourites => "get_favourites",
             DaemonReq::AddFavourite { .. } => "add_favourite",
@@ -907,6 +959,15 @@ impl DaemonReq {
                 }
                 let x: Params = p(params)?;
                 DaemonReq::Library { action: x.action }
+            }
+            "playlist" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    #[serde(flatten)]
+                    action: PlaylistAction,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::Playlist { action: x.action }
             }
             "search" => {
                 #[derive(Deserialize)]
@@ -1759,6 +1820,15 @@ pub enum DaemonRes {
     ChartsSourcesRes {
         sources: Vec<ChartSource>,
     },
+    /// What every registered playlist provider offers, and which are usable.
+    PlaylistSources {
+        sources: Vec<crate::providers::playlist::PlaylistSource>,
+    },
+    /// The id a create or a copy minted.
+    PlaylistCreated {
+        #[serde(default)]
+        id: Option<String>,
+    },
     ChartsListRes {
         charts: Vec<ChartPlaylist>,
     },
@@ -1892,6 +1962,10 @@ impl DaemonRes {
             DaemonRes::ChartsSourcesRes { sources } => {
                 Some(serde_json::json!({ "sources": sources }))
             }
+            DaemonRes::PlaylistSources { sources } => {
+                Some(serde_json::json!({ "playlist_sources": sources }))
+            }
+            DaemonRes::PlaylistCreated { id } => Some(serde_json::json!({ "playlist_id": id })),
             DaemonRes::ChartsListRes { charts } => Some(serde_json::json!({ "charts": charts })),
             DaemonRes::ChartsTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
             DaemonRes::ChartsLoaded { charts } => Some(serde_json::json!({ "charts": charts })),
@@ -2065,6 +2139,8 @@ impl DaemonRes {
             DaemonRes::RadioCountriesRes { countries } => field!("countries", &countries),
             DaemonRes::RadioTracklistRes { list } => field!("list", &list),
             DaemonRes::ChartsSourcesRes { sources } => field!("sources", &sources),
+            DaemonRes::PlaylistSources { sources } => field!("playlist_sources", &sources),
+            DaemonRes::PlaylistCreated { id } => field!("playlist_id", &id),
             DaemonRes::ChartsListRes { charts } => field!("charts", &charts),
             DaemonRes::ChartsTracksRes { tracks } => field!("tracks", &tracks),
             DaemonRes::ChartsLoaded { charts } => field!("charts", &charts),
@@ -2336,6 +2412,21 @@ impl DaemonRes {
                 match serde_json::from_value::<Vec<PodcastFeed>>(field(&data, "feeds")) {
                     Ok(feeds) => DaemonRes::PodcastFeedsRes { feeds },
                     Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "playlist" => {
+                if data.get("playlist_sources").is_some() {
+                    match serde_json::from_value::<Vec<crate::providers::playlist::PlaylistSource>>(
+                        field(&data, "playlist_sources"),
+                    ) {
+                        Ok(sources) => DaemonRes::PlaylistSources { sources },
+                        Err(_) => DaemonRes::Value { value: data },
+                    }
+                } else {
+                    match serde_json::from_value::<Option<String>>(field(&data, "playlist_id")) {
+                        Ok(id) => DaemonRes::PlaylistCreated { id },
+                        Err(_) => DaemonRes::Value { value: data },
+                    }
                 }
             }
             "charts_sources" => {

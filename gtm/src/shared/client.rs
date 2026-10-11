@@ -16,12 +16,15 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
+use crate::providers::playlist::{
+    NewPlaylist, PlaylistId, PlaylistItem, PlaylistSlot, PlaylistSource,
+};
 use crate::shared::CoreError;
 use crate::shared::Result;
 use crate::shared::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
 use crate::shared::ipc::{
     CacheKind, DaemonEvent, DaemonReq, DaemonRes, HealthReport, LibraryAction, MetadataPatch,
-    QueueAction, SyncKind, WireRes,
+    PlaylistAction, QueueAction, SyncKind, WireRes,
 };
 use crate::shared::log::log;
 use crate::shared::playlist::PlaylistFormatKind;
@@ -491,6 +494,11 @@ impl DaemonClient {
 
     pub fn charts(&self) -> Charts<'_> {
         Charts { client: self }
+    }
+
+    /// Playlist writes, in provider-neutral terms.
+    pub fn playlists(&self) -> Playlists<'_> {
+        Playlists { client: self }
     }
 
     pub fn lastfm(&self) -> Lastfm<'_> {
@@ -2072,5 +2080,90 @@ async fn pulse_reader(
             }
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Playlist writes, routed to whichever provider owns the playlist.
+pub struct Playlists<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Playlists<'a> {
+    async fn send(&self, action: PlaylistAction) -> Result<DaemonRes> {
+        self.client.send_raw(DaemonReq::Playlist { action }).await
+    }
+
+    /// What every registered provider offers, and which are usable.
+    pub async fn sources(&self) -> Result<Vec<PlaylistSource>> {
+        match self.send(PlaylistAction::Sources).await? {
+            DaemonRes::PlaylistSources { sources } => Ok(sources),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Create a playlist and answer its provider id.
+    pub async fn create(&self, source: &str, spec: NewPlaylist) -> Result<Option<String>> {
+        match self
+            .send(PlaylistAction::Create {
+                source: source.to_string(),
+                spec,
+            })
+            .await?
+        {
+            DaemonRes::PlaylistCreated { id } => Ok(id),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    pub async fn rename(&self, id: PlaylistId, spec: NewPlaylist) -> Result<()> {
+        self.send(PlaylistAction::Rename { id, spec })
+            .await
+            .map(|_| ())
+    }
+
+    /// Append items, or insert at `at`.
+    pub async fn add(
+        &self,
+        id: PlaylistId,
+        items: Vec<PlaylistItem>,
+        at: Option<u32>,
+    ) -> Result<()> {
+        self.send(PlaylistAction::Add { id, items, at })
+            .await
+            .map(|_| ())
+    }
+
+    /// Remove these occurrences of these items.
+    ///
+    /// The track and where it sits, never the track alone: a playlist may hold
+    /// the same track twice, and "remove this one" is not "remove every copy".
+    pub async fn remove(&self, id: PlaylistId, slots: Vec<PlaylistSlot>) -> Result<()> {
+        self.send(PlaylistAction::Remove { id, slots })
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn delete(&self, id: PlaylistId) -> Result<()> {
+        self.send(PlaylistAction::Delete { id }).await.map(|_| ())
+    }
+
+    pub async fn subscribe(&self, id: PlaylistId, on: bool) -> Result<()> {
+        self.send(PlaylistAction::Subscribe { id, on })
+            .await
+            .map(|_| ())
+    }
+
+    /// Copy a playlist the account can read into one it owns.
+    pub async fn copy(&self, id: PlaylistId, name: Option<&str>) -> Result<Option<String>> {
+        match self
+            .send(PlaylistAction::Copy {
+                id,
+                name: name.map(str::to_string),
+            })
+            .await?
+        {
+            DaemonRes::PlaylistCreated { id } => Ok(id),
+            other => Err(unexpected(&other)),
+        }
     }
 }

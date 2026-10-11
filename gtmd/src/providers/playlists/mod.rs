@@ -6,31 +6,24 @@
 
 pub(crate) mod spotify;
 
-use gtm::providers::playlist::{PlaylistCaps, PlaylistError, PlaylistId, PlaylistProvider, Verb};
+use std::sync::Arc;
+
+use gtm::providers::playlist::{PlaylistError, PlaylistId, PlaylistProvider, PlaylistSource, Verb};
 use tracing::debug;
 
 pub(crate) use spotify::SpotifyPlaylists;
 
 use crate::daemon::DaemonInner;
 
-/// One registered provider, as the client sees it.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PlaylistSource {
-    pub source_id: String,
-    pub display_name: String,
-    #[serde(default)]
-    pub caps: PlaylistCaps,
-    /// Why this provider is not usable right now, if it is registered and not
-    /// usable. The charts registry had no way to say this and kept offering a
-    /// provider whose endpoints had been removed.
-    #[serde(default)]
-    pub unavailable: Option<String>,
-}
-
 /// Every provider that owns playlists, routed by `source_id`.
+///
+/// Providers are held behind an `Arc` and cloned out on lookup so the daemon
+/// can drop the registry lock before it touches the network. A verb that awaits
+/// while holding this lock would serialise the source list and every other
+/// provider behind one slow call.
 #[derive(Default)]
 pub struct PlaylistRegistry {
-    providers: Vec<Box<dyn PlaylistProvider>>,
+    providers: Vec<Arc<dyn PlaylistProvider>>,
 }
 
 impl PlaylistRegistry {
@@ -47,11 +40,11 @@ impl PlaylistRegistry {
     /// seven verbs and a `PlaylistCaps` that says so.
     pub(crate) fn with_defaults(inner: std::sync::Arc<DaemonInner>) -> Self {
         let mut r = Self::empty();
-        r.register(Box::new(SpotifyPlaylists::new(inner)));
+        r.register(Arc::new(SpotifyPlaylists::new(inner)));
         r
     }
 
-    pub fn register(&mut self, provider: Box<dyn PlaylistProvider>) {
+    pub fn register(&mut self, provider: Arc<dyn PlaylistProvider>) {
         debug!("playlist: registered {}", provider.source_id());
         self.providers.push(provider);
     }
@@ -60,11 +53,11 @@ impl PlaylistRegistry {
         self.providers.is_empty()
     }
 
-    pub fn get(&self, source_id: &str) -> Option<&dyn PlaylistProvider> {
+    pub fn get(&self, source_id: &str) -> Option<Arc<dyn PlaylistProvider>> {
         self.providers
             .iter()
             .find(|p| p.source_id() == source_id)
-            .map(AsRef::as_ref)
+            .cloned()
     }
 
     /// What the client needs to draw a source list and grey out what is not
@@ -91,7 +84,7 @@ impl PlaylistRegistry {
         &self,
         id: &PlaylistId,
         verb: Verb,
-    ) -> Result<&dyn PlaylistProvider, PlaylistError> {
+    ) -> Result<Arc<dyn PlaylistProvider>, PlaylistError> {
         let p = self.get(&id.source).ok_or_else(|| {
             PlaylistError::NotPermitted(format!("no playlist provider named {}", id.source))
         })?;

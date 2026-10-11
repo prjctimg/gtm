@@ -4,6 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use gtm::providers::playlist::{PlaylistCaps, PlaylistSource};
 use gtm::shared::Result;
 use gtm::shared::chart::{ChartPlaylist, ChartSource, ChartTrack};
 use gtm::shared::global::{
@@ -620,6 +621,27 @@ fn every_client_expectation_round_trips() {
                 url: "https://www.last.fm/api/auth/?api_key=k1&token=t1".into(),
             },
         ),
+        (
+            "playlist",
+            DaemonRes::PlaylistSources {
+                sources: vec![PlaylistSource {
+                    source_id: "spotify".into(),
+                    display_name: "Spotify".into(),
+                    caps: PlaylistCaps::ALL,
+                    unavailable: None,
+                }],
+            },
+        ),
+        // A create and a copy answer with the minted id, which the client
+        // returns; without the arm it decoded to `Value` and the caller got
+        // "unexpected response" for a write that had succeeded.
+        (
+            "playlist",
+            DaemonRes::PlaylistCreated {
+                id: Some("37i9dQ".into()),
+            },
+        ),
+        ("playlist", DaemonRes::PlaylistCreated { id: None }),
     ];
     for (cmd, res) in cases {
         let expected = format!("{res:?}");
