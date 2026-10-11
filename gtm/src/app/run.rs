@@ -400,6 +400,18 @@ impl App {
                     self.auto_track_advance = !self.manual_track_advance;
                     // Any PlaybackStarted consumes the manual-advance flag.
                     self.manual_track_advance = false;
+                    self.manual_advance_until = None;
+                }
+                // Advancing off the end of the queue stops playback instead of
+                // starting it, and so does a play the daemon refused -- and the
+                // latter answers the caller rather than the event stream, so
+                // without this the hold would outlive the change it was for.
+                if matches!(
+                    ev,
+                    DaemonEvent::PlaybackStopped | DaemonEvent::PlaybackPaused { .. }
+                ) {
+                    self.manual_track_advance = false;
+                    self.manual_advance_until = None;
                 }
                 if matches!(ev, DaemonEvent::PlaybackStarted { .. }) {
                     had_track_change = true;
@@ -1700,6 +1712,17 @@ impl App {
                     .unwrap_or(0.0)
             };
             let mut raw_pos = self.client.estimated_position().await;
+            // A manual Next/Prev is in flight. The daemon is inside `step_next`
+            // and `Cmd::play` -- a yt-dlp resolve, a Spotify connect, seconds
+            // of it -- and until its PlaybackStarted lands, `is_playing` is
+            // still true and the clock is still anchored to the track being
+            // abandoned. So the bar kept sweeping, and because `raw_position`
+            // is what `lyric_index_at` reads, the time-synced highlight raced
+            // through the remaining lines of the song that had just stopped.
+            // Hold both; the event above re-anchors the clock.
+            if self.manual_advance_held() {
+                raw_pos = self.raw_position;
+            }
             // Monotonic guard: prevent large backward jumps from clock skew.
             // Allow at most 0.5s of regression to avoid visible stutter.
             // Skipped right after a seek, otherwise a backward seek gets clamped

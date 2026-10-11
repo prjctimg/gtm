@@ -553,6 +553,15 @@ pub struct App {
     /// Set when the user manually triggers Next/Prev so the "Up next"
     /// notification only appears on genuine auto-advance.
     pub manual_track_advance: bool,
+    /// When that manual advance stops being believed in.
+    ///
+    /// The flag above is cleared by whatever event ends the change, but a
+    /// daemon that fails the play outright sends nothing back -- `Cmd::play`'s
+    /// error propagates out of `next()` and answers the caller, not the event
+    /// stream -- so the hold that goes with it needs a bound of its own. A
+    /// progress bar and a lyric highlight that stop moving is the point; ones
+    /// that stop *forever* because nothing came back are just a broken readout.
+    pub(crate) manual_advance_until: Option<std::time::Instant>,
     /// True for the current track change if it was automatic (not a manual
     /// Next/Prev/seek). Captured when PlaybackStarted is drained, before the
     /// manual-advance flag is reset, so the dust animation can be gated to
@@ -1383,6 +1392,7 @@ impl App {
             is_ready: false,
             last_queue_cursor: initial_cursor,
             manual_track_advance: false,
+            manual_advance_until: None,
             auto_track_advance: false,
             path_display: None,
             idle_reset: false,

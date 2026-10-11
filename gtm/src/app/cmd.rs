@@ -1,5 +1,13 @@
 use crate::app::*;
 
+/// How long a manual Next/Prev holds the progress clock before the answer is
+/// assumed never to be coming.
+///
+/// Generous, because the hold exists to cover a yt-dlp resolve or a Spotify
+/// connect and both are routinely slow. Short enough that a daemon which never
+/// answers does not leave a dead readout on screen indefinitely.
+const MANUAL_ADVANCE_HOLD: std::time::Duration = std::time::Duration::from_secs(20);
+
 impl App {
     pub(crate) fn handle_command(&mut self, cmd: TuiCommand) {
         // All IPC calls are spawned as background tasks to avoid blocking the UI loop.
@@ -45,6 +53,7 @@ impl App {
             }
             TuiCommand::Next => {
                 self.manual_track_advance = true;
+                self.manual_advance_until = Some(std::time::Instant::now() + MANUAL_ADVANCE_HOLD);
                 tokio::spawn(async move {
                     if let Err(e) = client.next().await {
                         error_handler(e);
@@ -53,6 +62,7 @@ impl App {
             }
             TuiCommand::Prev => {
                 self.manual_track_advance = true;
+                self.manual_advance_until = Some(std::time::Instant::now() + MANUAL_ADVANCE_HOLD);
                 tokio::spawn(async move {
                     if let Err(e) = client.prev().await {
                         error_handler(e);

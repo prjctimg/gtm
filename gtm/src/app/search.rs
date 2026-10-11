@@ -955,6 +955,19 @@ impl App {
             .collect()
     }
 
+    /// Whether the progress clock and the synced lyric highlight are held
+    /// because a manual Next/Prev has not landed yet.
+    ///
+    /// Latched by the key press and released by the event that ends the change,
+    /// with the deadline from the press as the backstop for a daemon that never
+    /// sends one.
+    pub(crate) fn manual_advance_held(&self) -> bool {
+        self.manual_track_advance
+            && self
+                .manual_advance_until
+                .is_some_and(|d| std::time::Instant::now() < d)
+    }
+
     /// The tracks an Edit Metadata applies to, and the field template they
     /// seed from.
     ///
