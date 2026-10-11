@@ -1,7 +1,13 @@
 name: Update CONTRIBUTORS
 on:
-  release:
-    types: [published]
+  # A tag push, not `release: published`. The Release workflow creates the
+  # release with the API's `GITHUB_TOKEN`, and GitHub does not start new
+  # workflow runs for events that token triggers -- so the `published` event
+  # never fired and the list went stale with the release notes. A tag is pushed
+  # by a real actor and always delivers.
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
 permissions:
   contents: write
 env:
