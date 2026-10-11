@@ -979,7 +979,12 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::MultiselectUp) => {
-                        if self.multiselect_mode && !self.library_pane_focus {
+                        // `multiselect_ready` rather than the bare condition this
+                        // used: with multiselect off, or with the library pane
+                        // holding the focus, the row moved and stopped, with
+                        // nothing said about either. The palette twins of these
+                        // two actions have always named the missing half.
+                        if self.multiselect_ready("Multiselect Up") {
                             let pos = self.list_pos().saturating_sub(1);
                             self.set_list_pos(pos);
                             self.update_track_popup();
@@ -987,7 +992,7 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::MultiselectDown) => {
-                        if self.multiselect_mode && !self.library_pane_focus {
+                        if self.multiselect_ready("Multiselect Down") {
                             let max_list = self.library_list_len().saturating_sub(1);
                             let pos = (self.list_pos() + 1).min(max_list);
                             self.set_list_pos(pos);
@@ -1806,71 +1811,11 @@ impl App {
                                 );
                                 return true;
                             }
-                            let ids = if self.group_row() {
-                                // Album/artist row: edit every cached track in
-                                // the album/artist in one batch.
-                                self.motion_row_ids().unwrap_or_default()
-                            } else {
-                                let tracks = self.filtered_tracks();
-                                match tracks.get(self.list_pos()) {
-                                    Some(t) => vec![t.id],
-                                    None => return true,
-                                }
-                            };
-                            if ids.is_empty() {
+                            let Some((ids, fields)) = self.edit_metadata_targets() else {
                                 return true;
-                            }
-                            // Seed the field template from the row itself: the
-                            // album/artist name for grouped rows, the
-                            // highlighted track otherwise.
-                            let grouped = self.group_row();
-                            let name = self
-                                .library_groups()
-                                .get(self.list_pos())
-                                .map_or_else(String::new, |(n, _)| n.clone());
-                            let (title, artist, album, genre, year, track_num) =
-                                match self.library_filter {
-                                    LibraryFilter::Albums if grouped => (
-                                        String::new(),
-                                        String::new(),
-                                        name,
-                                        String::new(),
-                                        None,
-                                        None,
-                                    ),
-                                    LibraryFilter::Artists if grouped => (
-                                        String::new(),
-                                        name,
-                                        String::new(),
-                                        String::new(),
-                                        None,
-                                        None,
-                                    ),
-                                    _ => {
-                                        let tracks = self.filtered_tracks();
-                                        match tracks.get(self.list_pos()) {
-                                            Some(t) => (
-                                                t.title.clone(),
-                                                t.artist.clone(),
-                                                t.album.clone(),
-                                                t.genre.clone(),
-                                                t.year,
-                                                t.track_number,
-                                            ),
-                                            None => return true,
-                                        }
-                                    }
-                                };
+                            };
                             self.metadata.edit_track_ids = ids;
-                            self.metadata.fields = [
-                                title,
-                                artist,
-                                album,
-                                String::new(),
-                                genre,
-                                year.map_or(String::new(), |y| y.to_string()),
-                                track_num.map_or(String::new(), |n| n.to_string()),
-                            ];
+                            self.metadata.fields = fields;
                             self.metadata.field_idx = 0;
                             self.pickers.open(PickerId::EditMetadata);
                             self.fetch_metadata_cover();
@@ -3983,41 +3928,11 @@ impl App {
                                                 NotifType::NowPlaying,
                                             );
                                         } else {
-                                            let track_data = {
-                                                let tracks = self.filtered_tracks();
-                                                tracks.get(self.list_pos()).map(|t| {
-                                                    (
-                                                        t.id,
-                                                        t.title.clone(),
-                                                        t.artist.clone(),
-                                                        t.album.clone(),
-                                                        t.genre.clone(),
-                                                        t.year,
-                                                        t.track_number,
-                                                    )
-                                                })
-                                            };
-                                            if let Some((
-                                                id,
-                                                title,
-                                                artist,
-                                                album,
-                                                genre,
-                                                year,
-                                                track_num,
-                                            )) = track_data
+                                            if let Some((ids, fields)) =
+                                                self.edit_metadata_targets()
                                             {
-                                                self.metadata.edit_track_ids = vec![id];
-                                                self.metadata.fields = [
-                                                    title,
-                                                    artist,
-                                                    album,
-                                                    String::new(),
-                                                    genre,
-                                                    year.map_or(String::new(), |y| y.to_string()),
-                                                    track_num
-                                                        .map_or(String::new(), |n| n.to_string()),
-                                                ];
+                                                self.metadata.edit_track_ids = ids;
+                                                self.metadata.fields = fields;
                                                 self.metadata.field_idx = 0;
                                                 self.pickers.open(PickerId::EditMetadata);
                                                 self.fetch_metadata_cover();

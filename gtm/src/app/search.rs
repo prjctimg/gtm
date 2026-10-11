@@ -955,6 +955,88 @@ impl App {
             .collect()
     }
 
+    /// The tracks an Edit Metadata applies to, and the field template they
+    /// seed from.
+    ///
+    /// Both entry points resolve this — the `e` key and the palette command —
+    /// and they used to resolve it twice, in two blocks that drifted apart:
+    /// only one of them ever looked at the selection, so `e` with five rows
+    /// multiselected opened a picker holding one track while the footer beside
+    /// it said five. One answer, asked in one place.
+    ///
+    /// The batch is the group row when the cursor is on an album or artist,
+    /// else the whole multiselection, else the highlighted track. The template
+    /// always seeds from the highlighted row, which is what makes one
+    /// representative of a set the user cannot see the other members of.
+    ///
+    /// `None` when there is nothing to edit.
+    pub(crate) fn edit_metadata_targets(&self) -> Option<(Vec<i64>, [String; 7])> {
+        let group = self.group_row();
+        let ids = if group {
+            self.motion_row_ids().unwrap_or_default()
+        } else if self.multiselect_mode && self.selected_count() > 0 {
+            // The cursor row is in the selection — Shift+Down adds the row it
+            // lands on — so unlike delete it is not held back here. Rewriting
+            // what you selected is the whole request, and dropping the row you
+            // are looking at would edit the selection minus its face.
+            self.selected_library_ids()
+        } else {
+            match self.filtered_tracks().get(self.list_pos()) {
+                Some(t) => vec![t.id],
+                None => return None,
+            }
+        };
+        if ids.is_empty() {
+            return None;
+        }
+
+        let name = self
+            .library_groups()
+            .get(self.list_pos())
+            .map_or_else(String::new, |(n, _)| n.clone());
+        let (title, artist, album, genre, year, track_num) = match self.library_filter {
+            LibraryFilter::Albums if group => (
+                String::new(),
+                String::new(),
+                name,
+                String::new(),
+                None,
+                None,
+            ),
+            LibraryFilter::Artists if group => (
+                String::new(),
+                name,
+                String::new(),
+                String::new(),
+                None,
+                None,
+            ),
+            _ => match self.filtered_tracks().get(self.list_pos()) {
+                Some(t) => (
+                    t.title.clone(),
+                    t.artist.clone(),
+                    t.album.clone(),
+                    t.genre.clone(),
+                    t.year,
+                    t.track_number,
+                ),
+                None => return None,
+            },
+        };
+        Some((
+            ids,
+            [
+                title,
+                artist,
+                album,
+                String::new(),
+                genre,
+                year.map_or(String::new(), |y| y.to_string()),
+                track_num.map_or(String::new(), |n| n.to_string()),
+            ],
+        ))
+    }
+
     /// Track ids owned by the list position `pos` (when that row maps to a
     /// concrete track). Returns `None` for album/artist/playlist/spotify rows
     /// whose cover is derived from a different key.
