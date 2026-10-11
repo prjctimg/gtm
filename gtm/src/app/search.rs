@@ -994,10 +994,7 @@ impl App {
             // are looking at would edit the selection minus its face.
             self.selected_library_ids()
         } else {
-            match self.filtered_tracks().get(self.list_pos()) {
-                Some(t) => vec![t.id],
-                None => return None,
-            }
+            vec![self.filtered_tracks().get(self.list_pos())?.id]
         };
         if ids.is_empty() {
             return None;
@@ -1024,17 +1021,18 @@ impl App {
                 None,
                 None,
             ),
-            _ => match self.filtered_tracks().get(self.list_pos()) {
-                Some(t) => (
+            _ => {
+                let tracks = self.filtered_tracks();
+                let t = tracks.get(self.list_pos())?;
+                (
                     t.title.clone(),
                     t.artist.clone(),
                     t.album.clone(),
                     t.genre.clone(),
                     t.year,
                     t.track_number,
-                ),
-                None => return None,
-            },
+                )
+            }
         };
         Some((
             ids,
