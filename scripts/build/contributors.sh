@@ -22,7 +22,7 @@ while IFS='|' read -r name email; do
     gh_user="${user_map[$name]:-}"
   fi
   if [[ -z "$gh_user" ]]; then
-    gh_user=$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')
+    gh_user=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
   fi
   found=0
   for u in "${usernames[@]:-}"; do
