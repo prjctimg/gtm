@@ -120,6 +120,8 @@ This project wouldn't be possible without the amazing open source community!
   [fundsp](https://crates.io/crates/fundsp), and
   [rodio](https://crates.io/crates/rodio)
 - [innertube-rs](https://crates.io/crates/innertube-rs)
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp), which gtm shells out to for
+  anything the streaming providers do not carry
 - [LRCLIB](https://lrclib.net)
 - [Myx](https://github.com/HaseebKhalid1507/Myx)
 - [spotify-player](https://github.com/aome510/spotify-player)  
