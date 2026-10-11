@@ -1693,6 +1693,15 @@ pub(crate) struct DaemonInner {
     /// `config` (from config.toml at startup) applies; the TUI switches it
     /// live via `DaemonReq::SetCoverProvider` without a restart.
     pub(crate) cover_provider_override: tokio::sync::Mutex<Option<CoverProvider>>,
+    /// Keeps the MPRIS server alive once its D-Bus bind has returned.
+    ///
+    /// The handle owns the only sender of the cancellation channel, and a
+    /// dropped sender closes the receiver the server selects on -- so parking it
+    /// here is what keeps the service up. It used to be a field on `Daemon`,
+    /// which meant the bind that produced it had to finish before the accept
+    /// loop could start.
+    #[cfg(feature = "mpris")]
+    pub(crate) mpris: tokio::sync::Mutex<Option<MprisHandle>>,
     pub(crate) event_tx: broadcast::Sender<DaemonEvent>,
     pub(crate) cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
     pub(crate) lyrics_manager: tokio::sync::Mutex<Option<LyricsManager>>,
@@ -1928,8 +1937,6 @@ pub struct Daemon {
     req_rx: mpsc::UnboundedReceiver<(ClientId, u64, DaemonReq, ReplyTx)>,
     internal_req_rx: mpsc::UnboundedReceiver<DaemonReq>,
     next_client_id: ClientId,
-    #[cfg(feature = "mpris")]
-    mpris: Option<MprisHandle>,
 }
 
 /// Returns `true` for requests that only read state and never mutate it, so
@@ -2180,6 +2187,8 @@ impl Daemon {
             event_tx: event_tx.clone(),
             cover_cache: tokio::sync::Mutex::new(None),
             cover_provider_override: tokio::sync::Mutex::new(None),
+            #[cfg(feature = "mpris")]
+            mpris: tokio::sync::Mutex::new(None),
             lyrics_manager: tokio::sync::Mutex::new(None),
             lastfm: std::sync::Arc::new(tokio::sync::Mutex::new(LastfmManager::new())),
             lastfm_loved: std::sync::Mutex::new(None),
@@ -2248,8 +2257,6 @@ impl Daemon {
             req_rx,
             internal_req_rx,
             next_client_id: 0,
-            #[cfg(feature = "mpris")]
-            mpris: None,
         })
     }
 
@@ -2338,10 +2345,19 @@ impl Daemon {
             let mpris_state = self.inner.state.clone();
             let mpris_event_rx = self.inner.event_tx.subscribe();
             let mpris_req_tx = self.inner.internal_req_tx.clone();
-            match start(mpris_state, mpris_event_rx, mpris_req_tx).await {
-                Ok(handle) => self.mpris = Some(handle),
-                Err(e) => warn!("mpris: failed to start D-Bus server: {e}"),
-            }
+            // The bind is a round trip to the session bus, and inline here it
+            // sat between the spawns and the accept loop, so a slow bus delayed
+            // the first answer to a client that had already connected
+            // successfully. The socket is bound well before this point, so the
+            // daemon was never unreachable -- only slow to serve -- and a task
+            // removes that wait without moving the bind earlier than it was.
+            let inner = Arc::clone(&self.inner);
+            tokio::spawn(async move {
+                match start(mpris_state, mpris_event_rx, mpris_req_tx).await {
+                    Ok(handle) => *inner.mpris.lock().await = Some(handle),
+                    Err(e) => warn!("mpris: failed to start D-Bus server: {e}"),
+                }
+            });
         }
 
         let spotify_inner = Arc::clone(&self.inner);
