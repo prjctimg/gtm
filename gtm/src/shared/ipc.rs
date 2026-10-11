@@ -1654,7 +1654,9 @@ pub enum DaemonEvent {
     /// bounded TCP probes (1.1.1.1:443, then gstatic.com:443). Independent of
     /// any provider link state; drives the footer `Network` module.
     #[serde(rename = "network_status_changed")]
-    NetworkStatusChanged { online: bool },
+    NetworkStatusChanged {
+        reading: crate::shared::network::ConnectivityReading,
+    },
     /// A provider failed in a way the user has to act on, as opposed to a track
     /// that merely is not playable.
     ///

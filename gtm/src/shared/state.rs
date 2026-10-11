@@ -200,12 +200,15 @@ pub struct DaemonState {
     pub wave_samples: Vec<f32>,
     #[serde(default)]
     pub wave_stereo: bool,
-    /// Last known generic internet connectivity (`None` = not probed yet).
-    /// Probed daemon-side via bounded TCP connects (1.1.1.1:443, then
-    /// gstatic.com:443) and broadcast via `NetworkStatusChanged`. Independent
-    /// of any provider link state; the footer `Network` module reads this.
+    /// Generic internet connectivity, with the time it was measured.
+    ///
+    /// Probed daemon-side with bounded requests through the same proxy-honouring
+    /// client every other request uses, and broadcast via `NetworkStatusChanged`
+    /// when the verdict moves. Independent of any provider link state; the
+    /// footer `Network` module reads this and decides staleness for itself, so
+    /// a reading cannot claim to be current after the daemon stopped probing.
     #[serde(default)]
-    pub network_online: Option<bool>,
+    pub network_reading: crate::shared::network::ConnectivityReading,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

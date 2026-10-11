@@ -56,7 +56,7 @@ impl DaemonState {
             wave_samples: Vec::new(),
             wave_stereo: false,
             radio_history: Vec::new(),
-            network_online: None,
+            network_reading: Default::default(),
         }
     }
 }

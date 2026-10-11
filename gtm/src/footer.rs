@@ -744,21 +744,34 @@ impl Footer {
         Some(Local::now().format(&app.footer_time_format).to_string())
     }
 
-    /// Generic connectivity indicator driven by the daemon's bounded TCP
-    /// probes (`None` = not probed yet, hidden until the first result lands).
+    /// Generic connectivity indicator, driven by the daemon's bounded
+    /// requests.
+    ///
     /// Rendered as an icon: wifi / banned-wifi in Nerd mode, filled / hollow
-    /// dot otherwise. A trailing space matches the icon+space convention of
-    /// the download module so the glyph does not crowd the badge edge.
+    /// dot otherwise, and a question mark while the answer is unknown or older
+    /// than it can be trusted. A trailing space matches the icon+space
+    /// convention of the download module so the glyph does not crowd the badge
+    /// edge.
+    ///
+    /// Staleness is asked here rather than trusted from the daemon, because the
+    /// daemon pauses probing when no client is attached: a verdict from before
+    /// the last detach is not something the badge should be asserting on
+    /// reconnect.
     fn network(app: &App) -> Option<String> {
-        let (icon, fallback) = if use_nerd_fonts() {
-            ("\u{f1eb}", "\u{f05e}") // nf-fa-wifi / nf-fa-ban
+        let (icon, offline, unknown) = if use_nerd_fonts() {
+            ("\u{f1eb}", "\u{f05e}", "\u{f059}") // wifi / ban / question
         } else {
-            ("\u{25cf}", "\u{25cb}") // ● / ○
+            ("\u{25cf}", "\u{25cb}", "?")
         };
-        match app.state.network_online {
-            None => None,
-            Some(true) => Some(format!("{icon} ")),
-            Some(false) => Some(format!("{fallback} ")),
+        use crate::shared::network::Connectivity;
+        match app
+            .state
+            .network_reading
+            .now(chrono::Utc::now().timestamp())
+        {
+            Connectivity::Online => Some(format!("{icon} ")),
+            Connectivity::Offline => Some(format!("{offline} ")),
+            Connectivity::Unknown | Connectivity::Stale => Some(format!("{unknown} ")),
         }
     }
 

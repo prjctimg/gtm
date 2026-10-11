@@ -11,6 +11,7 @@ pub mod fsm;
 pub mod global;
 pub mod ipc;
 pub mod log;
+pub mod network;
 pub mod paths;
 pub mod playlist;
 pub mod secret;

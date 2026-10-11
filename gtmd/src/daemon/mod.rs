@@ -2545,27 +2545,63 @@ impl Daemon {
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(30));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                let mut last: Option<bool> = None;
+                // Seeded from what the state already says rather than from
+                // `Unknown`: the reading survives a restart of this task, and a
+                // fresh `Verdict` would need two probes to re-reach the state
+                // the footer is already drawing.
+                let mut verdict = {
+                    let state = net_inner.state.read().await;
+                    network::Verdict::settled(state.network_reading.state)
+                };
+                let mut watched = net_inner.active_clients.load(Ordering::Relaxed) > 0;
                 loop {
-                    interval.tick().await;
                     // Nobody is watching the footer's indicator, and it is the
                     // only consumer, so a daemon left running for its playback
                     // was opening two connections every thirty seconds to
                     // maintain a fact no one reads. Probe on demand instead:
                     // once there is a client, the answer is worth its cost.
-                    if net_inner.active_clients.load(Ordering::Relaxed) == 0 {
-                        continue;
-                    }
-                    let online = network::probe_online().await;
-                    if last != Some(online) {
-                        last = Some(online);
-                        {
-                            let mut state = net_inner.state.write().await;
-                            state.network_online = Some(online);
+                    //
+                    // And probe on the way in rather than on the interval's
+                    // phase, which is set by when the daemon happened to start:
+                    // a client attaching at t=29s waited up to thirty seconds
+                    // for a first answer and drew whatever the last client left
+                    // behind until it came.
+                    if watched {
+                        interval.tick().await;
+                        if net_inner.active_clients.load(Ordering::Relaxed) == 0 {
+                            watched = false;
+                            continue;
                         }
+                    } else {
+                        while net_inner.active_clients.load(Ordering::Relaxed) == 0 {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                        watched = true;
+                    }
+
+                    let online = network::probe_online().await;
+                    let moved = verdict.observe(online);
+                    let reading = network::ConnectivityReading {
+                        state: verdict.state,
+                        checked_at: chrono::Utc::now().timestamp(),
+                    };
+                    {
+                        let mut state = net_inner.state.write().await;
+                        state.network_reading = reading;
+                    }
+                    // The reading is written every pass, but the event is only
+                    // for a verdict that moved: the footer redraws the same
+                    // glyph otherwise, and the channel should stay quiet.
+                    if let Some(moved) = moved {
+                        let streak = if moved == network::Connectivity::Online {
+                            verdict.on_streak
+                        } else {
+                            verdict.off_streak
+                        };
+                        info!("connectivity: {moved:?} after {streak} consecutive probe(s)");
                         let _ = net_inner
                             .event_tx
-                            .send(DaemonEvent::NetworkStatusChanged { online });
+                            .send(DaemonEvent::NetworkStatusChanged { reading });
                     }
                 }
             });
@@ -3566,6 +3602,10 @@ impl Daemon {
                 state.default_cursor = 0;
                 state.radio_history.clear();
             }
+            // Probing is paused while nobody is attached, so a reading left
+            // here is one the badge would go on drawing after it had stopped
+            // being true. Dropping it reads as "not checked" instead.
+            state.network_reading = Default::default();
         }
         inner.play_history.lock().await.clear();
         *inner.cover_cache.lock().await = None;

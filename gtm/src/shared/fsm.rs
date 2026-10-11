@@ -266,8 +266,8 @@ impl DaemonState {
                 self.radio_tracks = (**list).clone();
                 self.radio_artist = artist.clone();
             }
-            DaemonEvent::NetworkStatusChanged { online } => {
-                self.network_online = Some(*online);
+            DaemonEvent::NetworkStatusChanged { reading } => {
+                self.network_reading = *reading;
             }
             DaemonEvent::EqEnabledChanged { enabled } => {
                 self.audio.eq_enabled = *enabled;
