@@ -64,13 +64,18 @@ pat = re.compile(
 )
 if pat.search(text):
     text = pat.sub(lambda _m: "\n\n" + section + "\n\n", text, count=1)
+    # Collapse runs of blank lines only in the block just written. Applied to
+    # the whole file it was a formatting sweep: every release produced a commit
+    # that removed a blank line from eight places the contributor list has
+    # nothing to say about, which buries the one line that changed.
+    head, sep, rest = text.partition(section)
+    text = head + re.sub(r"\n{3,}", "\n\n", sep + rest)
 else:
     m = re.search(r"^(\(c\) .*)$", text, re.MULTILINE)
     if m:
         text = text[: m.start()] + section + "\n\n" + text[m.start():]
     else:
         text = text.rstrip("\n") + "\n\n" + section + "\n"
-text = re.sub(r"\n{3,}", "\n\n", text)
 if not text.endswith("\n"):
     text += "\n"
 readme.write_text(text)

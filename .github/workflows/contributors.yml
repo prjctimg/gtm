@@ -1,7 +1,7 @@
 name: Update CONTRIBUTORS
 on:
-  push:
-    branches: [main]
+  release:
+    types: [published]
 permissions:
   contents: write
 env:
@@ -12,6 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: dev
           fetch-depth: 0
       - name: Regenerate contributors in README
         run: bash scripts/build/contributors.sh
@@ -19,14 +20,38 @@ jobs:
         env:
           GH_BOT_TOKEN: ${{ secrets.APPROVE_PAT }}
         run: |
-          if ! git diff --quiet README.md; then
-            git config user.name "prjctimg"
-            git config user.email "prjctimg@outlook.com"
+          set -euo pipefail
+          if git diff --quiet README.md; then
+            echo "README already lists every contributor"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          push_url="https://x-access-token:${GH_BOT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          attempt=0
+          while true; do
             git add README.md
             if [ -f CONTRIBUTORS.md ]; then
-              git rm -f CONTRIBUTORS.md || rm -f CONTRIBUTORS.md
-              git add -A || true
+              git rm -f CONTRIBUTORS.md
             fi
-            git commit -m "docs: update contributors"
-            git push "https://x-access-token:${GH_BOT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD
-          fi
+            if git diff --cached --quiet; then
+              echo "nothing staged"
+              exit 0
+            fi
+            # `[skip ci]` is not optional here. This is pushed with a PAT, so
+            # the guard GitHub applies to its own GITHUB_TOKEN commits does not
+            # cover it: a plain `docs:` commit would start a full CI run and,
+            # through the dev push, a nightly release build. `[skip nightly]`
+            # is read by the release workflow for the same reason.
+            git commit -m "docs: update contributors [skip nightly] [skip ci]"
+            if git push "${push_url}" HEAD:dev 2>/dev/null; then
+              break
+            fi
+            attempt=$((attempt + 1))
+            if [ "${attempt}" -ge 3 ]; then
+              echo "::error::could not push the contributor list after 3 attempts" >&2
+              exit 1
+            fi
+            sleep 5
+            git pull --rebase origin dev 2>/dev/null || true
+          done
