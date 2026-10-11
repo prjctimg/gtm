@@ -143,11 +143,10 @@ mod tests {
     #[test]
     fn one_good_result_resets_the_bad_run() {
         let mut v = Verdict::settled(Connectivity::Online);
-        v.observe(false);
-        v.observe(false);
-        v.observe(true);
-        // Back to a single success, so the two failures that had been one away
-        // from an offline verdict have to start again.
+        assert_eq!(v.observe(false), None); // one failure: no verdict yet
+        assert_eq!(v.observe(true), None); // one good result wipes the run
+        // The two failures that had built up have to start again: the first
+        // fresh failure is still one short, only the second flips.
         assert_eq!(v.observe(false), None);
         assert_eq!(v.observe(false), Some(Connectivity::Offline));
     }
@@ -158,6 +157,11 @@ mod tests {
         for _ in 0..(ONLINE_STREAK + 4) {
             assert_eq!(v.observe(true), None);
         }
+        // A settled verdict is not a veto on change: two failures still flip it,
+        // and from then on the failures that agree with the offline reading stay
+        // quiet.
+        assert_eq!(v.observe(false), None);
+        assert_eq!(v.observe(false), Some(Connectivity::Offline));
         for _ in 0..(OFFLINE_STREAK + 4) {
             assert_eq!(v.observe(false), None);
         }
