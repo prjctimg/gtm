@@ -221,9 +221,6 @@ The client id matters: rate limits are keyed per Spotify app, not per user, so a
 | `spotify_clear` | — | — | — |
 | `spotify_playlists` | — | `playlists` | — |
 | `spotify_playlist_tracks` | `id` : string | `tracks` | — |
-| `spotify_web_playlist_tracks` | `uri` : string | `tracks` | — |
-| `spotify_album_tracks` | `uri` : string | `tracks` | — |
-| `spotify_artist_top_tracks` | `uri` : string | `tracks` | — |
 | `spotify_track_image` | `image_url` : string | `data` | — |
 | `spotify_search_web` | `query` : string | `tracks` | — |
 | `spotify_resolve` | `playlist_id` : string, `track_index` : int, `play` : bool | — | — |

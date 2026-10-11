@@ -8,8 +8,8 @@
 //   link state.
 // - Every probe is bounded (no unbounded network I/O on a background task):
 //   each TCP connect carries its own timeout and the whole pass is capped.
-// - Callers poll on an interval and broadcast only on change; low-power mode
-//   pauses probing entirely.
+// - Callers poll on an interval and broadcast only on change; probing is
+//   skipped entirely while no client is attached.
 //
 // This is free software released under the GPL-3.0 license.
 

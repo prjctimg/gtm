@@ -2520,8 +2520,9 @@ impl Daemon {
 
         // Generic connectivity probes for the footer `Network` module. Always
         // on from first boot (independent of any provider link), generic hosts
-        // only, bounded per probe; low-power mode pauses probing. Broadcasts
-        // only on change so the event channel stays quiet when stable.
+        // only, bounded per probe; no attached client means nobody is reading
+        // the answer, so probing stops. Broadcasts only on change so the event
+        // channel stays quiet when stable.
         if !self.inner.config.test_mode {
             let net_inner = Arc::clone(&self.inner);
             tokio::spawn(async move {
