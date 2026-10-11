@@ -702,11 +702,45 @@ impl SpotifyManager {
             .client()
             .ok_or_else(|| "spotify not linked".to_string())?;
         let (user, playlists) = Self::run_sync(client).await?;
-        self.commit_sync(user, playlists);
+        let pending = self.commit_sync(user, playlists);
+        self.spawn_write(pending);
         // Probe `/me/player` so the Premium flag is established at sync time
         // and native streaming is unlocked without the user visiting Settings.
         self.refresh_playback().await;
         Ok(())
+    }
+
+    /// Write a snapshot [`Self::commit_sync`] handed back, off this task.
+    ///
+    /// Separate from `commit_sync` so that one stays callable without a runtime:
+    /// its unit tests call it directly, and a `tokio::spawn` in there panicked
+    /// them with "there is no reactor running".
+    pub fn spawn_write(&self, pending: Option<(std::path::PathBuf, String)>) {
+        if pending.is_none() {
+            return;
+        }
+        let dir = self.config_dir.clone();
+        let task = async move { Self::write_snapshot(dir, pending).await };
+        tokio::spawn(task);
+    }
+
+    /// The write itself, so a caller that wants to wait for it can.
+    pub async fn write(&self, pending: Option<(std::path::PathBuf, String)>) {
+        Self::write_snapshot(self.config_dir.clone(), pending).await;
+    }
+
+    async fn write_snapshot(
+        dir: std::path::PathBuf,
+        pending: Option<(std::path::PathBuf, String)>,
+    ) {
+        let Some((path, json)) = pending else { return };
+        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+            warn!("spotify: could not create the config dir for the snapshot: {e}");
+            return;
+        }
+        if let Err(e) = tokio::fs::write(path, json).await {
+            warn!("spotify: could not write playlist snapshot: {e}");
+        }
     }
 
     /// Clone the Web API client so network work can run without the manager
@@ -785,11 +819,27 @@ impl SpotifyManager {
     /// walk, so a partial pass was committing a truncated — sometimes empty —
     /// library over a good one and blanking the TUI's playlist list until the
     /// next restart.
-    pub fn commit_sync(&mut self, user: Option<String>, playlists: Vec<SpotifyPlaylist>) {
+    /// Take the synced playlists, and hand back the snapshot still to be written.
+    ///
+    /// The write is the caller's to make because the caller holds the manager
+    /// mutex across this call: serialising a large account's playlists into a
+    /// multi-megabyte string took hundreds of milliseconds inside it, so every
+    /// other Spotify command -- status, playlists, resolve, uri_meta -- queued
+    /// behind a disk write that has nothing to do with them. Returning the bytes
+    /// instead of writing them lets the caller finish with the manager and then
+    /// write, and it keeps this function callable without a runtime, which is
+    /// what the tests below rely on.
+    ///
+    /// `None` means the playlists were rejected and nothing changed.
+    pub fn commit_sync(
+        &mut self,
+        user: Option<String>,
+        playlists: Vec<SpotifyPlaylist>,
+    ) -> Option<(std::path::PathBuf, String)> {
         if playlists.is_empty() {
             warn!("spotify sync returned no playlists — keeping the cached list");
             self.error = Some("playlist sync returned nothing".into());
-            return;
+            return None;
         }
         // A truncation, not a regression, is what this guards: `run_sync`
         // tolerates a page error by stopping the walk, so a short pass is
@@ -804,29 +854,13 @@ impl SpotifyManager {
                 playlists.len(),
                 self.playlists.len()
             );
-            return;
+            return None;
         }
         self.error = None;
-        // Snapshot first, outside the state swap. The caller holds the manager
-        // mutex across all of this, and serialising a large account's playlists
-        // into a multi-megabyte string took hundreds of milliseconds inside it --
-        // so every other Spotify command (status, playlists, resolve,
-        // uri_meta) queued behind a disk write that has nothing to do with them.
-        let json = self.snapshot_json(user.clone(), &playlists);
+        let pending = self.snapshot_json(user.clone(), &playlists);
         self.user = user;
         self.playlists = playlists;
-        if let Some((path, json)) = json {
-            let dir = self.config_dir.clone();
-            tokio::spawn(async move {
-                if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-                    warn!("spotify: could not create the config dir for the snapshot: {e}");
-                    return;
-                }
-                if let Err(e) = tokio::fs::write(path, json).await {
-                    warn!("spotify: could not write playlist snapshot: {e}");
-                }
-            });
-        }
+        pending
     }
 
     async fn fetch_saved_tracks(client: &AuthCodePkceSpotify) -> Vec<SpotifyTrack> {
@@ -1131,6 +1165,14 @@ fn parse_token(raw: &str) -> Result<Token, String> {
 
 #[cfg(test)]
 mod tests {
+    /// A runtime for the tests that exercise a spawned write.
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+    }
+
     use super::{SCOPE_STREAMING, TOKEN_ACCESS_PERMS, parse_token, pretty_id};
     use chrono::Utc;
     use gtm::shared::spotify::SpotifyPlaylist;
@@ -1481,7 +1523,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gtm-snap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut mgr = super::SpotifyManager::new(dir.clone());
-        mgr.commit_sync(Some("Ada".into()), vec![playlist("a"), playlist("b")]);
+        let pending = mgr.commit_sync(Some("Ada".into()), vec![playlist("a"), playlist("b")]);
+        // Through the same write the daemon uses, on a runtime, because that is
+        // where the write moved: it is no longer inside `commit_sync`.
+        rt().block_on(mgr.write(pending));
         assert_eq!(mgr.playlists.len(), 2, "the sync must have committed");
         // A brand-new manager, as after a daemon restart: the library and the
         // display name must come back off disk with no network involved.
@@ -1505,7 +1550,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut mgr = super::SpotifyManager::new(dir.clone());
         assert!(!mgr.snapshot_fresh(), "nothing cached is not fresh");
-        mgr.commit_sync(Some("Ada".into()), vec![playlist("a")]);
+        let pending = mgr.commit_sync(Some("Ada".into()), vec![playlist("a")]);
+        rt().block_on(mgr.write(pending));
         assert!(
             mgr.snapshot_fresh(),
             "a snapshot written just now must skip the refetch"

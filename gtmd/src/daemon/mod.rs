@@ -2430,7 +2430,11 @@ impl Daemon {
                                     let mut spotify = sync_inner.spotify.lock().await;
                                     if spotify.linked() {
                                         let count = playlists.len();
-                                        spotify.commit_sync(user, playlists);
+                                        let pending = spotify.commit_sync(user, playlists);
+                                        // The write itself is a task, so holding
+                                        // the lock across this line costs a
+                                        // spawn and not a disk.
+                                        spotify.spawn_write(pending);
                                         // Reaching here is itself proof the quota
                                         // is available again, so clear the mark and
                                         // let the cheap paths resume.
