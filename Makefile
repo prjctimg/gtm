@@ -57,7 +57,7 @@ man:
 # cannot drift from the CLI the way a hand-maintained copy in build/ did.
 completions: release
 	./scripts/build/completions.sh "$(CURDIR)/artifacts"
-	cp install.sh artifacts/install.sh
+	cp install.sh uninstall.sh artifacts/
 
 install: release man completions
 	install -Dm 0755 target/release/gtmd $(DESTDIR)$(BINDIR)/gtmd

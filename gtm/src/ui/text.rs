@@ -218,17 +218,7 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
             } else {
                 Some(track.album.clone())
             };
-            let source = if track.path.contains("/audio/spotify")
-                || track.path.starts_with("spotify:")
-            {
-                "Spotify"
-            } else if track.path.contains("/audio/youtube") || track.path.starts_with("youtube:") {
-                "YouTube"
-            } else if let Some((src, _)) = classify_remote_source(&track.path) {
-                src
-            } else {
-                "Local"
-            };
+            let source = track_source(track);
             let meta = format!(
                 " {} | {}",
                 format_duration(track.duration as u64),
@@ -248,17 +238,8 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
             let albums = app.unique_albums();
             let pos = app.list_pos();
             let (name, count) = albums.get(pos)?;
-            let artist = app
-                .tracks_cache
-                .iter()
-                .find(|t| {
-                    let album: &str = if t.album.is_empty() {
-                        "Unknown Album"
-                    } else {
-                        &t.album
-                    };
-                    album == name
-                })
+            let rep = app.group_representative(pos);
+            let artist = rep
                 .map(|t| {
                     if t.artist.is_empty() {
                         "Unknown".to_string()
@@ -267,6 +248,7 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                     }
                 })
                 .unwrap_or_default();
+            let source = rep.map_or("Local", track_source);
             Some(TrackInfoFields {
                 title: name.clone(),
                 artist,
@@ -275,7 +257,7 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                     " [{} {}] | {}",
                     *count,
                     plural(*count, "track", "tracks"),
-                    source_label(use_nerd, "Local").trim_start()
+                    source_label(use_nerd, source).trim_start()
                 ),
                 has_cover: app.track_popup_cover.is_some(),
             })
@@ -284,6 +266,7 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
             let artists = app.unique_artists();
             let pos = app.list_pos();
             let (name, count) = artists.get(pos)?;
+            let source = app.group_representative(pos).map_or("Local", track_source);
             Some(TrackInfoFields {
                 title: name.clone(),
                 artist: String::new(),
@@ -292,7 +275,7 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                     " [{} {}] | {}",
                     *count,
                     plural(*count, "track", "tracks"),
-                    source_label(use_nerd, "Local").trim_start()
+                    source_label(use_nerd, source).trim_start()
                 ),
                 has_cover: app.track_popup_cover.is_some(),
             })
@@ -467,8 +450,15 @@ fn chart_source_label(app: &App) -> &'static str {
         .map_or("Chart", |s| match s.id.as_str() {
             "spotify" => "Spotify",
             "apple" => "Apple Music",
+            "deezer" => "Deezer",
             _ => "Chart",
         })
+}
+
+/// The provider a track entry came from, for the info card: its path scheme or
+/// its provider cache subdirectory, and `Local` for an ordinary file.
+fn track_source(track: &TrackInfo) -> &'static str {
+    classify_remote_source(&track.path).map_or("Local", |(key, _)| key)
 }
 
 pub(crate) fn format_duration_short(secs: u64) -> String {

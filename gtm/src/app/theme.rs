@@ -59,6 +59,7 @@ impl App {
             hide_footer: self.hide_footer,
             left_pane_lists: self.left_pane_lists.clone(),
             show_preview: self.show_preview,
+            preview_delay_secs: self.preview_delay_secs,
         }
     }
 

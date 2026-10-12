@@ -212,10 +212,8 @@ impl App {
     /// lists, narrowed by the picker's search query.
     ///
     /// Every consumer of the picker's rows goes through here — the count the
-    /// cursor is clamped against, the renderer, and the Enter handler. Those
-    /// three used to derive the list independently, and when the query narrowed
-    /// what was drawn but not what Enter opened, a filtered picker highlighted
-    /// one category and opened another.
+    /// cursor is clamped against, the renderer, and the Enter handler — so the
+    /// filtered list that is drawn is the list Enter opens.
     pub fn filtered_library_indices(&self) -> Vec<usize> {
         // Only the library picker's own query filters it. Another picker on top
         // of the stack owns `query` and must not narrow this list.
@@ -328,11 +326,10 @@ impl App {
 
     /// Every track in every Spotify playlist, deduplicated, as library rows.
     ///
-    /// This is what "All Tracks" lists. It used to be the local library — every
-    /// track in the `tracks` table — which is a different set: a local playlist
-    /// stores foreign keys into that same table, so a union of local playlists
-    /// would be a strict subset of it and could only ever show less. Spotify
-    /// playlists are the ones that are not already in it.
+    /// This is what "All Tracks" lists. The local library is a different set: a
+    /// local playlist stores foreign keys into the `tracks` table, so a union
+    /// of local playlists would be a strict subset of it. Spotify playlists
+    /// are the tracks that table does not hold.
     ///
     /// Ordered so the first playlist's order wins for a track that appears in
     /// several, which is the least surprising reading of "all tracks". Rebuilt
@@ -388,9 +385,7 @@ impl App {
     pub fn filtered_tracks(&self) -> Vec<&TrackInfo> {
         // The Playlists view is three levels deep: the groups, one group's rows,
         // and for `Playlists` the tracks of one playlist. Only the middle and
-        // the last have tracks behind them, so the outer level answers empty
-        // rather than the whole library -- which is what it used to do, being a
-        // list of *names* drawn from `playlist_cache`.
+        // the last have tracks behind them, so the outer level answers empty.
         if self.library_category == LIB_PLAYLISTS {
             if !self.playlist_open {
                 return Vec::new();
@@ -410,8 +405,7 @@ impl App {
         }
         // The Library view's Tracks list is everything the daemon knows: the
         // local library and, for an account linked to Spotify, every track of
-        // every synced playlist. They were two lists the user had to know were
-        // two; "All Tracks" was the promise that they were one.
+        // every synced playlist, presented as one list.
         if self.library_category == LIB_ALL && self.browse_detail.is_none() {
             let mut tracks = self.library_tracks();
             if !self.search_query.is_empty() {
@@ -788,6 +782,12 @@ impl App {
             },
             LIB_SPOTIFY => self.spotify.playlists.len(),
             LIB_RADIO => self.radio.custom.len(),
+            // The feed list, or the episode list of the feed drilled into. The
+            // cursor clamp reads this, so a category whose rows are not tracks
+            // must answer with its own row count or the selection range is
+            // whatever the local library happens to hold.
+            LIB_PODCASTS if self.podcast.episodes_feed_id.is_some() => self.podcast.episodes.len(),
+            LIB_PODCASTS => self.podcast.feeds.len(),
             _ => self.filtered_tracks().len(),
         }
     }
@@ -853,10 +853,9 @@ impl App {
     /// how many landed.
     ///
     /// Every "add to queue" entry point funnels through here: the `a` key, the
-    /// multiselect prompt, and the command palette. They all used to hand their
-    /// targets straight to `queue().add()`, which reads a filesystem path — so
-    /// a chart row carrying a `spotify:` uri went to the library route, and one
-    /// carrying no uri at all went to the empty path. Neither is a queue entry.
+    /// multiselect prompt, and the command palette. `queue().add()` reads a
+    /// filesystem path, so a chart row carrying a `spotify:` uri or no uri at
+    /// all is routed by provider before it reaches there.
     pub(crate) fn queue_rows(&self, keys: Vec<String>) -> usize {
         if self.library_category == LIB_CHARTS && self.charts.selected_chart.is_some() {
             let rows = self.selectable_rows();
@@ -972,10 +971,7 @@ impl App {
     /// seed from.
     ///
     /// Both entry points resolve this — the `e` key and the palette command —
-    /// and they used to resolve it twice, in two blocks that drifted apart:
-    /// only one of them ever looked at the selection, so `e` with five rows
-    /// multiselected opened a picker holding one track while the footer beside
-    /// it said five. One answer, asked in one place.
+    /// so the batch is one answer, asked in one place.
     ///
     /// The batch is the group row when the cursor is on an album or artist,
     /// else the whole multiselection, else the highlighted track. The template
@@ -1054,11 +1050,8 @@ impl App {
     /// The library id whose artwork the card shows for row `pos`, resolved the
     /// same way [`App::update_track_popup`] resolves it.
     ///
-    /// This used to answer only for All Tracks and Liked and `None` for every
-    /// other category, so the preload warmed those two lists and nothing else.
-    /// Every other list therefore fetched a row's artwork only once the cursor
-    /// landed on it: one visible frame of blank per step, and a burst of
-    /// requests while the list was moving.
+    /// Every category resolves here, so the preload warms the same row the card
+    /// draws and a moving list is not fetching one row at a time.
     ///
     /// Album and artist rows resolve a *representative* track rather than the
     /// row itself, so warming `filtered_tracks()[pos]` would have warmed the
@@ -1075,9 +1068,8 @@ impl App {
         }
         // A grouped row names a group, so it has no id of its own: the card and
         // the grid both borrow the id of the first track behind it. Checked
-        // before the match, because the match is on the row's *kind* and a genre
-        // row is an ordinary track row as far as the kind is concerned — which is
-        // exactly why it used to resolve to whatever row sat at that index.
+        // before the match, because the match is on the row's *kind* and a
+        // genre row is an ordinary track row as far as the kind is concerned.
         if self.group_row() {
             return self.group_representative(pos).map(|t| t.id);
         }
@@ -1103,11 +1095,9 @@ impl App {
     ///
     /// One rule for all three, because the row is a name and everything that
     /// needs a concrete track — the card's cover, the grid's cell, the preload's
-    /// warm-up — needs the same one. Asking `filtered_tracks()[pos]` instead,
-    /// which is what these rows used to do, indexes the *whole library*: at the
-    /// top level one row is an album, so row 4's cover was whatever local track
-    /// happened to be fourth in the list. Genres are the visible case, because
-    /// a genre row's kind is an ordinary track row.
+    /// warm-up — needs the same one. `filtered_tracks()` is the *whole library*
+    /// here: at the top level one row is an album, so it cannot stand in for a
+    /// group row.
     pub fn group_representative(&self, pos: usize) -> Option<&TrackInfo> {
         let filter = self.library_filter;
         let name = self.library_groups_of(filter).get(pos)?.0.clone();
@@ -1118,12 +1108,9 @@ impl App {
 
     /// The key a track is filed under for `filter` — one rule, because every
     /// consumer has to agree or a group row stops matching its own tracks.
-    ///
-    /// Three copies of this match existed (`motion_row_ids`,
-    /// `group_representative`, and the grid's cell source), each written when
-    /// its call site was the only one that needed it. They drifted the moment a
-    /// fourth grouping arrived, and a mismatch shows up as a group row whose
-    /// drill-down is empty rather than as a compile error.
+    /// `motion_row_ids`, `group_representative` and the grid's cell source all
+    /// ask this, so a new grouping is one arm here rather than a mismatch that
+    /// shows up as a group row whose drill-down is empty.
     ///
     /// Folders read `path` rather than a tag, which is what makes it a grouping
     /// rather than a category: there is no folder field to read.

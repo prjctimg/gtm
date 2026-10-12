@@ -8,6 +8,17 @@
 use crate::ui::*;
 
 impl Pickers {
+    /// The heading above a preset preview: the selected preset's name, set off
+    /// by its accent colour rather than by a rule of dashes.
+    fn preset_heading(app: &App, name: &str) -> Line<'static> {
+        Line::from(Span::styled(
+            format!(" {name} "),
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))
+    }
+
     pub(crate) fn render_equalizer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let presets = [
             ("Flat", "Neutral, uncoloured response", EqPreset::Flat),
@@ -103,27 +114,7 @@ impl Pickers {
             let selected_preset = presets.get(sel);
             let selected_name = selected_preset.map(|p| p.0).unwrap_or("");
             let selected_desc = selected_preset.map(|p| p.1).unwrap_or("");
-            let rule = Line::from(vec![
-                Span::styled(
-                    "\u{2500}".to_string(),
-                    Style::default().fg(app.theme.muted_border),
-                ),
-                Span::styled(
-                    format!(" {selected_name} "),
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "\u{2500}".repeat(
-                        preview_area
-                            .width
-                            .saturating_sub(selected_name.len() as u16 + 4)
-                            .max(1) as usize,
-                    ),
-                    Style::default().fg(app.theme.muted_border),
-                ),
-            ]);
+            let rule = Self::preset_heading(app, selected_name);
             f.render_widget(
                 Paragraph::new(rule),
                 Rect {
@@ -708,27 +699,7 @@ impl Pickers {
 
         if preview_area.height >= 3 {
             let selected_name = presets.get(sel).map(|p| p.name()).unwrap_or("");
-            let rule = Line::from(vec![
-                Span::styled(
-                    "\u{2500}".to_string(),
-                    Style::default().fg(app.theme.muted_border),
-                ),
-                Span::styled(
-                    format!(" {selected_name} "),
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "\u{2500}".repeat(
-                        preview_area
-                            .width
-                            .saturating_sub(selected_name.len() as u16 + 4)
-                            .max(1) as usize,
-                    ),
-                    Style::default().fg(app.theme.muted_border),
-                ),
-            ]);
+            let rule = Self::preset_heading(app, selected_name);
             f.render_widget(
                 Paragraph::new(rule),
                 Rect {
@@ -837,27 +808,7 @@ impl Pickers {
 
         if preview_area.height >= 3 {
             let selected_name = styles.get(sel).map(|s| s.name()).unwrap_or("");
-            let rule = Line::from(vec![
-                Span::styled(
-                    "\u{2500}".to_string(),
-                    Style::default().fg(app.theme.muted_border),
-                ),
-                Span::styled(
-                    format!(" {selected_name} "),
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "\u{2500}".repeat(
-                        preview_area
-                            .width
-                            .saturating_sub(selected_name.len() as u16 + 4)
-                            .max(1) as usize,
-                    ),
-                    Style::default().fg(app.theme.muted_border),
-                ),
-            ]);
+            let rule = Self::preset_heading(app, selected_name);
             f.render_widget(
                 Paragraph::new(rule),
                 Rect {
@@ -988,22 +939,10 @@ impl Pickers {
                     )
                 })
                 .unwrap_or_default();
-            let rule = Line::from(vec![
-                Span::styled(
-                    "\u{2500}".to_string(),
-                    Style::default().fg(app.theme.muted_border),
-                ),
-                Span::styled(format!(" {layout} "), Style::default().fg(app.theme.fg_dim)),
-                Span::styled(
-                    "\u{2500}".repeat(
-                        preview_area
-                            .width
-                            .saturating_sub(layout.len() as u16 + 4)
-                            .max(1) as usize,
-                    ),
-                    Style::default().fg(app.theme.muted_border),
-                ),
-            ]);
+            let rule = Line::from(Span::styled(
+                format!(" {layout} "),
+                Style::default().fg(app.theme.fg_dim),
+            ));
             f.render_widget(
                 Paragraph::new(rule),
                 Rect {

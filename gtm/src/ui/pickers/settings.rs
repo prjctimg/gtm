@@ -101,8 +101,7 @@ impl Pickers {
                 values.get(i).cloned().unwrap_or_default()
             );
             // `▶` marks a row that has more than one value to move through, so
-            // the cue is on the row's own kind rather than on each hand-written
-            // label — it used to be missing from several rows that had one.
+            // the cue is on the row's own kind rather than written into each row.
             if matches!(kind, RowKind::Cycle | RowKind::Chooser | RowKind::Action)
                 && *kind != RowKind::Action
                 && !row.contains("▶")
@@ -145,6 +144,10 @@ impl Pickers {
                     on_off(app.state.audio.reverb.enabled),
                     pre_gain_label(app.state.audio.pre_gain_db),
                     cover_provider_label(&app.cover_provider).to_string(),
+                    match app.preview_delay_secs {
+                        0 => "Off".to_string(),
+                        s => format!("{s}s"),
+                    },
                 ]
             }
             1 => {

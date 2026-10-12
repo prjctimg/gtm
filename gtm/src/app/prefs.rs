@@ -61,6 +61,12 @@ pub(crate) fn default_show_preview() -> bool {
     true
 }
 
+/// Seconds the cursor must rest on a radio or chart row before its preview
+/// starts. Zero disables the hover preview.
+pub(crate) fn default_preview_delay_secs() -> u64 {
+    3
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Prefs {
     #[serde(default = "default_theme_name")]
@@ -124,6 +130,10 @@ pub struct Prefs {
     /// left pane holds.
     #[serde(default = "default_show_preview")]
     pub(crate) show_preview: bool,
+    /// How long the cursor rests on a radio or chart row before its sound
+    /// preview starts. Zero disables the preview.
+    #[serde(default = "default_preview_delay_secs")]
+    pub(crate) preview_delay_secs: u64,
 }
 
 pub(crate) fn default_cover_provider() -> String {
@@ -298,6 +308,7 @@ impl Default for Prefs {
             hide_footer: false,
             left_pane_lists: left_pane_defaults(),
             show_preview: true,
+            preview_delay_secs: default_preview_delay_secs(),
         }
     }
 }

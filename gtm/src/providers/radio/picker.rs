@@ -88,10 +88,7 @@ impl Pickers {
         for (k, pick) in picks[s..e].iter().enumerate() {
             let i = s + k;
             let (text, is_header) = match pick {
-                RadioPick::Header(label) => (
-                    format!(" \u{2500}\u{2500} {} \u{2500}\u{2500}", label),
-                    true,
-                ),
+                RadioPick::Header(label) => (format!(" {label}"), true),
                 RadioPick::Custom(idx) => app
                     .radio
                     .custom

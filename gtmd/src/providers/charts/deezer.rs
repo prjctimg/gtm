@@ -52,6 +52,15 @@ impl DeezerCharts {
             .await
             .map_err(|e| ChartError::Parse(format!("deezer: {e}")))
     }
+
+    /// Cover of the chart's number one, resolved through the same Deezer chart
+    /// endpoint the rows use. A miss (network, empty chart) leaves the tile
+    /// blank rather than failing the whole list.
+    async fn top_cover(kind: &str) -> Option<String> {
+        let url = format!("https://api.deezer.com/chart/{CHART}/{kind}?limit=1");
+        let page: DzPage<DzTrack> = Self::get_json(&url).await.ok()?;
+        page.data.into_iter().next()?.into_track(0).cover_url
+    }
 }
 
 #[async_trait]
@@ -69,6 +78,13 @@ impl ChartProvider for DeezerCharts {
     }
 
     async fn list_charts(&self) -> Result<Vec<ChartPlaylist>, ChartError> {
+        // A chart has no artwork file of its own; its first entry does. Resolve
+        // one here so the chart list is not a column of blank tiles, through the
+        // same Deezer chart endpoint the track list already calls. Two lookups
+        // (`?limit=1`) per list, and the resulting URL is the same one the first
+        // track's row carries, so the client's image cache already holds it.
+        let tracks_cover = Self::top_cover("tracks").await;
+        let albums_cover = Self::top_cover("albums").await;
         Ok(KINDS
             .iter()
             .map(|(kind, title, desc, count)| ChartPlaylist {
@@ -76,7 +92,11 @@ impl ChartProvider for DeezerCharts {
                 id: (*kind).to_string(),
                 title: (*title).to_string(),
                 description: Some((*desc).to_string()),
-                cover_url: None,
+                cover_url: match *kind {
+                    "tracks" => tracks_cover.clone(),
+                    "albums" => albums_cover.clone(),
+                    _ => None,
+                },
                 owner: Some("Deezer".into()),
                 track_count: Some(*count),
             })
@@ -114,6 +134,9 @@ struct DzTrack {
     preview: Option<String>,
     artist: Option<DzArtist>,
     album: Option<DzAlbum>,
+    /// A track chart entry carries its art inside `album`; an album chart entry
+    /// has no `album` object and carries the artwork at the top level instead.
+    cover_xl: Option<String>,
 }
 
 impl DzTrack {
@@ -122,6 +145,7 @@ impl DzTrack {
             .album
             .as_ref()
             .and_then(|a| a.cover_xl.clone())
+            .or_else(|| self.cover_xl.clone())
             // A single with no release art would otherwise show the placeholder
             // glyph, so fall back to the artist picture.
             .or_else(|| self.artist.as_ref().and_then(|a| a.picture_xl.clone()));

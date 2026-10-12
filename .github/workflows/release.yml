@@ -390,7 +390,7 @@ jobs:
           cp dist/gtm.desktop   "$root/desktop/"
           cp assets/gtm.svg     "$root/icons/"
           cp LICENSE            "$root/"
-          cp install.sh         "$root/"
+          cp install.sh uninstall.sh         "$root/"
           tar czf "release-assets/${root}.tar.gz" "$root"
 
       - name: Package complete archive (Arch Linux)
@@ -412,7 +412,7 @@ jobs:
           cp dist/gtm.desktop   "$root/desktop/"
           cp assets/gtm.svg     "$root/icons/"
           cp LICENSE            "$root/"
-          cp install.sh         "$root/"
+          cp install.sh uninstall.sh         "$root/"
           tar czf "release-assets/gtm-arch-${arch}.tar.gz" "$root"
 
       - name: Package complete archive (Android)
@@ -426,7 +426,7 @@ jobs:
           cp target/aarch64-linux-android/release/gtmd "$root/bin/"
           cp artifacts/man/*.1       "$root/man/man1/"
           cp artifacts/completions/* "$root/completions/"
-          cp install.sh              "$root/"
+          cp install.sh uninstall.sh              "$root/"
           tar czf "release-assets/gtm-aarch64-android.tar.gz" "$root"
 
       - name: Build Debian/Ubuntu .deb

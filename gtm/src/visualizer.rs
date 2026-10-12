@@ -12,6 +12,7 @@
 
 use std::time::Instant;
 
+use image::{Rgba, RgbaImage};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -103,12 +104,9 @@ const SPECTRUM_MAX_HZ: f64 = 16_000.0;
 /// `maxSmoothDtFrames`).
 const MAX_SMOOTH_DT: f64 = 10.0 / 60.0;
 
-/// Paused spectrum content below this is treated as fully decayed to rest,
-/// letting the model fall through to the gentle idle animation.
+/// Spectrum content below this is treated as fully decayed to rest, which is
+/// the empty state the pane draws nothing in.
 const PAUSED_DECAY_EPSILON: f32 = 0.01;
-
-/// Idle-pattern animation speed (radians/s drift).
-const IDLE_DRIFT: f64 = 1.2;
 
 // ─── ClassicPeak physics (cliamp vis_classic_peak) ──────────────────────────
 const CLASSIC_LAUNCH_BASE: f32 = 0.8;
@@ -311,9 +309,9 @@ const RETRO_NOTES_MAX: usize = 7;
 /// Fallback heat palette for Flame/Retro warm hues.
 fn heat_color(heat: f32, theme: &AppTheme) -> Color {
     if heat > 0.78 {
-        // The peak was a fixed cream, so the hottest cells were the one place a
-        // reactive theme could never reach. Nudging the accent toward the same
-        // cream keeps the "hot" reading and gives it the artwork's hue.
+        // Nudging the accent toward cream keeps the "hot" reading while giving
+        // the peak the artwork's hue, the one place at the top of the ramp a
+        // reactive theme reaches.
         blend_colors(theme.accent, Color::Rgb(255, 250, 200), 0.7)
     } else if heat > 0.58 {
         theme.tertiary_accent
@@ -393,13 +391,13 @@ fn resample_bands_linear(bands: &[f32], total_cols: usize) -> Vec<f32> {
     }
     let mut out = Vec::with_capacity(total_cols);
     if total_cols == 1 {
-        out.push(sample_band_linear(bands, (bands.len() - 1) as f64 / 2.0));
+        out.push(band_at(bands, (bands.len() - 1) as f64 / 2.0) as f32);
         return out;
     }
     let last = (bands.len() - 1) as f64;
     for col in 0..total_cols {
         let pos = col as f64 / (total_cols - 1) as f64 * last;
-        out.push(sample_band_linear(bands, pos));
+        out.push(band_at(bands, pos) as f32);
     }
     out
 }
@@ -415,9 +413,8 @@ pub struct AudioVisualizer {
     // Log-band model (BAND_COUNT entries, smoothed)
     bands: [f32; BAND_COUNT],
     bands_prev: [f32; BAND_COUNT],
-    // Waveform ring + stereo flag (mirrors DaemonState)
+    // Waveform ring (mirrors DaemonState)
     wave_samples: Vec<f32>,
-    wave_stereo: bool,
     // ClassicPeak per-column physics
     peak_pos: Vec<f32>,
     peak_vel: Vec<f32>,
@@ -434,9 +431,9 @@ pub struct AudioVisualizer {
     rng: u64,
     // Motion state
     last_tick: Instant,
-    spectrum_offset: f64,
     frame: u64,
     resting: bool,
+    playing: bool,
 }
 
 impl AudioVisualizer {
@@ -449,7 +446,6 @@ impl AudioVisualizer {
             bands: [0.0; BAND_COUNT],
             bands_prev: [0.0; BAND_COUNT],
             wave_samples: Vec::new(),
-            wave_stereo: false,
             peak_pos: vec![0.0; 32],
             peak_vel: vec![0.0; 32],
             peak_hold: vec![0.0; 32],
@@ -462,16 +458,15 @@ impl AudioVisualizer {
             heat_cols: 0,
             rng: 0xF1A3C0DE0BADCAFE,
             last_tick: Instant::now(),
-            spectrum_offset: 0.0,
             frame: 0,
             resting: true,
+            playing: false,
         }
     }
 
     /// Advance the band/bar model one frame. `width`/`height` come from the
-    /// visualizer panel; `audio_levels` is the 64-bin spectrum, `wave_samples`
-    /// a decimated interleaved L/R ring (empty when silent) and `wave_stereo`
-    /// whether the current source has two distinct channels.
+    /// visualizer panel; `audio_levels` is the 64-bin spectrum and
+    /// `wave_samples` a decimated interleaved L/R ring (empty when silent).
     pub fn tick(
         &mut self,
         is_playing: bool,
@@ -479,7 +474,6 @@ impl AudioVisualizer {
         height: u16,
         audio_levels: &[f32],
         wave_samples: &[f32],
-        wave_stereo: bool,
     ) {
         if width == 0 {
             return;
@@ -491,8 +485,8 @@ impl AudioVisualizer {
             .clamp(0.0, MAX_SMOOTH_DT);
         self.last_tick = now;
         self.frame = self.frame.wrapping_add(1);
-        self.spectrum_offset += dt * IDLE_DRIFT;
         let dt = dt as f32;
+        self.playing = is_playing;
 
         let num = width as usize;
         if self.bars.len() != num {
@@ -520,7 +514,8 @@ impl AudioVisualizer {
                 };
             }
         } else {
-            // Decay to rest; once fully quiet, let the idle animation drive.
+            // Decay to rest: with no playback the bands fall to zero and the
+            // model settles into the state that renders nothing.
             let mut peaked = 0.0f32;
             for slot in self.bands.iter_mut() {
                 *slot *= 0.78 + dt * 0.2;
@@ -531,21 +526,13 @@ impl AudioVisualizer {
             }
         }
 
-        // 2) Idle sine-pattern targets once fully rested.
-        let mut band_levels = [0.0f32; BAND_COUNT];
-        if self.resting {
-            for (i, slot) in band_levels.iter_mut().enumerate() {
-                let phase = self.spectrum_offset + i as f64 * 0.45;
-                let wave_ = 0.5 + 0.5 * phase.sin();
-                let jitter = (self.spectrum_offset * 3.7 + i as f64 * 1.3).sin() * 0.02;
-                let edge = (i as f64 / (BAND_COUNT - 1) as f64 * std::f64::consts::PI)
-                    .sin()
-                    .max(0.15);
-                *slot = ((0.10 + 0.12 * wave_ + jitter) * edge) as f32;
-            }
+        // 2) Band targets. At rest they are all zero: nothing is playing, so
+        // there is nothing to show.
+        let band_levels = if self.resting {
+            [0.0f32; BAND_COUNT]
         } else {
-            band_levels.copy_from_slice(&self.bands);
-        }
+            self.bands
+        };
 
         // 3) Interpolate bands → one target per terminal column.
         let cols = resample_bands_linear(&band_levels, num);
@@ -570,10 +557,12 @@ impl AudioVisualizer {
             self.peaks[i] = p.max(self.bars[i]).clamp(0.0, 1.0);
         }
 
-        // 6) Waveform ring + stereo meter levels.
+        // 6) Waveform ring + stereo meter levels. Samples are only kept while
+        // playing: a stopped visualizer must not draw the last trace.
         self.wave_samples.clear();
-        self.wave_samples.extend_from_slice(wave_samples);
-        self.wave_stereo = wave_stereo;
+        if is_playing {
+            self.wave_samples.extend_from_slice(wave_samples);
+        }
         self.step_stereo(dt);
 
         // 7) ClassicPeak cap physics.
@@ -696,17 +685,22 @@ impl AudioVisualizer {
         for x in 0..cols {
             self.heat[x] *= 0.82;
         }
-        // Seed the bottom (source) row from the spectrum + ember base.
+        // Seed the bottom (source) row from the spectrum + ember base. With no
+        // playback the source is cold and the field burns out.
         let band_last = (BAND_COUNT - 1) as f64;
         for x in 0..cols {
             let t = x as f64 / last as f64 * band_last;
             let band = if self.resting {
                 0.0
             } else {
-                band_at_f64(&self.bands, t)
+                band_at(&self.bands, t)
             };
             let sparkle = (self.next_rng() % 100) as f64 / 100.0 * 0.18;
-            let base = 0.30 + 0.70 * band + sparkle;
+            let base = if self.playing {
+                0.30 + 0.70 * band + sparkle
+            } else {
+                0.0
+            };
             self.heat[(rows - 1) * cols + x] = base.min(1.05);
         }
     }
@@ -719,8 +713,13 @@ impl AudioVisualizer {
         self.rng >> 33
     }
 
-    pub fn render(&self, area: Rect, theme: &AppTheme) -> Option<Lines<'_>> {
+    pub fn render(&self, area: Rect, theme: &AppTheme) -> Option<Lines<'static>> {
         if area.width < 4 || area.height < 3 {
+            return None;
+        }
+        // Nothing is playing and the model has settled: draw nothing rather
+        // than a synthetic spectrum that reads as live audio.
+        if !self.playing && self.resting {
             return None;
         }
 
@@ -836,25 +835,21 @@ impl AudioVisualizer {
     }
 
     /// Braille oscilloscope over the decimated waveform ring (cliamp
-    /// renderWave); falls back to a gentle sine sweep when no fresh samples
-    /// are available (paused/stopped).
+    /// renderWave). No samples means no wave: the ring is only filled while
+    /// playing, so a stopped pane stays empty instead of drawing a sweep.
     fn render_wave(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
         let dot_rows = height * 4;
         let dot_cols = num_bars * 2;
-        if dot_cols == 0 {
-            return Lines(Vec::new());
+        let n = self.wave_samples.len();
+        if dot_cols == 0 || n < 2 {
+            return lines_empty(height);
         }
         // Per-dot-column y position.
         let mut ypos = vec![0usize; dot_cols];
-        let n = self.wave_samples.len();
         for (x, slot) in ypos.iter_mut().enumerate() {
-            let v = if n >= 2 {
+            let v = {
                 let idx = ((x as f64 * n as f64 / dot_cols as f64) as usize / 2 * 2).min(n - 2);
                 self.wave_samples[idx] as f64
-            } else {
-                // Idle sine sweep.
-                let phase = self.spectrum_offset * 1.6 + x as f64 * 0.16;
-                0.55 * phase.sin() + 0.15 * (phase * 2.7 + 0.7).sin()
             };
             let y = ((1.0 - v) * (dot_rows - 1) as f64 / 2.0).round();
             *slot = (y as isize).clamp(0, (dot_rows - 1) as isize) as usize;
@@ -1183,7 +1178,7 @@ impl AudioVisualizer {
     /// Log-mapped spectrum bars with peak-hold caps. Distinct from Blocks
     /// (fractional smooth columns): solid columns plus a falling `▔` marker
     /// per bar. Glyphs are `&'static str` — no per-frame allocation.
-    fn render_spectrum(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
+    fn render_spectrum(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row_from_top in (0..height).rev() {
             let mut spans: Vec<Span<'static>> = Vec::new();
@@ -1207,7 +1202,7 @@ impl AudioVisualizer {
     }
 
     /// Block columns with fine fractional heights (`▁…█`).
-    fn render_blocks(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
+    fn render_blocks(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
         const B: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row_from_top in (0..height).rev() {
@@ -1237,7 +1232,7 @@ impl AudioVisualizer {
     }
 
     /// Center-symmetric bars blooming outward from the middle axis.
-    fn render_mirror(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
+    fn render_mirror(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
         let half = height as f32 / 2.0;
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row_from_top in 0..height {
@@ -1265,7 +1260,7 @@ impl AudioVisualizer {
         height: usize,
         theme: &AppTheme,
         color_fn: impl Fn(f32, &AppTheme) -> Color,
-    ) -> Lines<'_> {
+    ) -> Lines<'static> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row in (0..height).rev() {
             let mut spans: Vec<Span<'static>> = Vec::new();
@@ -1285,7 +1280,7 @@ impl AudioVisualizer {
     }
 
     /// Braille cells with a 4-step color ramp by amplitude.
-    fn render_gradient(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
+    fn render_gradient(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
         self.render_braille_grid(num_bars, height, theme, |val, theme| {
             if val > 0.75 {
                 theme.accent
@@ -1299,7 +1294,7 @@ impl AudioVisualizer {
         })
     }
 
-    fn render_braille(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
+    fn render_braille(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
         self.render_braille_grid(num_bars, height, theme, |val, theme| {
             amplitude_color(val, theme)
         })
@@ -1310,27 +1305,9 @@ fn lines_empty(height: usize) -> Lines<'static> {
     Lines((0..height).map(|_| Line::from(" ")).collect())
 }
 
-/// Linearly sample `[f32; N]` band values at fractional position `pos`.
-fn sample_band_linear(bands: &[f32], pos: f64) -> f32 {
-    let n = bands.len();
-    if n == 0 {
-        return 0.0;
-    }
-    if n == 1 {
-        return bands[0];
-    }
-    let last = (n - 1) as f64;
-    let pos = pos.clamp(0.0, last);
-    let idx = pos.floor() as usize;
-    if idx >= n - 1 {
-        return bands[n - 1];
-    }
-    let frac = (pos - idx as f64) as f32;
-    bands[idx] * (1.0 - frac) + bands[idx + 1] * frac
-}
-
-/// Linearly sample `[f32; N]` band values at fractional position `t`.
-fn band_at_f64(bands: &[f32], t: f64) -> f64 {
+/// Linearly sample band values at fractional position `pos`. The one sampler
+/// the band path has: callers cast down to `f32` where the bars are `f32`.
+fn band_at(bands: &[f32], pos: f64) -> f64 {
     let n = bands.len();
     if n == 0 {
         return 0.0;
@@ -1339,7 +1316,7 @@ fn band_at_f64(bands: &[f32], t: f64) -> f64 {
         return bands[0] as f64;
     }
     let last = (n - 1) as f64;
-    let pos = t.clamp(0.0, last);
+    let pos = pos.clamp(0.0, last);
     let idx = pos.floor() as usize;
     if idx >= n - 1 {
         return bands[n - 1] as f64;
@@ -1393,7 +1370,177 @@ impl<'a> Widget for Lines<'a> {
     }
 }
 
+// ─── Visualizer extension API ───────────────────────────────────────────────
+
+/// One frame of audio, as every visualizer receives it. The slices borrow the
+/// shared audio state, so the per-frame path allocates nothing here.
+pub struct AudioFrame<'a> {
+    pub playing: bool,
+    /// Seconds since the previous frame. The built-in model measures its own
+    /// time in `tick` and ignores this; a shader or a foreign visualizer
+    /// integrates it.
+    pub dt: f64,
+    /// Spectrum input: the analyzer's log-spaced bins.
+    pub bands: &'a [f32],
+    /// Decimated interleaved L/R ring. Empty when silent.
+    pub wave: &'a [f32],
+    pub stereo: bool,
+    /// Pane size in cells.
+    pub size: (u16, u16),
+    pub theme: &'a AppTheme,
+}
+
+/// What a visualizer draws. `Cells` is the terminal-glyph renderer and the
+/// universal fallback; `Pixels` is a real image sampled into half-blocks by
+/// [`pixels_to_lines`]; `Shader` names a WGSL entry point compiled once.
+pub enum Frame {
+    Cells(Lines<'static>),
+    Pixels(RgbaImage),
+    Shader(&'static str),
+}
+
+/// A visualizer: consume audio, produce a frame. The twelve presets were one
+/// twelve-way `match` inside `render`; a value behind this trait is what makes
+/// "write your own" stop meaning "fork the renderer".
+pub trait Visualizer: Send + 'static {
+    fn update(&mut self, frame: &AudioFrame);
+    fn draw(&mut self, frame: &AudioFrame) -> Frame;
+}
+
+/// Factories for the visualizers the client ships. The built-in `Audio` one is
+/// registered here and gates on the same `ExtensionId::Visualizer` kill switch
+/// that already decides whether spectrum frames move at all.
+#[derive(Default)]
+pub struct VisualizerRegistry {
+    entries: Vec<(&'static str, fn() -> Box<dyn Visualizer>)>,
+}
+
+impl VisualizerRegistry {
+    /// A registry with the built-in visualizers registered.
+    pub fn with_builtins() -> Self {
+        let mut registry = Self::default();
+        registry.register("Audio", || Box::new(AudioVisualizer::new()));
+        registry
+    }
+
+    pub fn register(&mut self, name: &'static str, factory: fn() -> Box<dyn Visualizer>) {
+        if !self.entries.iter().any(|(n, _)| *n == name) {
+            self.entries.push((name, factory));
+        }
+    }
+
+    pub fn names(&self) -> Vec<&'static str> {
+        self.entries.iter().map(|(n, _)| *n).collect()
+    }
+
+    pub fn create(&self, name: &str) -> Option<Box<dyn Visualizer>> {
+        self.entries
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, factory)| factory())
+    }
+}
+
+/// Route A: sample an RGBA frame into `▀` cells, the foreground the upper pixel
+/// and the background the lower one. It works on every terminal the cell
+/// renderer works on, which is why the eager shader path falls back to it.
+pub fn pixels_to_lines(
+    img: &RgbaImage,
+    out_w: u16,
+    out_h: u16,
+) -> Lines<'static> {
+    let (ow, oh) = (out_w.max(1) as u32, out_h.max(1) as u32);
+    let (iw, ih) = (img.width().max(1), img.height().max(1));
+    let mut lines = Vec::with_capacity(oh as usize);
+    for cy in 0..oh {
+        // Two source rows per output row: upper pixel top, lower pixel bottom.
+        let row_at = |band: u32| {
+            (((cy as u64 * 2 + band as u64) * ih as u64) / (oh as u64 * 2)).min(ih as u64 - 1)
+                as u32
+        };
+        let (top_y, bot_y) = (row_at(0), row_at(1));
+        let mut spans = Vec::with_capacity(ow as usize);
+        for cx in 0..ow {
+            let sx = ((cx as u64 * iw as u64) / ow as u64).min(iw as u64 - 1) as u32;
+            let top = img.get_pixel(sx, top_y).0;
+            let bot = img.get_pixel(sx, bot_y).0;
+            let fg = if top[3] == 0 {
+                Color::Reset
+            } else {
+                Color::Rgb(top[0], top[1], top[2])
+            };
+            let bg = if bot[3] == 0 {
+                Color::Reset
+            } else {
+                Color::Rgb(bot[0], bot[1], bot[2])
+            };
+            spans.push(Span::styled(
+                "▀",
+                Style::default().fg(fg).bg(bg),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    Lines(lines)
+}
+
+/// An RGB tuple for a ratatui colour. Indexed and reset colours have no RGB
+/// here, so they map to black; every visualizer path hands back truecolor.
+fn rgb_of(c: Color) -> [u8; 3] {
+    match c {
+        Color::Rgb(r, g, b) => [r, g, b],
+        Color::Black => [0, 0, 0],
+        Color::White => [255, 255, 255],
+        _ => [0, 0, 0],
+    }
+}
+
+impl Visualizer for AudioVisualizer {
+    fn update(&mut self, frame: &AudioFrame) {
+        self.tick(
+            frame.playing,
+            frame.size.0,
+            frame.size.1,
+            frame.bands,
+            frame.wave,
+        );
+    }
+
+    fn draw(&mut self, frame: &AudioFrame) -> Frame {
+        let (w, h) = frame.size;
+        // Nothing to show: an empty pane rather than a synthetic spectrum.
+        if w < 4 || h < 3 || (!self.playing && self.resting) {
+            return Frame::Cells(Lines(Vec::new()));
+        }
+        if self.preset == VisualizerPreset::Flame && self.heat_rows > 0 && self.heat_cols > 0 {
+            return Frame::Pixels(self.flame_image(frame.theme));
+        }
+        Frame::Cells(
+            self.render(Rect::new(0, 0, w, h), frame.theme)
+                .unwrap_or_else(|| Lines(Vec::new())),
+        )
+    }
+}
+
 impl AudioVisualizer {
+    /// Rasterise the flame heat field to pixels. `draw` reaches this so Flame
+    /// travels the `Frame::Pixels` route with no GPU at all: the same heat
+    /// model, a different last step.
+    fn flame_image(&self, theme: &AppTheme) -> RgbaImage {
+        let rows = self.heat_rows.max(1) as u32;
+        let cols = self.heat_cols.max(1) as u32;
+        let mut img = RgbaImage::new(cols, rows);
+        for y in 0..rows {
+            for x in 0..cols {
+                let idx = (y * self.heat_cols as u32 + x) as usize;
+                let heat = self.heat.get(idx).copied().unwrap_or(0.0) as f32;
+                let [r, g, b] = rgb_of(heat_color(heat, theme));
+                img.put_pixel(x, y, Rgba([r, g, b, 255]));
+            }
+        }
+        img
+    }
+
     /// Test helper: pretend a 16 ms frame has elapsed so easing moves a
     /// realistic amount per tick even in tight loops.
     #[cfg(test)]
@@ -1478,11 +1625,15 @@ mod tests {
         v.resting = false;
         v.backdate_tick();
         for _ in 0..240 {
-            v.tick(false, 40, 6, &[], &[], false);
+            v.tick(false, 40, 6, &[], &[]);
             v.backdate_tick();
         }
         assert!(v.resting, "decay-to-rest must trigger while stopped");
         assert!(v.bands.iter().all(|&b| b < PAUSED_DECAY_EPSILON));
+        assert!(
+            v.render(Rect::new(0, 0, 40, 6), &crate::theme::chadrula()).is_none(),
+            "a stopped visualizer must draw nothing"
+        );
     }
 
     #[test]
@@ -1491,10 +1642,11 @@ mod tests {
         let levels: Vec<f32> = vec![0.8; 64];
         v.backdate_tick();
         for _ in 0..30 {
-            v.tick(true, 40, 6, &levels, &[], false);
+            v.tick(true, 40, 6, &levels, &[]);
             v.backdate_tick();
         }
         assert!(v.bars.iter().any(|&b| b > 0.5));
+        assert!(v.render(Rect::new(0, 0, 40, 6), &crate::theme::chadrula()).is_some());
     }
 
     /// The whole point of the reactive theme here: changing only the artwork
@@ -1516,10 +1668,9 @@ mod tests {
         }
     }
 
-    /// The peak used to be a fixed cream, which is the one colour a reactive
-    /// theme could never change.
+    /// The heat peak follows the accent, so a reactive theme reaches it.
     #[test]
-    fn the_heat_peak_is_not_a_fixed_colour() {
+    fn the_heat_peak_follows_the_accent() {
         let base = crate::theme::chadrula();
         let other = AppTheme {
             accent: Color::Rgb(10, 200, 90),

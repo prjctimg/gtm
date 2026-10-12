@@ -398,6 +398,15 @@ pub struct App {
     /// pane, both of which name the track, and it has no controls. A minute is
     /// long enough to be an absence rather than a pause.
     pub(crate) daydream_secs: u64,
+    /// How long the cursor rests on a radio or chart row before its sound
+    /// preview starts. Zero disables the preview.
+    pub(crate) preview_delay_secs: u64,
+    /// The hover preview's resting row, when the rest began, and whether that
+    /// rest has already fired. Keyed on the row rather than on a list index so
+    /// moving the cursor away and back arms it again.
+    pub(crate) preview_hover: Option<String>,
+    pub(crate) preview_since: Option<std::time::Instant>,
+    pub(crate) preview_fired: bool,
     pub input_mode: InputMode,
     pub search_query: String,
     /// Per-view selection index: one slot per library view, plus one per
@@ -653,6 +662,10 @@ pub struct App {
     /// a cursor-move memo, not a cache, and "All Tracks" is a union of whole
     /// playlists that would make a growing map hold the library in RAM.
     pub(crate) popup_cover_bytes: Option<(String, Vec<u8>)>,
+    /// Last fetched library-id cover, mirroring [`App::popup_cover_bytes`] for
+    /// the id path: a fast scroll back onto a row repaints it instead of
+    /// blanking while a fresh request is in flight.
+    pub(crate) popup_id_cover: Option<(i64, Vec<u8>)>,
     /// Cover art for the SearchLibrary picker preview window.
     pub picker_preview_cover: Option<Vec<u8>>,
     pub picker_preview_stateful: Option<StatefulProtocol>,
@@ -1242,6 +1255,10 @@ impl App {
             last_input: std::time::Instant::now(),
             daydreaming: false,
             daydream_secs: DEFAULT_DAYDREAM_SECS,
+            preview_delay_secs: default_preview_delay_secs(),
+            preview_hover: None,
+            preview_since: None,
+            preview_fired: false,
             input_mode: InputMode::Normal,
             search_query: String::new(),
             scroll_offset: [0; LIB_CATEGORIES.len() + LibraryFilter::ALL.len()],
@@ -1452,6 +1469,7 @@ impl App {
             popup_slot: FetchSlot::default(),
             spotify_popup_slot: FetchSlot::default(),
             popup_cover_bytes: None,
+            popup_id_cover: None,
             picker_preview_cover: None,
             picker_preview_stateful: None,
             picker_slot: FetchSlot::default(),
@@ -2190,6 +2208,7 @@ pub mod keys;
 pub mod lyrics;
 pub mod notify;
 pub mod prefs;
+pub mod preview;
 pub mod run;
 pub mod search;
 pub mod settings_keys;

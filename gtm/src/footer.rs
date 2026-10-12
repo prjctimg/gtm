@@ -878,13 +878,13 @@ pub fn format_uptime(secs: f64) -> String {
 /// `provider_icon` lookup key plus the short display label, or `None` for
 /// local playback (the `Source` footer module hides itself then).
 ///
-/// Mirrors the daemon's `parse_remote_path` schemes plus the native
-/// `spotify:` librespot URI, `youtube:` IDs, yt-dlp extractor hosts,
-/// resolved `http(s)://` stream URLs (YouTube/Stream), and the legacy
-/// `/audio/spotify|youtube` cache paths the now-playing pane already treats
-/// as provider output.
+/// Mirrors the daemon's `parse_remote_path` schemes: the native `spotify:`
+/// librespot URI, `podcast://` and `radio://` row schemes, `youtube:` IDs,
+/// yt-dlp extractor hosts, and resolved `http(s)://` stream URLs. A track the
+/// daemon downloaded into the provider cache (`<cache>/spotify/…`) carries a
+/// plain filesystem path and is recognised by that subdirectory.
 pub(crate) fn classify_remote_source(path: &str) -> Option<(&'static str, &'static str)> {
-    if path.starts_with("spotify:") || path.contains("/audio/spotify") {
+    if path.starts_with("spotify:") || path.contains("/spotify/") {
         return Some(("Spotify", "Spotify"));
     }
     if path.starts_with("podcast://") {
@@ -893,7 +893,7 @@ pub(crate) fn classify_remote_source(path: &str) -> Option<(&'static str, &'stat
     if path.starts_with("radio://") {
         return Some(("Radio", "Radio"));
     }
-    if path.starts_with("youtube:") || path.contains("/audio/youtube") {
+    if path.starts_with("youtube:") || path.contains("/youtube/") {
         return Some(("YouTube", "YouTube"));
     }
     if let Some(label) = ytdlp_label(path) {

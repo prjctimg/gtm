@@ -913,6 +913,17 @@ impl Spotify {
             fastrand::shuffle(&mut order);
         }
 
+        // `premium` starts false and is only set by a `/me/player` probe, so a
+        // daemon that has not finished its startup sync yet would take the
+        // slow yt-dlp path on an account that pays for native streaming. One
+        // bounded probe answers it, as on the play path.
+        {
+            let mut spotify = inner.spotify.lock().await;
+            if spotify.linked() && !spotify.is_premium() {
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(10), spotify.refresh_playback()).await;
+            }
+        }
         let can_stream = can_stream(inner).await;
 
         if can_stream {
@@ -939,36 +950,36 @@ impl Spotify {
                     ..Default::default()
                 })
                 .collect();
-            let was_empty = {
+            // Play All means this playlist, now: the queue is replaced rather
+            // than appended to, and the first track starts even when something
+            // was already playing. Appending left the new rows behind the
+            // current track and started nothing, which is the "Play All does
+            // nothing" bug.
+            {
                 let mut state = inner.state.write().await;
-                let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                queue::add_resolved_many(&mut state, resolved, None);
-                drop(state);
-                w
+                queue::set_resolved(&mut state, resolved);
+            }
+            let first = {
+                let read = inner.state.read().await;
+                read.queue.first().cloned()
             };
-            if was_empty {
-                let first = {
-                    let read = inner.state.read().await;
-                    read.queue.first().cloned()
+            if let Some(entry) = first {
+                // The same race `queue_stream` warms for, and the queue entry
+                // already holds the art URL: without it the first track of a
+                // playlist has no `cover_path`, so the client's cover request
+                // misses and pays a bounded 8s spotify search for art the
+                // response told us about. The second and later tracks were
+                // already better served than the first, by the position-tick
+                // preload.
+                let meta = StreamMeta {
+                    title: &entry.title,
+                    artist: &entry.artist,
+                    album: &entry.album,
+                    image_url: entry.cover_url.as_deref(),
+                    duration: Some(entry.duration),
                 };
-                if let Some(entry) = first {
-                    // The same race `queue_stream` warms for, and the queue
-                    // entry already holds the art URL: without it the first
-                    // track of a playlist has no `cover_path`, so the client's
-                    // cover request misses and pays a bounded 8s spotify
-                    // search for art the response told us about. The second and
-                    // later tracks were already better served than the first,
-                    // by the position-tick preload.
-                    let meta = StreamMeta {
-                        title: &entry.title,
-                        artist: &entry.artist,
-                        album: &entry.album,
-                        image_url: entry.cover_url.as_deref(),
-                        duration: Some(entry.duration),
-                    };
-                    Self::warm_cover(inner, &entry.path, &meta).await;
-                    Cmd::play(inner, &entry.path, 0.0, false).await?;
-                }
+                Self::warm_cover(inner, &entry.path, &meta).await;
+                Cmd::play(inner, &entry.path, 0.0, false).await?;
             }
             Daemon::push_queue_state(inner).await;
             Daemon::save_state(inner);
@@ -996,6 +1007,9 @@ impl Spotify {
         {
             let mut state = inner.state.write().await;
             state.fallback_disabled = false;
+            // Replace the queue, so the first resolved track lands at index 0
+            // and starts, exactly as on the Premium path.
+            queue::set_resolved(&mut state, Vec::new());
             let added = queue::add(&mut state, &path, None);
             if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
                 entry.title = first_track.name.clone();

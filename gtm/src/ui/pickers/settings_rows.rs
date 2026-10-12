@@ -6,17 +6,12 @@
 
 //! The settings pane, described once.
 //!
-//! The list used to exist three times over: as a `match` producing the rendered
-//! strings, as a second `match` producing the per-row help line, and as a third
-//! `category_options()` returning the row *count* so the cursor knew where to
-//! stop. They drifted. The YouTube category had a fourth row the handler
-//! ignored; the Spotify category's transport rows were off by one, so Next,
-//! Previous and Shuffle all ran `set_repeat` (the handler mapped a semantic
-//! index, `opt - 4`, into a callee that matched `8 | 9 | 10 | _`); and a
-//! category added or removed left the count disagreeing with the list.
+//! One array of `(label, kind)` per category serves the rendered labels, the
+//! per-row help line and the row count the cursor clamps to. Adding a row is a
+//! line in the array and an arm in the handler; the count is `len()`.
 //!
-//! One array of `(label, kind)` per category now serves all three. Adding a row
-//! is one line, and the count is `len()`.
+//! The handler in `app::settings_keys` reads the same positions, so the two are
+//! checked together by a test rather than by hand.
 
 use crate::ui::*;
 
@@ -47,6 +42,7 @@ pub(crate) const PLAYBACK_ROWS: SettingsRows = &[
     ("Reverb", RowKind::Toggle),
     ("Pre-Gain", RowKind::Cycle),
     ("Cover Source", RowKind::Cycle),
+    ("Preview Delay", RowKind::Cycle),
 ];
 
 /// System. Toggles, values, and the quick actions.
@@ -100,6 +96,7 @@ pub(crate) fn row_help(category: usize, option: usize) -> &'static str {
         (0, 2) => " Press Enter to open the crossfade picker.",
         (0, 5) => " Press Enter to step the pre-gain by 1 dB.",
         (0, 6) => " Press Enter to cycle the cover art source.",
+        (0, 7) => " Wait this long on a radio or chart row before it starts a preview (off = never).",
         (1, 0) => " Press Enter to open the theme picker.",
         (1, 1) => " Press Enter to cycle theme mode (auto/dark/light).",
         (1, 6) => " Press Enter to toggle the reactive theme.",
@@ -126,12 +123,9 @@ mod tests {
     /// addressing a row that does not exist.
     #[test]
     fn row_counts_match_the_declared_lists() {
-        assert_eq!(rows_for(0).len(), 7);
+        assert_eq!(rows_for(0).len(), 8);
         assert_eq!(rows_for(1).len(), 17);
-        // Status, Link Account, Unlink. The Spotify Next/Previous rows went
-        // when the Connect transport moved to the command palette, and this
-        // count was left at 5 -- so the test had been failing ever since,
-        // asserting a row list that no longer existed.
+        // Status, Link Account, Unlink.
         assert_eq!(rows_for(2).len(), 3);
         for cat in 0..3 {
             assert!(!rows_for(cat).is_empty(), "category {cat} is empty");
@@ -158,9 +152,7 @@ mod tests {
         }
     }
 
-    /// The Spotify category is Status, Link and Unlink. It used to also carry
-    /// Next and Previous, which act on the *Connect device* rather than the
-    /// local queue — and were the rows the semantic-index bug lived on.
+    /// The Spotify category is Status, Link and Unlink.
     #[test]
     fn spotify_is_status_link_and_unlink() {
         let names: Vec<&str> = rows_for(2).iter().map(|(n, _)| *n).collect();

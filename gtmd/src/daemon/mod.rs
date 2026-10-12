@@ -1232,8 +1232,13 @@ impl Cmd {
         state.toggle_shuffle()?;
         let enabled = state.shuffle;
 
-        if enabled && !was_shuffled && !state.queue.is_empty() {
-            fastrand::shuffle(&mut state.queue);
+        if enabled && !was_shuffled && state.queue.len() > 1 {
+            // Index 0 is the track that is playing; shuffling it away makes
+            // `step_next` treat the current entry as an unplayed row, so it
+            // replays later and the queue never drains.
+            let mut rest = state.queue.split_off(1);
+            fastrand::shuffle(&mut rest);
+            state.queue.extend(rest);
         }
 
         drop(state);
@@ -2081,6 +2086,7 @@ fn is_spotify_slow(req: &DaemonReq) -> bool {
         DaemonReq::SpotifySync
             | DaemonReq::SpotifyResolve { .. }
             | DaemonReq::SpotifyResolveTrack { .. }
+            | DaemonReq::SpotifyPlayAll { .. }
             | DaemonReq::SpotifyMatch { .. }
             | DaemonReq::SpotifyLike { .. }
             | DaemonReq::SpotifyPlaylistAdd { .. }

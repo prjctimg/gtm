@@ -1,11 +1,12 @@
 use crate::app::*;
 use crate::oauth::mask_credential;
+use crate::ui::{enter_tui, leave_tui};
 
 /// Validate the link form's redirect port.
 ///
-/// A port that does not parse is a mistake, and it must be reported rather
-/// than discarded: the client id and the port sit one Tab apart, so a client id
-/// pasted into the port box used to fall back to the default and link the
+/// A port that does not parse is a mistake, and it is reported rather than
+/// discarded: the client id and the port sit one Tab apart, so a client id
+/// typed into the port box must not fall back to the default and link the
 /// account against the shared app while looking like the id had been honoured.
 /// Returning the error keeps the form on screen to correct.
 ///
@@ -119,6 +120,7 @@ impl App {
         // Visualizer preset
         self.visualizer.preset = prefs.visualizer_preset;
         self.daydream_secs = prefs.daydream_secs;
+        self.preview_delay_secs = prefs.preview_delay_secs;
 
         // Footer time format
         self.footer_time_format = if prefs.time_format.is_empty() {
@@ -463,10 +465,9 @@ impl App {
                     ));
                 }
                 if let DaemonEvent::ProviderError { provider, message } = &ev {
-                    // A provider that refuses every request used to be
-                    // indistinguishable from a muted player: librespot logged
-                    // the rejection to its own logger, the resulting
-                    // `Unavailable` ended the source, and the queue moved on.
+                    // A provider that refuses every request looks like a muted
+                    // player from here, so the daemon's own error route is what
+                    // tells the user why the source ended.
                     self.notify_typed(
                         &format!("{provider} error"),
                         message.clone(),
@@ -601,13 +602,10 @@ impl App {
                 if let Ok(status) = self.client.spotify().status().await {
                     let was_linked = self.spotify.status.as_ref().is_some_and(|s| s.linked);
                     if status.linked {
-                        // Clearing the waiting state is idempotent on purpose.
-                        // It used to ride the `!was_linked` edge, which meant a
-                        // single failed status call left the picker up for good:
-                        // the daemon's post-sync event could no longer fire the
-                        // transition, because by then the account was already
-                        // linked. Every event gets a chance to dismiss instead,
-                        // so a missed one costs a moment, not a stuck screen.
+                        // Clearing the waiting state is idempotent on purpose:
+                        // every status event gets a chance to dismiss, so a
+                        // missed one costs a moment rather than leaving the
+                        // picker up for good.
                         self.spotify.oauth_pending = false;
                         self.spotify.oauth_url = None;
                         self.spotify.oauth_error = None;
@@ -1222,6 +1220,9 @@ impl App {
                             && self.popup_track_id == Some(track_id)
                             && self.popup_slot.matches(fetch_gen)
                         {
+                            self.popup_id_cover = cover
+                                .clone()
+                                .map(|bytes| (track_id, bytes));
                             self.track_popup_cover = cover;
                             self.popup_cover_sync();
                             self.cover_art_dirty = true;
@@ -1626,9 +1627,7 @@ impl App {
                     && top.id == PickerId::PodcastFeeds
                 {
                     // Fired for an empty query as well: that is the popular
-                    // list, and the picker's whole first screen. It used to
-                    // require a non-empty query, so opening the picker showed
-                    // an empty directory until something was typed.
+                    // list, and the picker's whole first screen.
                     let q = top.query.trim().to_string();
                     self.search_podcasts(q);
                 }
@@ -1656,20 +1655,18 @@ impl App {
                 self.search_deadline = None;
             }
 
+            // Hover preview: runs every frame so a rest of the configured length
+            // starts the row under the cursor, even though no event marks it.
+            self.poll_preview();
+
             // Detect state changes.
             //
-            // Each of these used to update its tracker and nothing else, which
-            // made a track, status, volume or cover change invisible to every
-            // widget that had not happened to be looking. They all waited for
-            // the periodic ten-frame repaint to notice -- up to a sixth of a
-            // second of the footer disagreeing with the transport and the cover
-            // disagreeing with the track it belongs to.
-            //
-            // Marking the frame dirty on the change itself is both the fix and
-            // the fault tolerance. These four comparisons are the whole
-            // reconciliation, so a tracker that has drifted from the state
-            // cannot leave anything stale: the drift *is* a change, and the
-            // frame after it every widget is refreshed.
+            // Each one marks the frame dirty on the change itself, so a track,
+            // status, volume or cover change reaches every widget without
+            // waiting for the periodic ten-frame repaint. These four
+            // comparisons are the whole reconciliation: a tracker that has
+            // drifted from the state cannot leave anything stale, because the
+            // drift *is* a change.
             let current_tid = self.state.current_track.as_ref().map(|t| t.id);
             // A latched `full_sync` makes every comparison below report a change,
             // so the trackers are re-seeded from the state on the way past --
@@ -1920,27 +1917,13 @@ impl App {
             // Handle Ctrl+Z suspend: leave terminal, SIGTSTP, re-init on resume
             if self.pending_suspend {
                 self.pending_suspend = false;
-                let _ = crossterm::terminal::disable_raw_mode();
-                let mut stdout = std::io::stdout();
-                let _ = crossterm::execute!(
-                    stdout,
-                    crossterm::terminal::LeaveAlternateScreen,
-                    crossterm::event::DisableBracketedPaste,
-                    crossterm::event::DisableMouseCapture
-                );
+                leave_tui();
                 // Suspend: this blocks until SIGCONT
                 unsafe {
                     libc::raise(libc::SIGTSTP);
                 }
                 // Resumed: re-init terminal
-                crossterm::terminal::enable_raw_mode()?;
-                let mut stdout = std::io::stdout();
-                crossterm::execute!(
-                    stdout,
-                    crossterm::terminal::EnterAlternateScreen,
-                    crossterm::event::EnableBracketedPaste,
-                    crossterm::event::EnableMouseCapture
-                )?;
+                enter_tui()?;
                 terminal.clear()?;
             }
         }

@@ -10,6 +10,7 @@ use crate::app::{
     LIB_RADIO, LIB_SPOTIFY, LibraryFilter, PlaylistGroup, playlist_row_label,
 };
 use crate::ui::*;
+use crate::visualizer::{AudioFrame, Frame, Visualizer, pixels_to_lines};
 
 /// Rows of cover art in the one-column bottom-pane track card.
 ///
@@ -91,12 +92,9 @@ impl Render {
             let final_y = card_y;
             let final_x = center_x(max_notif_width);
             let leaving = now.saturating_duration_since(n.expires_at);
-            // The card enters from off the right edge and leaves the same way.
-            // It used to drop in from above the top of the screen, which read as
-            // a glitch: the card was cut in half by the terminal edge and
-            // appeared without its background for the frames it spent partly
-            // off-screen. Coming from the side keeps the whole card visible for
-            // the whole animation and leaves the top edge alone.
+            // The card enters from off the right edge and leaves the same way,
+            // so the whole card stays visible for the whole animation rather
+            // than being clipped by the top edge.
             let travel = (area.right().saturating_sub(final_x)) as f32;
             let (y, x) = if leaving > std::time::Duration::ZERO {
                 let p = cubic_ease_in(
@@ -305,12 +303,6 @@ impl Render {
         // One row is always reserved for the lyric line, whether or not there
         // is a lyric to show, so toggling `l` does not resize the artwork.
         //
-        // The progress band used to be read out of `vchunks[2]` — the artwork's
-        // own band — which drew the bar over the top of the cover and the
-        // elapsed time two rows into it, and left the 3 rows reserved below
-        // never rendered at all. That read as a cover floating too high with a
-        // band of dead space under it.
-        //
         // The fifth band is surface: three rows reserved under the progress
         // indicator, so the lyric line and the bar sit three rows higher than
         // they did pinned to the bottom edge. It comes out of the artwork band
@@ -411,9 +403,9 @@ impl Render {
 
     /// The one lyric line that belongs under the Zen artwork.
     ///
-    /// Only the line being sung: a full-screen lyrics view is what Zen already
-    /// was, and the complaint was that it was a separate surface to Tab into
-    /// rather than something you could see while looking at the cover.
+    /// Only the line being sung: a full-screen lyrics view is what Zen is, so
+    /// the one line belongs beside the cover rather than on a separate surface
+    /// to Tab into.
     fn zen_lyric_line(f: &mut ratatui::Frame, area: Rect, app: &App) {
         if area.height == 0 {
             return;
@@ -517,16 +509,26 @@ impl Render {
             width: area.width.saturating_sub(2),
             height: area.height.saturating_sub(2),
         };
-        app.visualizer.tick(
-            app.state.status == PlaybackStatus::Playing,
-            inner.width,
-            inner.height,
-            &app.state.audio_levels,
-            &app.state.wave_samples,
-            app.state.wave_stereo,
-        );
-        if let Some(lines) = app.visualizer.render(inner, &app.theme) {
-            f.render_widget(lines, inner);
+        let audio = AudioFrame {
+            playing: app.state.status == PlaybackStatus::Playing,
+            dt: 0.0,
+            bands: &app.state.audio_levels,
+            wave: &app.state.wave_samples,
+            stereo: app.state.wave_stereo,
+            size: (inner.width, inner.height),
+            theme: &app.theme,
+        };
+        app.visualizer.update(&audio);
+        match app.visualizer.draw(&audio) {
+            Frame::Cells(lines) => {
+                f.render_widget(lines, inner);
+            }
+            Frame::Pixels(img) => {
+                f.render_widget(pixels_to_lines(&img, inner.width, inner.height), inner);
+            }
+            // The shader route (stage 3) has no surface here yet: cells stay
+            // the only path that reaches the buffer.
+            Frame::Shader(_) => {}
         }
     }
 
@@ -572,9 +574,8 @@ impl Render {
         placeholder: Option<&str>,
     ) {
         if std::env::var("NVIM").is_ok() || std::env::var("ZELLIJ").is_ok() {
-            // Centred, and clipped to the area. It was neither: the message
-            // hugged the top-left of whatever box it was handed, which in Zen
-            // is the middle of the whole screen.
+            // Centred, and clipped to the area, which in Zen is the middle of
+            // the whole screen.
             let msg = " \u{266b} Cover art unavailable in this terminal ";
             let shown: String = msg.chars().take(area.width as usize).collect();
             let line = format!("{:^width$}", shown, width = area.width as usize);
@@ -873,31 +874,25 @@ impl Render {
         //
         // On a one-column terminal the two panes below the band are one pane
         // wide with the other at zero width, so which one the lyrics land on
-        // follows from which has focus. The old test for that was the results
-        // column's *width* being more than one, which is the same fact asked
-        // sideways -- and the left pane went on being drawn either way. It is
-        // opaque, so the lyrics covered it and a row of it, the last one, stayed
-        // visible under them: a strip of category rows and the stats line, drawn
-        // as if the pane still had contents.
+        // follows from which has focus, read here as the results column's
+        // *width* being more than one.
         let lyrics_in_lib = !lyrics_third_pane
             && app.lyrics.show
             && app.lyrics.pane_focus
             && results_area.width <= 1;
 
         {
-            // No rule under the label. The now-playing label is empty, so the
-            // only thing the rule ever separated was the cover art from the
-            // pane's own edge — a line across the top of the artwork, which is
-            // the one place a border reads as damage.
+            // No rule under the label: the now-playing label is empty, so the
+            // rule would only draw a line across the top of the cover, which
+            // is the one place a border reads as damage.
             let np_inner = Render::pane_header(f, np_area, app, "", false, false, false);
             fill_pane(f, np_inner, app);
 
             if let Some(track) = app.state.current_track.clone() {
                 let inner = np_inner;
-                // Narrow panes have no row to spare: the 2-row padding meant
-                // for breathing room around the cover cost half the art, and on
-                // a 5-row pane left it 4x2 cells. The cover fills the pane
-                // there instead, which is wider than the padding it displaces.
+                // Narrow panes have no row to spare: the cover fills the pane
+                // instead of the two-row padding that would cost half the art
+                // on a 5-row pane.
                 let avail_h = if is_narrow {
                     inner.height
                 } else {
@@ -928,16 +923,11 @@ impl Render {
                 // The reserve is 16 columns: enough for the longest detail line
                 // at the sizes this renders, so the artwork gets the rest.
                 //
-                // Order matters, and it was the bug. This used to be
-                // `cover_h.min((width - 16) / 2)` -- a *width* reserve folded
-                // into a *height* clamp, before the 1:2 conversion. On a
-                // single-column band that is the full terminal width, so the
-                // division returned a number large enough never to bind while
-                // `.max(3)` and the band cap fought over the height instead: the
-                // art settled at three rows in the top-left corner and the other
-                // thirty-odd columns went to a text block that needs sixteen.
-                // Clamping the width *after* deriving it from the height is the
-                // other order, and it is the one that lets the band share its
+                // Order matters: `cover_h.min((width - 16) / 2)` folds a
+                // *width* reserve into a *height* clamp, before the 1:2
+                // conversion, so it reads the whole terminal width rather than
+                // the art's own space. Clamping the width after deriving it
+                // from the height is the order that lets the band share its
                 // space: the art takes every row it can and gives columns back
                 // only if the labels would otherwise be squeezed.
                 let mut cover_h = cover_h.max(3);
@@ -1315,15 +1305,9 @@ impl Render {
             let (scroll_start, scroll_end) =
                 step_viewport(app.left_list_scroll, sel, list_rows as usize, total);
             app.left_list_scroll = scroll_start;
-            // The icon is its own span so the selected row can invert it.
-            //
-            // It used to be part of the label string, which meant the
-            // selection style applied to the glyph exactly like the text: the
-            // indicator bar then landed on the icon cell wearing the selection
-            // background as its foreground colour, and in every built-in theme
-            // those two are the same value — the selected category had no icon
-            // at all. Inverting is the same trick the row itself uses, so the
-            // glyph stays legible against either half of the swap.
+            // The icon is its own span so the selected row can invert it: the
+            // icon is part of the row's text, so inverting the span inverts the
+            // glyph with it and the glyph stays legible.
             let left_items: Vec<ListItem> = visible_cats[scroll_start..scroll_end]
                 .iter()
                 .map(|&i| {
@@ -1368,17 +1352,11 @@ impl Render {
                 f.render_widget(List::new(left_items), left_list_area);
             }
 
-            // No indicator block on the active row.
-            //
-            // There was a left-quarter block drawn over the first column in
-            // `sidebar_active_border`, a third colour against a row that was
-            // already painted with the selection background. On the focused row
-            // it was drawn on top of the highlight, so it read as a stray block
-            // inside the selection rather than as a marker — the artefact. It
-            // was also redundant in both states: focused, the background already
-            // says which row this is; unfocused, the active row is already in
-            // the accent colour. The leading space the glyph occupied stays, so
-            // the icon keeps its column and the rows do not shift.
+            // No indicator block on the active row: focused, the selection
+            // background already says which row it is; unfocused, the active
+            // row is already in the accent colour. A marker would be a third
+            // colour over one of those. The leading space the glyph occupied
+            // stays, so the icon keeps its column and the rows do not shift.
             let _ = left_pad_area;
         }
 
@@ -1406,23 +1384,18 @@ impl Render {
         // skip rendering the list underneath and registering hit zones for rows
         // that are not visible.
         //
-        // Only while the lyrics hold focus. This condition never consulted
-        // focus, so with `l` on the list was gone for good: under 100 columns
-        // the lyrics were drawn over the pane permanently and Tab moved a
-        // one-column focus bar between two panes that both stayed put. On
-        // narrow it was worse than that — the list renders into `results_area`,
-        // which is `Length(0)` whenever the left pane has focus, so it was
-        // being drawn into a zero-width rect and was not on screen at all.
-        // Gating on `pane_focus` makes the existing `cycle_library_focus` states
-        // swap the two views instead of just moving the highlight.
+        // Only while the lyrics hold focus: without that gate, `l` on a
+        // one-column layout leaves the list rendering into `results_area`,
+        // which is `Length(0)` while the left pane has focus. Gating on
+        // `pane_focus` makes the existing `cycle_library_focus` states swap the
+        // two views instead of just moving the highlight.
         let lyrics_results_pane = app.lyrics.show && lyrics_area.is_none() && app.lyrics.pane_focus;
 
         // With one pane the track card is docked as a bottom pane, and the list
-        // is shortened to sit above it. It used to float over the list instead:
-        // a card anchored to the bottom-right corner of a one-column terminal is
-        // narrower than the pane but taller than the space it left, so it
-        // covered rows that were neither reachable nor clickable, and the
-        // height it reserved was a second, disagreeing estimate of its own size.
+        // is shortened to sit above it. A card floating in the corner would be
+        // anchored to the bottom-right of a one-column terminal, narrower than
+        // the pane but taller than the space it left, covering rows that were
+        // neither reachable nor clickable.
         //
         // Decided before the list is built because the list is sized around it.
         let dock_card = is_narrow && !lyrics_in_lib && app.show_preview && app.track_popup_visible;
@@ -1518,8 +1491,7 @@ impl Render {
                 for (i, tr) in tracks[start..stop].iter().enumerate() {
                     // True cursor row of this track: the two virtual action
                     // rows (Play All / Shuffle) sit above the track list, so
-                    // the highlight must never alias onto an action row
-                    // (which previously produced two highlighters at once).
+                    // this offset maps a track's index to its cursor row.
                     let real_i = ACTION_ROWS + start + i;
                     let is_sel = real_i == sel && !left_focus;
                     let is_multiselected = app.multiselect_mode
@@ -2115,7 +2087,7 @@ impl Render {
                     lines.extend(empty_hint_lines(
                         app,
                         "No podcast feeds",
-                        "Hint: press a to add a feed by URL",
+                        "Hint: / opens the podcast directory, a adds a feed by URL",
                     ));
                 } else {
                     for (i, feed) in feeds[list_scroll..end].iter().enumerate() {
@@ -2220,15 +2192,9 @@ impl Render {
         // skip rendering the list underneath and registering hit zones for rows
         // that are not visible.
         //
-        // Only while the lyrics hold focus. This condition never consulted
-        // focus, so with `l` on the list was gone for good: under 100 columns
-        // the lyrics were drawn over the pane permanently and Tab moved a
-        // one-column focus bar between two panes that both stayed put. On
-        // narrow it was worse than that — the list renders into `results_area`,
-        // which is `Length(0)` whenever the left pane has focus, so it was
-        // being drawn into a zero-width rect and was not on screen at all.
-        // Gating on `pane_focus` makes the existing `cycle_library_focus` states
-        // swap the two views instead of just moving the highlight.
+        // Only while the lyrics hold focus: otherwise the list renders into
+        // `results_area`, which is `Length(0)` whenever the left pane has
+        // focus, and the two views cannot swap.
         if (want_playlist_card || want_row_card)
             && left_info_area.height > 0
             && (info_sep_area.height > 0 || left_info_area.height > 0)
@@ -2286,10 +2252,8 @@ impl Render {
             // Mouse hit zones for the visible library rows: rows start
             // below one leading blank line.
             //
-            // The budget subtracts the docked card as well. It used to stop at
-            // the pane's own rows, so every hit zone below the card's top edge
-            // belonged to a row the card was covering — the list could be
-            // scrolled to a row and then clicked only where the card was not.
+            // The budget subtracts the docked card as well, so every hit zone
+            // belongs to a row that is actually on screen.
             if lib_total_rows > 0 {
                 let avail = right_inner.height.saturating_sub(2).saturating_sub(dock_h) as usize;
                 let visible_rows = lib_total_rows
@@ -2334,8 +2298,7 @@ impl Render {
             //
             // The narrow case has no results column at all while the library
             // holds the cursor, so the lyrics take the left pane's rect in
-            // full — there is no stats row to keep clear, because the stats
-            // line is the one thing that is no longer drawn there.
+            // full — there is no stats row to keep clear.
             let base = if results_area.width > 1 {
                 Rect {
                     height: results_area.height.saturating_sub(1),
@@ -2546,10 +2509,9 @@ impl Render {
         // requirement than being legible: a theme whose accent clears the
         // contrast bar but sits near the surface still hid it. `standout_fg`
         // pushes it away from the background along the lightness axis instead of
-        // replacing it, so the theme's hue survives. Both surfaces now go
-        // through it -- the pane used to take `accent` raw, and the reactive
-        // theme means the surface under these lines is not a fixed colour
-        // anyway.
+        // replacing it, so the theme's hue survives. Both surfaces go through
+        // it, which matters because the reactive theme means the surface under
+        // these lines is not a fixed colour anyway.
         let lit = standout_fg(app.theme.accent, bg);
         let past = match surface {
             LyricSurface::Pane => app.theme.fg,
@@ -3210,6 +3172,34 @@ impl Render {
     }
 }
 
+/// Put the terminal into the app's screen: raw mode, the alternate screen,
+/// bracketed paste and mouse reporting. The single entry point for both the
+/// initial setup and a resume after Ctrl+Z, so the two can never drift.
+pub(crate) fn enter_tui() -> std::io::Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    crossterm::execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
+    Ok(())
+}
+
+/// Undo [`enter_tui`], best-effort: called from the normal exit, the panic
+/// hook and the suspend path, where a failure has nowhere useful to go.
+pub(crate) fn leave_tui() {
+    let _ = disable_raw_mode();
+    let mut stdout = std::io::stdout();
+    let _ = crossterm::execute!(
+        stdout,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    );
+}
+
 pub fn run_tui(
     socket: Option<String>,
     setup_service: Option<String>,
@@ -3236,27 +3226,13 @@ pub fn run_tui(
 
         ensure_daemon_running(&socket_path).await?;
 
-        enable_raw_mode()?;
-        let mut stdout = std::io::stdout();
-        crossterm::execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-            EnableMouseCapture
-        )?;
-        let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+        enter_tui()?;
+        let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
         terminal.clear()?;
 
         let panic_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic| {
-            let _ = disable_raw_mode();
-            let mut stdout = std::io::stdout();
-            let _ = crossterm::execute!(
-                stdout,
-                DisableMouseCapture,
-                DisableBracketedPaste,
-                LeaveAlternateScreen
-            );
+            leave_tui();
             panic_hook(panic);
         }));
 
@@ -3266,14 +3242,7 @@ pub fn run_tui(
         }
         .await;
 
-        let _ = disable_raw_mode();
-        let mut stdout = std::io::stdout();
-        let _ = crossterm::execute!(
-            stdout,
-            DisableMouseCapture,
-            DisableBracketedPaste,
-            LeaveAlternateScreen
-        );
+        leave_tui();
 
         res
     })
@@ -3299,14 +3268,10 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     // next keypress ends it. Both yield to an open picker, which is a view the
     // user asked for.
     let zen = (app.zen || app.daydreaming) && !app.pickers.is_open();
-    // The surface fill comes first and covers every mode. It used to sit below
-    // the Zen branch, which returned before reaching it — and ratatui does not
-    // clear between frames, it diffs. So Zen painted on top of whatever the
-    // last non-Zen frame left behind: the library text, the footer and the
-    // brand badge stayed on screen for as long as Zen was open, and because
-    // the background was never repainted, a reactive theme change could not
-    // reach the screen at all. The text and accents did update, so Zen was
-    // half-reactive — new colours on the previous track's background.
+    // The surface fill comes first and covers every mode, so a fullscreen
+    // surface cannot paint over a previous frame: ratatui does not clear
+    // between frames, it diffs, and a reactive theme change only reaches the
+    // screen through a repainted background.
     //
     // Zen gets its own fill, lifted off the app surface out of the reactive
     // palette: see `App::zen_bg`. On the app surface, a fullscreen surface with
@@ -3319,16 +3284,13 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
 
     // Two rows are reserved at the top of every view and left as surface.
     //
-    // The brand badge used to be pinned to row 0 and the panes started
-    // immediately under it, so the badge sat against both the top edge and the
-    // content it labels. Reserving the rows puts the whole composition -- zen
-    // included, since it is the same "no chrome" surface with the same badge --
-    // one step down from the terminal edge.
+    // The brand badge is pinned inside the reserved band rather than at row 0,
+    // so it sits apart from both the terminal edge and the content it labels.
+    // Zen shares the reservation: it is the same "no chrome" surface with the
+    // same badge.
     //
-    // The badge is drawn inside the reserved band rather than above it, so the
-    // reservation is what separates it from the content instead of being
-    // overwritten by it. Overlays still draw over the whole area: they are
-    // centred modals, and centring one inside a band would look off-centre.
+    // Overlays still draw over the whole area: they are centred modals, and
+    // centring one inside a band would look off-centre.
     let top_rows = 2u16.min(area.height.saturating_sub(3));
     let vchunks = Layout::default()
         .direction(Direction::Vertical)

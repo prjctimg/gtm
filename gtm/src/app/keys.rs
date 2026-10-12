@@ -874,8 +874,20 @@ impl App {
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::EnterFilter) => {
-                        self.input_mode = InputMode::Searching;
-                        self.dismiss_track_popup();
+                        if self.library_category == LIB_PODCASTS {
+                            // The Podcasts category browses the public podcast
+                            // directory rather than filtering its feed rows: `/`
+                            // opens the directory picker with the popular list
+                            // loading, the way the Radio category reaches Radio
+                            // Browser. Without this the category had no search
+                            // surface of its own.
+                            self.pickers.open(PickerId::PodcastFeeds);
+                            self.dismiss_track_popup();
+                            self.on_picker_opened(PickerId::PodcastFeeds);
+                        } else {
+                            self.input_mode = InputMode::Searching;
+                            self.dismiss_track_popup();
+                        }
                     }
                     Some(KeyboardAction::MoveUp) => {
                         if self.lyrics.pane_focus && self.lyrics.show {
@@ -1107,9 +1119,8 @@ impl App {
                                 if !self.playlist_open {
                                     // The outer level: the five groups. Enter
                                     // opens one, which is also the first moment
-                                    // its rows are needed -- so this is where the
-                                    // fetch moved to, and it used to hang off
-                                    // entering the category.
+                                    // its rows are needed, so the fetch happens
+                                    // here rather than on entering the category.
                                     if let Some(group) =
                                         PlaylistGroup::ALL.get(self.list_pos()).copied()
                                     {
@@ -3374,9 +3385,8 @@ impl App {
                             // reason to silently pick a different one. This
                             // field and the client id sit next to each other
                             // with a Tab between them, so the realistic failure
-                            // is a client id pasted into the port box — which
-                            // used to vanish here, linking the account against
-                            // the shared app while looking like it worked.
+                            // is a client id typed into the port box, which must
+                            // not link the account against the shared app.
                             let port = match super::run::parse_oauth_port(&self.spotify.oauth_port)
                             {
                                 Ok(p) => p,

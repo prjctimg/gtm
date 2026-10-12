@@ -6,16 +6,9 @@
 
 //! Key handling for the settings pane.
 //!
-//! This is one function rather than four hundred lines inline in the dispatch
-//! chain, for one reason: the row list and this handler had to agree, and three
-//! separate `match`es over row numbers is how they stopped. The Spotify
-//! transport rows were the visible symptom — the handler passed `opt - 4` as a
-//! semantic index, the callee matched `8 | 9 | 10 | _`, and all three of Next,
-//! Previous and Shuffle ran `set_repeat`.
-//!
-//! Every `opt` below is now a position in
-//! [`settings_rows::PLAYBACK_ROWS`] / `SYSTEM_ROWS` / `SPOTIFY_ROWS`, checked by
-//! a test against those arrays.
+//! Every `opt` below is a position in
+//! [`settings_rows::PLAYBACK_ROWS`] / `SYSTEM_ROWS` / `SPOTIFY_ROWS`, so the
+//! handler and the rendered list move together; a test pins the two.
 
 use crate::app::*;
 
@@ -35,11 +28,9 @@ impl App {
             event::KeyCode::Tab => {
                 self.settings_pane_focus = !focus;
             }
-            // ← and → did exactly the same thing for every row: each was a
-            // two-state toggle, so there was nothing to step through. They were
-            // the same 45 lines twice. The pane header used to advertise
-            // "←/→: cycle values"; it now says nothing, because a toggle has
-            // no direction.
+            // ← and → share an arm: a row is a two-state toggle or a
+            // one-shot action, so there is nothing to step through and a
+            // direction would mean nothing.
             event::KeyCode::Left
             | event::KeyCode::Right
             | event::KeyCode::Char('h')
@@ -76,14 +67,7 @@ impl App {
         match self.settings_category {
             0 => match opt {
                 0 => self.set_repeat(self.next_repeat(), tx),
-                1 => {
-                    let next = !self.state.shuffle;
-                    self.state.shuffle = next;
-                    let c = self.client.clone();
-                    spawn(tx, move || async move {
-                        let _ = c.toggle_shuffle().await;
-                    });
-                }
+                1 => self.toggle_shuffle(tx),
                 3 => {
                     let next = !self.state.audio.eq_enabled;
                     self.state.audio.eq_enabled = next;
@@ -103,6 +87,7 @@ impl App {
                 }
                 5 => self.cycle_pre_gain(),
                 6 => self.cycle_cover_provider(),
+                7 => self.cycle_preview_delay(),
                 _ => {}
             },
             1 => match opt {
@@ -128,14 +113,7 @@ impl App {
         match self.settings_category {
             0 => match opt {
                 0 => self.set_repeat(self.next_repeat(), tx),
-                1 => {
-                    let next = !self.state.shuffle;
-                    self.state.shuffle = next;
-                    let c = self.client.clone();
-                    spawn(tx, move || async move {
-                        let _ = c.toggle_shuffle().await;
-                    });
-                }
+                1 => self.toggle_shuffle(tx),
                 2 => self.pickers.open(PickerId::Crossfade),
                 3 => {
                     let next = !self.state.audio.eq_enabled;
@@ -154,7 +132,9 @@ impl App {
                         let _ = c.set_reverb(next, room).await;
                     });
                 }
-                5 => self.cycle_cover_provider(),
+                5 => self.cycle_pre_gain(),
+                6 => self.cycle_cover_provider(),
+                7 => self.cycle_preview_delay(),
                 _ => {}
             },
             1 => match opt {
@@ -245,6 +225,34 @@ impl App {
             .map_or(STEPS[0], |i| STEPS[(i + 1) % STEPS.len()]);
         self.daydream_secs = next;
         save_prefs(&self.current_prefs());
+    }
+
+    /// Step the hover-preview delay. A short ladder rather than free text: the
+    /// useful answers are "almost immediately", "a beat" and "never".
+    fn cycle_preview_delay(&mut self) {
+        const STEPS: [u64; 6] = [1, 2, 3, 5, 10, 0];
+        let cur = self.preview_delay_secs;
+        let next = STEPS
+            .iter()
+            .position(|s| *s == cur)
+            .map_or(STEPS[0], |i| STEPS[(i + 1) % STEPS.len()]);
+        self.preview_delay_secs = next;
+        // Changing the delay must not fire a preview for a row already rested
+        // on: re-arm so the new interval is measured from now.
+        self.preview_since = Some(std::time::Instant::now());
+        self.preview_fired = false;
+        save_prefs(&self.current_prefs());
+    }
+
+    /// Ask the daemon to flip shuffle. The daemon owns the queue and answers
+    /// with a `ShuffleChanged` event, which is what updates the display; setting
+    /// the flag here first would disagree with the daemon whenever the request
+    /// is refused.
+    fn toggle_shuffle(&mut self, tx: &tokio::sync::mpsc::Sender<TuiCommand>) {
+        let c = self.client.clone();
+        spawn(tx, move || async move {
+            let _ = c.toggle_shuffle().await;
+        });
     }
 
     fn next_repeat(&self) -> RepeatMode {

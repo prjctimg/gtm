@@ -23,26 +23,17 @@ impl App {
             return;
         }
         // The identity of the request belongs to the request, not to the caller.
-        // The frame loop used to set the track id and path before calling this,
-        // and the reply handler drops anything whose path no longer matches, so a
-        // caller that skipped those two lines — entering Zen does — could have
-        // its answer discarded against the *previous* track's path.
+        // The reply handler drops anything whose path no longer matches, so the
+        // two fields are set here for every caller, entering Zen included.
         self.np_cover.track_id = Some(tid);
         self.np_cover.track_path = Some(track.path.clone());
         let fetch_gen = self.next_cover_gen();
         self.np_cover.pending_gen = Some(fetch_gen);
         // One request, the same one every other surface makes: by library id
-        // *and* exact path.
-        //
-        // This used to branch, sending a row with a `cover_url` — every synced
-        // Spotify row, which is most of what plays — at the URL endpoint
-        // instead. That was the one surface where the URL endpoint's answer was
-        // not enough, and the result was a Now Playing pane and a Zen cover
-        // that never left the placeholder while every picker, drawing from its
-        // own fetch of the very same row, showed the artwork. The daemon
-        // already prefers a resolved `cover_path` and falls back to `cover_url`
-        // for a row it cannot otherwise place, so this one call reaches both
-        // kinds of row and returns the same bytes the previews get.
+        // *and* exact path. The daemon prefers a resolved `cover_path` and
+        // falls back to `cover_url` for a row it cannot otherwise place, so
+        // this one call reaches both local files and synced remote rows and
+        // returns the same bytes the previews get.
         //
         // The URL stays as a second attempt: a row whose path names nothing the
         // daemon can match still has artwork behind that url, and asking for it
@@ -69,10 +60,9 @@ impl App {
             {
                 bytes = client.image_cover(&u).await.ok().flatten();
             }
-            // Always answer, including "no art". A miss used to send nothing at
-            // all, which left `pending_gen` claimed for the rest of the session:
-            // the reply handler treats that as "still in flight", so the pane
-            // stayed blank and no later attempt could ever claim the slot again.
+            // Always answer, including "no art": the reply handler only clears
+            // `pending_gen` on a reply, so a silent miss would leave the slot
+            // claimed for the rest of the session.
             let msg = bytes.map_or(IpcResult::CoverArt(None, Some(tid), fetch_gen), |bytes| {
                 IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen)
             });
@@ -104,10 +94,8 @@ impl App {
             };
         }
         match self.library_category {
-            // The three levels of the Playlists view are three row types, and
-            // they used to answer as one: the card behind the group list read
-            // `playlist_cache[list_pos()]`, so a group's row described whichever
-            // playlist happened to sit at that index.
+            // The three levels of the Playlists view are three row types, each
+            // with its own card.
             LIB_PLAYLISTS if self.playlist_row() => TrackInfoKind::PlaylistGroup,
             LIB_PLAYLISTS
                 if self.playlist_open && self.playlist_group != PlaylistGroup::Playlists =>
@@ -117,15 +105,9 @@ impl App {
             LIB_PLAYLISTS => TrackInfoKind::Playlist,
             LIB_SPOTIFY => TrackInfoKind::SpotifyPlaylist,
             LIB_RADIO => TrackInfoKind::RadioStation,
-            // Charts have their own row type. Falling through to `Track` is
-            // what made the left card describe a random local library track:
-            // `filtered_tracks` has no chart case, so it returned the whole
-            // library and the card rendered `tracks_cache[list_pos()]`.
-            //
-            // Which chart row depends on how deep the drill-down is. It used to
-            // be `ChartTrack` at every level, and the fields for that kind read
-            // `chart_tracks`, which is empty until a chart is opened: so the
-            // source list and the chart list had no card at all.
+            // Charts have their own row type, and which one depends on how deep
+            // the drill-down is: the source list, an opened chart, or an opened
+            // chart's tracks.
             LIB_CHARTS => match (self.charts.selected_source, self.charts.selected_chart) {
                 (None, _) => TrackInfoKind::ChartSource,
                 (Some(_), None) => TrackInfoKind::Chart,
@@ -181,8 +163,15 @@ impl App {
             }
             TrackInfoKind::Album | TrackInfoKind::Artist => {
                 let pos = self.list_pos();
-                self.group_representative(pos)
-                    .map(|t| (t.id, t.path.clone()))
+                self.group_representative(pos).map(|t| {
+                    // A group whose first track is remote (a Spotify album row)
+                    // has no library id to look the art up by; it is named by
+                    // the cover url just like a remote track row.
+                    if !std::path::Path::new(&t.path).is_absolute() {
+                        remote_url = t.cover_url.clone();
+                    }
+                    (t.id, t.path.clone())
+                })
             }
             // Playlist and Spotify rows never resolve a local cover; the block
             // still describes the selected row. A chart row resolves its own
@@ -255,6 +244,22 @@ impl App {
         }
 
         self.popup_track_id = Some(tid);
+
+        // Repaint from the last fetch of this id before anything else, so a
+        // scroll back onto it does not blank while a fresh request is in
+        // flight. Mirrors the url latch in `fetch_url_cover`.
+        if let Some(bytes) = self
+            .popup_id_cover
+            .as_ref()
+            .filter(|(id, _)| *id == tid)
+            .map(|(_, b)| b.clone())
+        {
+            self.track_popup_cover = Some(bytes);
+            self.popup_cover_sync();
+            self.cover_art_dirty = true;
+            self.popup_slot.clear();
+            return;
+        }
 
         let current_is_selected = self
             .state
@@ -350,15 +355,9 @@ impl App {
             return;
         }
         // Repaint from what we still hold, which is what makes the latch safe.
-        //
-        // The latch used to be the slot alone, and returning on it dropped the
-        // card on the floor. "All Tracks" is where that shows: its rows are
-        // named by album-image url, so scrolling onto a neighbour cleared the
-        // bytes this row had already fetched -- the fetch path assigns `None`
-        // before it starts -- and coming back hit the latch, returned, and
-        // painted nothing. The row then stayed blank for the rest of the
-        // session, because nothing would ever fetch it again. A miss still
-        // re-fetches, so a url whose image failed is not memoised as a hit.
+        // The latch keys the bytes by their url: a hit repaints without a
+        // request, and a miss re-fetches, so a url whose image failed is not
+        // memoised as a hit.
         if let Some(bytes) = self
             .popup_cover_bytes
             .as_ref()
@@ -385,29 +384,38 @@ impl App {
         });
     }
 
-    /// Warm the artwork for the rows of a loaded chart that are on screen or
-    /// just off it.
+    /// Warm the artwork for the chart rows on screen and just off it, at
+    /// whichever level is showing: the chart list or the tracks of an opened
+    /// chart. Both name their image by a plain CDN URL, so both go out as image
+    /// requests.
     ///
     /// The card shows one row's cover at a time, so without this every step of
     /// the scroll is a blank card until its request comes back — the list moves
     /// faster than the network. The daemon's image cache absorbs the repeats, so
     /// the fetch the card then makes is a hit. Mirrors the local-library warm
     /// above, which has ids rather than URLs.
-    ///
-    /// Keyed on the row count rather than on the category index, because the
-    /// chart list is reached through three levels (source, chart, tracks) and
-    /// only the last has rows to warm.
     pub fn preload_chart_covers(&self) {
-        if no_image_protocol() || self.charts.chart_tracks.is_empty() {
+        if no_image_protocol() {
             return;
         }
-        let sel = self.list_pos().min(self.charts.chart_tracks.len() - 1);
-        let from = sel.saturating_sub(1);
-        let to = (sel + 3).min(self.charts.chart_tracks.len());
-        let urls: Vec<String> = self.charts.chart_tracks[from..to]
-            .iter()
-            .filter_map(|t| t.cover_url.clone())
-            .collect();
+        let first = self.list_scroll;
+        let last = first
+            .saturating_add(self.viewport_items.max(8) as usize)
+            .saturating_add(3);
+        let urls: Vec<String> = match self.track_info_kind() {
+            TrackInfoKind::Chart => self.charts.charts
+                [first.min(self.charts.charts.len())..last.min(self.charts.charts.len())]
+                .iter()
+                .filter_map(|c| c.cover_url.clone())
+                .collect(),
+            TrackInfoKind::ChartTrack => self.charts.chart_tracks[first
+                .min(self.charts.chart_tracks.len())
+                ..last.min(self.charts.chart_tracks.len())]
+                .iter()
+                .filter_map(|t| t.cover_url.clone())
+                .collect(),
+            _ => return,
+        };
         if urls.is_empty() {
             return;
         }
@@ -539,8 +547,7 @@ impl App {
     ///
     /// Refuses out loud on a list with nothing to show as a grid: a key that
     /// does nothing is worse than one that says why. Shared by the `V` key and
-    /// the palette row, which are one command and used to be able to disagree
-    /// about it.
+    /// the palette row, which are one command and so agree about it.
     pub fn grid_ready(&mut self) -> bool {
         if !self.group_row() {
             self.notify_typed(
