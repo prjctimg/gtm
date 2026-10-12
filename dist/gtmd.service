@@ -1,5 +1,5 @@
 [Unit]
-Description=Daemon process for gtm for background playback. 
+Description=Daemon process for gtm. 
 After=network.target sound.target
 
 [Service]
