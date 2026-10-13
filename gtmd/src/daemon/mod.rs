@@ -342,15 +342,7 @@ impl Cmd {
         // Broadcast the new track as soon as the mixer is playing, before the
         // Last.fm now-playing handshake below (which can hang for up to 10s),
         // so the TUI's Now Playing pane and cover art update immediately.
-        Daemon::push_event(
-            inner,
-            DaemonEvent::PlaybackStarted {
-                track: Box::new(track),
-                auto_advanced,
-                time_pos: start_pos,
-                duration: dur,
-            },
-        );
+        Daemon::push_started(inner, &track, auto_advanced, start_pos, dur);
 
         // Update Last.fm now playing
         Self::announce_now_playing(inner).await;
@@ -605,15 +597,7 @@ impl Cmd {
         state.duration = dur;
         drop(state);
         inner.scrobble.lock().await.start(&track.path, start_pos);
-        Daemon::push_event(
-            inner,
-            DaemonEvent::PlaybackStarted {
-                track: Box::new(track),
-                auto_advanced,
-                time_pos: start_pos,
-                duration: dur,
-            },
-        );
+        Daemon::push_started(inner, &track, auto_advanced, start_pos, dur);
         Self::announce_now_playing(inner).await;
         Ok(DaemonRes::Ok)
     }
@@ -732,15 +716,7 @@ impl Cmd {
         inner.scrobble.lock().await.start(&track.path, start_pos);
 
         // Broadcast before the Last.fm handshake so Now Playing syncs fast.
-        Daemon::push_event(
-            inner,
-            DaemonEvent::PlaybackStarted {
-                track: Box::new(track),
-                auto_advanced,
-                time_pos: start_pos,
-                duration: dur,
-            },
-        );
+        Daemon::push_started(inner, &track, auto_advanced, start_pos, dur);
 
         Self::announce_now_playing(inner).await;
         Ok(DaemonRes::Ok)
@@ -923,15 +899,7 @@ impl Cmd {
                 let time_pos = state.time_pos;
                 let duration = state.duration;
                 drop(state);
-                Daemon::push_event(
-                    inner,
-                    DaemonEvent::PlaybackStarted {
-                        track: Box::new(track),
-                        auto_advanced: false,
-                        time_pos,
-                        duration,
-                    },
-                );
+                Daemon::push_started(inner, &track, false, time_pos, duration);
                 Ok(DaemonRes::Ok)
             } else if !path.is_empty() {
                 Cmd::play(inner, &path, 0.0, false).await
@@ -3635,6 +3603,94 @@ impl Daemon {
         let _ = inner.event_tx.send(event);
     }
 
+    /// Announce a track that started playing, then extract its cover palette.
+    ///
+    /// Playback can begin on six paths — local play, stream play, remote play,
+    /// resume, a queue advance and a crossfade promotion — and each of them has
+    /// to produce the palette, or the reactive theme tracks whichever path
+    /// happens to be missing. One helper is what makes that a property of
+    /// "a track started" rather than of each caller's memory.
+    fn push_started(
+        inner: &DaemonInner,
+        track: &TrackInfo,
+        auto_advanced: bool,
+        time_pos: f64,
+        duration: f64,
+    ) {
+        Self::push_event(
+            inner,
+            DaemonEvent::PlaybackStarted {
+                track: Box::new(track.clone()),
+                auto_advanced,
+                time_pos,
+                duration,
+            },
+        );
+        Self::push_palette(inner, track);
+    }
+
+    /// Extract the palette from `track`'s cover and broadcast it.
+    ///
+    /// Only a track already on air, and only art readable without the client
+    /// asking for it: a local cover file, or the sidecar beside the audio. Remote
+    /// and Spotify art arrives with the client's `Cover::get`, which emits again
+    /// from the bytes it resolved — so this is the fast path, not the only one.
+    ///
+    /// Decoding is a full image load and a median cut, so it runs on a blocking
+    /// task rather than the command loop. Nothing is emitted when there is no
+    /// art: the palette already on screen belongs to the previous track, and
+    /// clearing it would flash the chrome on every track with no cover.
+    fn push_palette(inner: &DaemonInner, track: &TrackInfo) {
+        let path = track
+            .cover_path
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty() && p.is_absolute())
+            .or_else(|| audio_sidecar(&track.path))
+            .filter(|p| p.is_file());
+        let Some(path) = path else {
+            return;
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let (id, path_key) = (track.id, track.path.clone());
+        let state = inner.state.clone();
+        let events = inner.event_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            // A fast skip can finish before the decode does, and the palette for
+            // a track the user already left would repaint the whole UI in the
+            // wrong album's colors. Read the current track once the work is
+            // done, not when it was queued.
+            let pal = gtm::shared::reactive::extract_palette(&bytes);
+            let out = pal.map_or_else(
+                || (String::new(), String::new(), String::new()),
+                |p| {
+                    use gtm::shared::reactive::to_hex;
+                    (to_hex(p.primary), to_hex(p.secondary), to_hex(p.tertiary))
+                },
+            );
+            let current = tokio::runtime::Handle::current();
+            current.block_on(async {
+                let state = state.read().await;
+                let still_current = state
+                    .current_track
+                    .as_ref()
+                    .is_some_and(|t| t.id == id && t.path == path_key);
+                drop(state);
+                if !still_current {
+                    return;
+                }
+                let _ = events.send(DaemonEvent::ReactivePalette {
+                    primary: out.0,
+                    secondary: out.1,
+                    tertiary: out.2,
+                });
+            });
+        });
+    }
+
     pub(crate) fn save_state(inner: &DaemonInner) {
         if inner.config.test_mode {
             return;
@@ -4285,15 +4341,7 @@ impl Daemon {
                 inner.scrobble.lock().await.start(&next.path, actual);
                 // Update Last.fm now playing for the new track
                 Cmd::announce_now_playing(inner).await;
-                Self::push_event(
-                    inner,
-                    DaemonEvent::PlaybackStarted {
-                        track: Box::new(next),
-                        auto_advanced: true,
-                        time_pos: actual,
-                        duration: dur,
-                    },
-                );
+                Daemon::push_started(inner, &next, true, actual, dur);
                 Self::push_queue_state(inner).await;
             }
             Ok(None) => {
@@ -4884,15 +4932,7 @@ impl Daemon {
         // whole length -- and since a crossfade promotes most auto-advances,
         // that was the common case rather than an edge one.
         Cmd::announce_now_playing(inner).await;
-        Self::push_event(
-            inner,
-            DaemonEvent::PlaybackStarted {
-                track: Box::new(track),
-                auto_advanced: true,
-                time_pos: 0.0,
-                duration: dur,
-            },
-        );
+        Daemon::push_started(inner, &track, true, 0.0, dur);
         Self::push_queue_state(inner).await;
     }
 

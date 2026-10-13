@@ -273,24 +273,21 @@ impl App {
         });
     }
 
-    /// Turn the reactive theme on or off, fetching a palette the first time it
-    /// is switched on with no artwork to read one from.
+    /// Turn the reactive theme on or off.
+    ///
+    /// Switching it on with no palette yet asks the daemon for the cover, which
+    /// is what makes it emit one. It cannot read the palette from the art the
+    /// client already holds: extraction is the daemon's, and a TUI-side copy
+    /// would be the second extractor this change exists to remove.
     fn toggle_reactive_theme(&mut self) {
         self.reactive_theme = !self.reactive_theme;
         if self.reactive_theme && self.reactive_palette.is_none() {
-            if let Some(c) = self.np_cover.image.clone() {
-                let itx = self.ipc_tx.clone();
-                self.reactive_gen = Some(self.next_cover_gen());
-                let pal_gen = self.reactive_gen.expect("just set");
-                self.request_reactive_palette(&c, pal_gen, itx);
-            } else {
-                // The shared fetch rather than a local one: this path claimed
-                // the slot and then only answered on success, so a track with
-                // no art left the slot claimed and every later cover for it
-                // dropped as "still in flight" — and it asked by id alone, which
-                // misses every provider row.
-                self.fetch_np_cover();
-            }
+            // The shared fetch rather than a local one: this path claimed
+            // the slot and then only answered on success, so a track with
+            // no art left the slot claimed and every later cover for it
+            // dropped as "still in flight" — and it asked by id alone, which
+            // misses every provider row.
+            self.fetch_np_cover();
         }
         self.apply_reactive();
         save_prefs(&self.current_prefs());

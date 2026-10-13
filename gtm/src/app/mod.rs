@@ -560,9 +560,6 @@ pub struct App {
     pub reactive_theme: bool,
     pub reactive_theme_intensity: f32,
     pub(crate) reactive_palette: Option<ReactivePalette>,
-    /// Cover generation the in-flight palette extraction belongs to, so a
-    /// reply for a cover already replaced cannot tint the UI.
-    pub(crate) reactive_gen: Option<u64>,
     pub last_action_name: Option<(String, std::time::Instant)>,
     pub footer_title_scroll: usize,
     /// strftime-style format string for the footer `Time` module.
@@ -800,7 +797,6 @@ pub(crate) enum IpcResult {
     /// A free-text track query resolved to a Spotify URI, for the live
     /// track's like and add-to-playlist actions.
     SpotifyMatch(String),
-    ReactivePalette(Option<ReactivePalette>, u64),
     PodcastStatus(Option<PodcastStatus>),
     PodcastFeeds(Vec<PodcastFeed>),
     PodcastSearch(Vec<PodcastResult>),
@@ -1429,7 +1425,6 @@ impl App {
             reactive_theme: prefs.reactive_theme,
             reactive_theme_intensity: prefs.reactive_theme_intensity,
             reactive_palette: None,
-            reactive_gen: None,
             last_action_name: None,
             footer_title_scroll: 0,
             footer_time_format: if prefs.time_format.is_empty() {

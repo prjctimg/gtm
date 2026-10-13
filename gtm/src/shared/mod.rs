@@ -14,6 +14,7 @@ pub mod log;
 pub mod network;
 pub mod paths;
 pub mod playlist;
+pub mod reactive;
 pub mod secret;
 pub mod state;
 pub mod track;

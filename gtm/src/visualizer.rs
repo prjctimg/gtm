@@ -406,6 +406,11 @@ fn resample_bands_linear(bands: &[f32], total_cols: usize) -> Vec<f32> {
 
 pub struct AudioVisualizer {
     pub preset: VisualizerPreset,
+    /// The headless GPU device, brought up on the first Flame frame and `None`
+    /// on any machine that cannot provide one. Lazily created so a user who
+    /// never reaches Flame never pays for the device.
+    #[cfg(feature = "shader-viz")]
+    gpu: Option<crate::shader::Shader>,
     // Column bar model (one level per terminal column)
     bars: Vec<f32>,
     target_cols: Vec<f32>,
@@ -440,6 +445,8 @@ impl AudioVisualizer {
     pub fn new() -> Self {
         Self {
             preset: VisualizerPreset::default(),
+            #[cfg(feature = "shader-viz")]
+            gpu: None,
             bars: vec![0.0; 32],
             target_cols: vec![0.0; 32],
             peaks: vec![0.0; 32],
@@ -1509,13 +1516,63 @@ impl Visualizer for AudioVisualizer {
         if w < 4 || h < 3 || (!self.playing && self.resting) {
             return Frame::Cells(Lines(Vec::new()));
         }
-        if self.preset == VisualizerPreset::Flame && self.heat_rows > 0 && self.heat_cols > 0 {
-            return Frame::Pixels(self.flame_image(frame.theme));
+        if self.preset == VisualizerPreset::Flame {
+            // The GPU path first when one came up, and the CPU heat field when
+            // it did not. `Shader::draw` answers `None` on the very first call
+            // by design — a device that exists still has a frame in flight —
+            // so `None` means "cells this frame", not "give up on the GPU".
+            #[cfg(feature = "shader-viz")]
+            if self.gpu.is_none()
+                && let Some(gpu) = crate::shader::Shader::new()
+            {
+                self.gpu = Some(gpu);
+            }
+            #[cfg(feature = "shader-viz")]
+            if self.gpu.is_some()
+                // Built before the borrow: the job reads the band model, which
+                // `gpu.draw` needs `&mut` for.
+                && let Some(job) = self.shader_job(frame)
+                && let Some(gpu) = self.gpu.as_mut()
+                && let Some(img) = gpu.draw(job)
+            {
+                return Frame::Pixels(img);
+            }
+            if self.heat_rows > 0 && self.heat_cols > 0 {
+                return Frame::Pixels(self.flame_image(frame.theme));
+            }
         }
         Frame::Cells(
             self.render(Rect::new(0, 0, w, h), frame.theme)
                 .unwrap_or_else(|| Lines(Vec::new())),
         )
+    }
+}
+
+impl AudioVisualizer {
+    /// The work item for one GPU flame frame.
+    ///
+    /// Built from the same smoothed bands and the same theme ramp the cell
+    /// renderer uses, so the two paths cannot drift apart: the GPU changes how
+    /// the heat becomes pixels, not what the heat is.
+    #[cfg(feature = "shader-viz")]
+    fn shader_job(&self, frame: &AudioFrame) -> Option<crate::shader::Draw> {
+        let cols = self.heat_cols.max(1);
+        let bands = resample_bands_linear(&self.bands, cols);
+        let t = frame.theme;
+        let level = |c: Color| match c {
+            Color::Rgb(r, g, b) => [r, g, b],
+            _ => [0, 0, 0],
+        };
+        Some(crate::shader::Draw {
+            playing: self.playing,
+            dt: frame.dt as f32,
+            bands: std::array::from_fn(|i| bands.get(i).copied().unwrap_or(0.0)),
+            band_count: bands.len().min(64) as u32,
+            cells: frame.size,
+            cool: level(t.fg_dim),
+            warm: level(t.accent),
+            peak: level(t.secondary_accent),
+        })
     }
 }
 

@@ -475,6 +475,14 @@ impl App {
                         std::time::Instant::now() + std::time::Duration::from_secs(3),
                     ));
                 }
+                if let DaemonEvent::ReactivePalette {
+                    primary,
+                    secondary,
+                    tertiary,
+                } = &ev
+                {
+                    self.take_palette(primary, secondary, tertiary);
+                }
                 if let DaemonEvent::ProviderError { provider, message } = &ev {
                     // A provider that refuses every request looks like a muted
                     // player from here, so the daemon's own error route is what
@@ -867,15 +875,6 @@ impl App {
                                     _ => tid_matches,
                                 };
                                 if tid_matches && path_matches {
-                                    if self.reactive_theme {
-                                        let tx = self.ipc_tx.clone();
-                                        self.reactive_gen = Some(self.next_cover_gen());
-                                        self.request_reactive_palette(
-                                            &c,
-                                            self.reactive_gen.expect("just set"),
-                                            tx,
-                                        );
-                                    }
                                     self.np_cover.image = Some(c);
                                     self.np_cover.track_id = cover_tid;
                                     if !no_image_protocol() {
@@ -913,14 +912,6 @@ impl App {
                         {
                             continue;
                         }
-                        if let Some(c) = cover.as_ref()
-                            && self.reactive_theme
-                        {
-                            let tx = self.ipc_tx.clone();
-                            self.reactive_gen = Some(self.next_cover_gen());
-                            let pal_gen = self.reactive_gen.expect("just set");
-                            self.request_reactive_palette(c, pal_gen, tx);
-                        }
                         self.np_cover.pending_gen = None;
                         self.np_cover.image = cover;
                         self.np_cover.track_id = cover_tid;
@@ -928,17 +919,6 @@ impl App {
                             self.cover_sync();
                         }
                         self.cover_art_dirty = true;
-                    }
-                    IpcResult::ReactivePalette(pal, pal_gen) => {
-                        // Only the newest extraction may paint. A reply for a
-                        // cover the cursor has already left is a late arrival,
-                        // not a late update. Guarded on its own generation
-                        // rather than the cover's, which is released as soon as
-                        // the bytes land — the palette always arrives after.
-                        if self.reactive_theme && self.reactive_gen == Some(pal_gen) {
-                            self.reactive_palette = pal;
-                            self.apply_reactive();
-                        }
                     }
                     IpcResult::PodcastStatus(st) => self.podcast.status = st,
                     IpcResult::PodcastFeeds(feeds) => {

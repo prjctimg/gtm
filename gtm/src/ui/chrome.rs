@@ -539,8 +539,11 @@ impl Render {
             Frame::Pixels(img) => {
                 f.render_widget(pixels_to_lines(&img, inner.width, inner.height), inner);
             }
-            // The shader route (stage 3) has no surface here yet: cells stay
-            // the only path that reaches the buffer.
+            // A visualizer that names a WGSL entry point but could not resolve
+            // it — the GPU feature is off, or no adapter — reaches here as a
+            // name and nothing else. Cells stay the path that reaches the
+            // buffer, so an unresolved shader draws nothing rather than
+            // something wrong.
             Frame::Shader(_) => {}
         }
     }

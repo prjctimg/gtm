@@ -1,5 +1,6 @@
 use crate::app::*;
 use crate::audio::eq::{PRE_GAIN_MAX_DB, PRE_GAIN_MIN_DB, PRE_GAIN_STEP_DB};
+use crate::reactive::{ReactivePalette, from_hex};
 use crate::ui::pre_gain_label;
 
 impl App {
@@ -217,26 +218,32 @@ impl App {
         );
     }
 
-    /// Kick off palette extraction for freshly received cover art.  Runs on
-    /// a blocking thread; the result comes back through
-    /// [`IpcResult::ReactivePalette`].
+    /// Adopt the palette the daemon extracted for the track on air.
     ///
-    /// The cover generation travels with it. Extraction is a full decode plus a
-    /// median cut, so on a fast A→B→C skip the reply for A can land after C's
-    /// and tint the whole UI with the wrong album. Every other guarded reply in
-    /// this app carries its generation; this one did not, so nothing could
-    /// order it against a track change.
-    pub(crate) fn request_reactive_palette(
-        &self,
-        cover_bytes: &[u8],
-        pal_gen: u64,
-        ipc_tx: mpsc::UnboundedSender<IpcResult>,
-    ) {
-        let bytes = cover_bytes.to_vec();
-        tokio::task::spawn_blocking(move || {
-            let pal = extract_palette(&bytes);
-            let _ = ipc_tx.send(IpcResult::ReactivePalette(pal, pal_gen));
-        });
+    /// The daemon is the single extractor: it holds the cover bytes for the
+    /// current track already, so the TUI never decodes an image to find a
+    /// color. The event arrives on the same stream as every other track fact,
+    /// and `gtm.nvim` reads the same broadcast off the pulse socket.
+    ///
+    /// All three empty means the daemon had no art to read, which is not the
+    /// same as "the artwork is black": the previous album's palette stays up
+    /// rather than the chrome flashing to a default.
+    pub(crate) fn take_palette(&mut self, primary: &str, secondary: &str, tertiary: &str) {
+        if !self.reactive_theme {
+            return;
+        }
+        let pal = match (from_hex(primary), from_hex(secondary), from_hex(tertiary)) {
+            (Some(p), Some(s), Some(t)) => Some(ReactivePalette {
+                primary: p,
+                secondary: s,
+                tertiary: t,
+            }),
+            _ => None,
+        };
+        if self.reactive_palette != pal {
+            self.reactive_palette = pal;
+            self.apply_reactive();
+        }
     }
 
     /// Cycle to the next theme in the list, persist, and refresh.

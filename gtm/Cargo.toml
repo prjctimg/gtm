@@ -11,12 +11,20 @@ categories.workspace = true
 readme = "README.md"
 
 [features]
-default = ["mpris"]
+# The GPU visualizer is on by default and falls back to the cell renderer
+# whenever the GPU cannot serve it (no adapter, lost device, shader compile
+# failure, non-truecolor terminal). The fallback is the reason this can be on:
+# a default that could leave a blank pane would not be.
+default = ["mpris", "shader-viz"]
 # MPRIS D-Bus integration (consumed by the gtmd daemon crate via gtmd/mpris).
 mpris = ["dep:zbus", "dep:zvariant"]
 # PulseAudio output backend (consumed by the gtmd daemon crate via
 # gtmd/pulseaudio).
 pulseaudio = ["dep:pulseaudio"]
+# GPU visualizer backend. `wgpu` is the heaviest dependency this crate can
+# take; it is behind a feature so `--no-default-features` and the daemon's
+# build never compile it.
+shader-viz = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 # Test/debug helper that forces IPC failures (tripwire).
 debug-fail = ["dep:rustc-hash"]
 
@@ -33,6 +41,10 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 color-eyre = "0.6"
 image = "0.25"
+# `wgpu`/`pollster`/`bytemuck` are only pulled in by the `shader-viz` feature.
+wgpu = { version = "30", optional = true, default-features = false, features = ["wgsl", "vulkan", "gles", "metal", "dx12"] }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1", optional = true, features = ["derive"] }
 color-thief = "0.2"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"] }
 base64 = "0.22"

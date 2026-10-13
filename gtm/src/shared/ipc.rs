@@ -1725,6 +1725,21 @@ pub enum DaemonEvent {
     /// carries the diagnosis instead.
     #[serde(rename = "provider_error")]
     ProviderError { provider: String, message: String },
+    /// The palette the daemon extracted from the current track's cover art.
+    ///
+    /// Three `#rrggbb` strings; all three empty means "no art, or the decode
+    /// failed". Computed once in the daemon from the bytes it already holds, and
+    /// read by both consumers: the TUI blends it into its chrome, and
+    /// `gtm.nvim` derives its whole colorscheme from it.
+    ///
+    /// Field order is wire-visible. The pulse frame is a flat msgpack array
+    /// `[tag, primary, secondary, tertiary]`, so these three are positional.
+    #[serde(rename = "reactive_palette")]
+    ReactivePalette {
+        primary: String,
+        secondary: String,
+        tertiary: String,
+    },
     #[serde(rename = "heartbeat")]
     Heartbeat,
 }

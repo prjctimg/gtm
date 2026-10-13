@@ -8,8 +8,89 @@ const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
 pub(crate) struct Cover;
 
+/// The first readable image beside `audio`: the same base name with an image
+/// extension, in the order the writers use.
+///
+/// Shared so the palette fast path and the cover request agree on what counts as
+/// a sidecar. A second copy of the extension list is a second answer to "which
+/// file is this track's art", and they would drift.
+pub(crate) fn audio_sidecar(audio_path: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(audio_path);
+    if !path.is_absolute() {
+        return None;
+    }
+    let parent = path.parent().unwrap_or(std::path::Path::new(""));
+    let stem = path.file_stem()?;
+    ["jpg", "jpeg", "png", "webp"]
+        .iter()
+        .map(|ext| parent.join(format!("{}.{ext}", stem.to_string_lossy())))
+        .find(|p| p.is_file())
+}
+
 impl Cover {
+    /// Resolve the art for one track, then extract its palette if it is the
+    /// track on air.
+    ///
+    /// The palette is emitted here rather than at each of the return points
+    /// below because this is the only place remote art exists in decoded form:
+    /// a Spotify or provider cover arrives as bytes with no file behind it, so
+    /// the local fast path in `push_started` cannot see it. One wrapper over
+    /// the resolver means every source is covered by construction.
     pub async fn get(
+        inner: &DaemonInner,
+        track_id: i64,
+        path: Option<String>,
+    ) -> Result<DaemonRes, CoreError> {
+        let res = Self::resolve(inner, track_id, path).await;
+        if let Ok(DaemonRes::CoverArt {
+            data: Some(ref b64),
+        }) = res
+            && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64)
+        {
+            Self::push_palette(inner, track_id, bytes);
+        }
+        res
+    }
+
+    /// Extract and broadcast the palette for the current track, given its art.
+    ///
+    /// Guarded on the current track because this runs for whatever row the
+    /// client asked about — a scroll through the library is a dozen requests
+    /// and only one of them is the song playing.
+    fn push_palette(inner: &DaemonInner, track_id: i64, bytes: Vec<u8>) {
+        let state = inner.state.clone();
+        let events = inner.event_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let pal = gtm::shared::reactive::extract_palette(&bytes);
+            let (a, b, c) = pal.map_or_else(
+                || (String::new(), String::new(), String::new()),
+                |p| {
+                    use gtm::shared::reactive::to_hex;
+                    (to_hex(p.primary), to_hex(p.secondary), to_hex(p.tertiary))
+                },
+            );
+            // Read the current track after the decode, not before: a fast skip
+            // can finish first, and a palette for a track already left would
+            // repaint the UI in the wrong album's colors.
+            tokio::runtime::Handle::current().block_on(async {
+                let current = state.read().await;
+                let on_air = current
+                    .current_track
+                    .as_ref()
+                    .is_some_and(|t| t.id == track_id);
+                drop(current);
+                if on_air {
+                    let _ = events.send(DaemonEvent::ReactivePalette {
+                        primary: a,
+                        secondary: b,
+                        tertiary: c,
+                    });
+                }
+            });
+        });
+    }
+
+    async fn resolve(
         inner: &DaemonInner,
         track_id: i64,
         path: Option<String>,
@@ -43,17 +124,12 @@ impl Cover {
             return Ok(DaemonRes::CoverArt { data: Some(b64) });
         }
         if let Some(ref track) = library_track {
-            let audio_path = std::path::Path::new(&track.path);
-            let parent = audio_path.parent().unwrap_or(std::path::Path::new(""));
-            let stem = audio_path.file_stem().unwrap_or_default();
-            for ext in ["jpg", "jpeg", "png", "webp"] {
-                let sidecar = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
-                if let Ok(data) = tokio::fs::read(&sidecar).await
-                    && !CoverCache::too_small(&data)
-                {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                    return Ok(DaemonRes::CoverArt { data: Some(b64) });
-                }
+            if let Some(sidecar) = audio_sidecar(&track.path)
+                && let Ok(data) = tokio::fs::read(&sidecar).await
+                && !CoverCache::too_small(&data)
+            {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                return Ok(DaemonRes::CoverArt { data: Some(b64) });
             }
             discovered_artist = track.artist.clone();
             discovered_album = track.album.clone();
@@ -69,21 +145,12 @@ impl Cover {
         // no artwork while the cover was sitting next to the audio the whole
         // time. A sidecar needs nothing but the file's own name.
         if library_track.is_none()
-            && let Some(path) = track_path
-            && std::path::Path::new(path).is_absolute()
+            && let Some(sidecar) = track_path.and_then(audio_sidecar)
+            && let Ok(data) = tokio::fs::read(&sidecar).await
+            && !CoverCache::too_small(&data)
         {
-            let audio_path = std::path::Path::new(path);
-            let parent = audio_path.parent().unwrap_or(std::path::Path::new(""));
-            let stem = audio_path.file_stem().unwrap_or_default();
-            for ext in ["jpg", "jpeg", "png", "webp"] {
-                let sidecar = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
-                if let Ok(data) = tokio::fs::read(&sidecar).await
-                    && !CoverCache::too_small(&data)
-                {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                    return Ok(DaemonRes::CoverArt { data: Some(b64) });
-                }
-            }
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+            return Ok(DaemonRes::CoverArt { data: Some(b64) });
         }
 
         // A queued entry can already know its artwork: the spotify resolver
