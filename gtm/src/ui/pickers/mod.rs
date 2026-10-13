@@ -608,19 +608,10 @@ impl Pickers {
 
 /// Hints that a picker need not spell out, because the screen already says it.
 ///
-/// Each entry is matched against one whitespace-separated token of a hint, case
-/// and trailing punctuation ignored. Kept as data rather than as logic in the
-/// renderer so that adding a picker cannot quietly reintroduce a line of
-/// "Enter: open".
-const OBVIOUS: [&str; 7] = [
-    "esc",
-    "enter",
-    "\u{2191}/\u{2193}",
-    "\u{2193}",
-    "\u{2191}",
-    "\u{2190}/\u{2192}",
-    "tab",
-];
+/// Keys a hint need not spell out, lowercased and without their trailing colon.
+/// Kept as data rather than as logic in the renderer so that adding a picker
+/// cannot quietly reintroduce a line of "Enter: open".
+const OBVIOUS: [&str; 7] = ["esc", "enter", "↑/↓", "↓", "↑", "←/→", "tab"];
 
 /// Drop the obvious entries from a picker hint and rejoin what is left.
 ///

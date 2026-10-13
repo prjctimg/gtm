@@ -4445,9 +4445,11 @@ fn picker_hints_drop_only_the_obvious() {
     );
 
     // And it tests the key, which is what separates an obvious binding from one
-    // that only looks similar.
+    // that only looks similar. Asserted on the halves rather than the whole
+    // chain, because rustfmt decides where the line breaks and a test that
+    // pins formatting fails on a reformat rather than on a behaviour change.
     assert!(
-        body.contains("entry.split(':').next()"),
+        body.contains(".split(':')") && body.contains("OBVIOUS.contains"),
         "the filter matches whole entries, so Ctrl+Enter would be dropped with Enter"
     );
 
