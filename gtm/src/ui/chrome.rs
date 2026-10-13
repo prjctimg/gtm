@@ -229,7 +229,7 @@ impl Render {
         // The onboarding view answers the whole pane: a library behind a welcome
         // screen would be the first thing to read as broken.
         if app.onboard {
-            crate::ui::bigtext::onboard(f, area, &app.theme, app.logo_phase());
+            crate::ui::bigtext::onboard(f, area, &app.theme, &app.icon_style, app.logo_phase());
             return;
         }
         if !app.is_ready {

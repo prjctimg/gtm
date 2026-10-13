@@ -104,11 +104,11 @@ pub(crate) fn service_icon_glyph(icon_style: &str, service: &str) -> &'static st
 /// onboarding view draws these inline, so the pairs have to be stable — this is
 /// the only list of its kind, and it derives its glyphs from the same table the
 /// rest of the UI reads so a font that cannot render one degrades in one place.
-pub(crate) fn providers() -> Vec<(&'static str, &'static str)> {
+pub(crate) fn providers(icon_style: &str) -> Vec<(&'static str, &'static str)> {
     [
         "Spotify", "YouTube", "Radio", "Podcast", "Last.fm", "Discord", "Local",
     ]
     .into_iter()
-    .map(|name| (service_icon_glyph("mdi", name), name))
+    .map(|name| (service_icon_glyph(icon_style, name), name))
     .collect()
 }

@@ -137,7 +137,13 @@ pub(crate) fn idle(f: &mut ratatui::Frame, area: Rect, app: &AppTheme, phase: f6
 /// Three things in order of size: the wordmark, the site, and the providers the
 /// program can talk to. The provider line is the only part that has to be read
 /// rather than recognised, so it keeps body text styling.
-pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &AppTheme, phase: f64) {
+pub(crate) fn onboard(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    app: &AppTheme,
+    icon_style: &str,
+    phase: f64,
+) {
     if area.width < 24 || area.height < 10 {
         return;
     }
@@ -165,7 +171,7 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &AppTheme, phase:
         "Supported providers",
         Style::default().fg(app.fg).add_modifier(Modifier::BOLD),
     );
-    let providers: Vec<String> = crate::ui::providers()
+    let providers: Vec<String> = crate::ui::providers(icon_style)
         .iter()
         .map(|(glyph, name)| format!("{glyph} {name}"))
         .collect();
