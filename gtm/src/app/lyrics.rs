@@ -29,9 +29,10 @@ pub(crate) fn lyric_index_at(lines: &[LrcLine], position: f64) -> usize {
     // by position in the slice.
     //
     // The two agree only while every provider hands lines back in timestamp
-    // order, and when they disagree this used to return whichever qualifying
-    // line came last in the array. One line out of order was then enough to
-    // park the highlight on the wrong verse for the rest of the track, with no
+    // order, and when they disagree the highlight follows the highest timestamp
+    // among the qualifying lines rather than whichever came last in the array.
+    // One line out of order would otherwise park the highlight on the wrong
+    // verse for the rest of the track, with no
     // way for the user to tell it had stopped tracking.
     //
     // Ties take the later index, so two lines sharing a timestamp resolve to the
@@ -119,9 +120,8 @@ impl App {
     /// Start a lyrics fetch for `track`, updating the view state in place.
     ///
     /// Both entry points go through here — the automatic fetch on a track change
-    /// and the manual one bound to the lyrics key. They used to disagree: only
-    /// the automatic one knew a provider track has to be searched by artist and
-    /// title, so asking manually for a Spotify track always came back empty.
+    /// and the manual one bound to the lyrics key — so both know a provider track
+    /// has to be searched by artist and title rather than by path.
     pub(crate) fn fetch_lyrics(&mut self, track: &TrackInfo) {
         let (track_id, path) = (track.id, Some(track.path.clone()));
         match lyrics_query(track) {
@@ -142,12 +142,13 @@ impl App {
     /// queued, so browsing a playlist warms the cache one row at a time instead
     /// of scanning the whole list.
     ///
-    /// It used to go through the same path as a real fetch, and that is the
-    /// whole bug this now avoids. `begin_lyrics` claims the generation guard,
+    /// This deliberately does not go through the same path as a real fetch.
+    /// `begin_lyrics` claims the generation guard,
     /// clears `lyrics.current` and resets the scroll and the manual sync offset
     /// — all of which belong to the *playing* track. So moving the cursor in a
-    /// playlist replaced the now-playing lyrics with the browsed row's, reset
-    /// the user's offset, and made the playing track's own in-flight reply
+    /// playlist would replace the now-playing lyrics with the browsed row's,
+    /// reset
+    /// the user's offset, and make the playing track's own in-flight reply
     /// stale, so it was dropped and the pane stayed blank. Two more: the
     /// prefetch's reply could land between a track change and that track's
     /// fetch, satisfying the guard with the wrong track's lines; and every

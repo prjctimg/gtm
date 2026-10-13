@@ -44,10 +44,7 @@ impl MusicBrainz {
                 .timeout(REQUEST_TIMEOUT)
                 .build()
                 .unwrap_or_else(|_| Client::new()),
-            user_agent: format!(
-                "gtm/{} (https://github.com/prjctimg/gtm)",
-                env!("CARGO_PKG_VERSION")
-            ),
+            user_agent: format!("gtm/{} (https://gtmd.dev)", env!("CARGO_PKG_VERSION")),
         }
     }
 

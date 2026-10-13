@@ -784,10 +784,10 @@ impl Spotify {
 
         // The artwork, after the audio rather than before it.
         //
-        // This used to run first, and it is not a cheap step: it takes the
+        // It is deliberately not first: it is not a cheap step, as it takes the
         // daemon-wide cover-cache mutex across a Spotify CDN fetch, a 500x500
         // re-encode and a disk write, and every eighth write walks both cover
-        // directories to prune them. Audio waited for all of that. The row
+        // directories to prune them. The row
         // already carries its metadata, so the warm is only needed to give the
         // client a `cover_path` to read, and a cover that arrives one frame
         // after the audio is a cover that arrives.
@@ -1073,8 +1073,9 @@ impl Spotify {
         // `Cover::artist` acquire the two in opposite orders and deadlock.
         // Cache first, and only then the account.
         //
-        // The link check used to come first and answered `spotify not linked`
-        // outright, without touching the cache -- so a row whose image was
+        // The link check answers `spotify not linked`
+        // outright without touching the cache, so asking it first would mean a
+        // row whose image was
         // already on disk, written by the left pane's own URL fetch or by a
         // previous link, still showed nothing. The cache is keyed on the image
         // URL, which is the same URL this endpoint is asked about, so the two

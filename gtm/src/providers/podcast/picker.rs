@@ -96,7 +96,7 @@ impl Pickers {
                 .duration_secs
                 .map(format_duration_short)
                 .unwrap_or_else(|| "--:--".to_string());
-            // Two marks that used to be missing and that change what a row can
+            // Two marks that change what a row can
             // do: an episode with no enclosure in the feed cannot be played at
             // all, and only some feeds publish a transcript.
             let mut marks = String::new();

@@ -117,9 +117,9 @@ impl Queue {
                     && let DaemonRes::Error { message } =
                         Cmd::play(inner, &first_path, 0.0, false).await?
                 {
-                    // The play result used to be discarded, so a first track
-                    // that could not play — Premium required, stream refused —
-                    // left a queued row, silence, and no error anywhere.
+                    // The play result is checked, so a first track
+                    // that cannot play — Premium required, stream refused —
+                    // cannot leave a queued row, silence, and no error anywhere.
                     return Ok(DaemonRes::Error { message });
                 }
                 Daemon::push_queue_state(inner).await;

@@ -9,7 +9,7 @@ use crate::ui::*;
 
 #[derive(Debug)]
 pub struct Command {
-    /// What the palette shows. The glyph that used to lead it is gone: eleven
+    /// What the palette shows. No leading glyph: eleven
     /// rows of icons in a list the user reads by name is a column of noise, and
     /// the icon style was the only reason this was two tables.
     pub label: &'static str,

@@ -238,9 +238,9 @@ pub enum LibraryFilter {
     ///
     /// A grouping rather than a category of its own: it keys off `path`, so it
     /// is the same "one row, many tracks behind it" shape the other three are,
-    /// and it answers the same drill-down. Folders used to be a top-level
-    /// category, which put a *slice* of the library in the same list as the
-    /// views you browse it with.
+    /// and it answers the same drill-down. A top-level folder category would
+    /// instead put a *slice* of the library in the same list as the views you
+    /// browse it with.
     Folders,
 }
 
@@ -407,6 +407,20 @@ pub struct App {
     pub(crate) preview_hover: Option<String>,
     pub(crate) preview_since: Option<std::time::Instant>,
     pub(crate) preview_fired: bool,
+    /// The row a peek is sounding from, and the track it displaced.
+    ///
+    /// A peek borrows the transport, so closing the picker owes the transport
+    /// back: what was playing and where it was paused are both needed to put
+    /// the player back exactly as it was. Empty when no peek is outstanding.
+    pub(crate) peek_station: Option<String>,
+    pub(crate) peek_restore: Option<(String, f64)>,
+    /// The onboarding view: true on the launch that found no config file, and
+    /// cleared by the first keypress.
+    pub onboard: bool,
+    /// When the idle or onboarding wordmark was last drawn, so its hueshift is
+    /// a function of time rather than of frame count: a slow frame does not
+    /// make the gradient jump backwards.
+    pub(crate) logo_mark: std::time::Instant,
     pub input_mode: InputMode,
     pub search_query: String,
     /// Per-view selection index: one slot per library view, plus one per
@@ -449,9 +463,9 @@ pub struct App {
     ///
     /// For every local category this *is* the display name. Spotify is the
     /// exception: it stores the bare playlist id, because that is what
-    /// `play_all` and `resolve` look the playlist up by, and the header used to
-    /// render it directly — so drilling into a playlist showed
-    /// `▶ 37i9dQZF1DXcBWIGoYBM5M`, and `liked-songs` showed literally.
+    /// `play_all` and `resolve` look the playlist up by, so the header renders the
+    /// display name beside it rather than the key — a bare id would drill into
+    /// a playlist labelled `37i9dQZF1DXcBWIGoYBM5M`, and `liked-songs` worse.
     pub browse_detail: Option<String>,
     /// Display name for [`Self::browse_detail`], where the key is not a name.
     /// `None` means the detail is its own title.
@@ -1076,11 +1090,10 @@ impl App {
     /// tell it apart from, Zen came up looking like the library it covers. The
     /// extra wash is what separates the two.
     ///
-    /// There used to be a lift toward white on top of it, and the wash was more
-    /// than twice this deep. Together they made the surface a pale tint of the
-    /// artwork — on a light cover the whole view was near-white with a theme
-    /// foreground drawn on it, which is where the lyric contrast complaint came
-    /// from. Nothing is lifted now: the artwork sits on the wash.
+    /// Nothing is lifted: the artwork sits on the wash. A lift toward white on top
+    /// of a deeper wash made the surface a pale tint of the cover — on a light
+    /// cover the whole view was near-white with a theme foreground drawn on it,
+    /// which is where the lyric contrast complaint came from.
     pub fn zen_bg(&self) -> ratatui::style::Color {
         // Both constants were higher: a 0.55 wash followed by a lift toward
         // white left the Zen surface a pale tint of the artwork, so on a light
@@ -1192,6 +1205,17 @@ impl App {
         self.queue.preview_slot.clear();
     }
 
+    /// Where the wordmark's hueshift is, in `0.0..1.0`.
+    ///
+    /// Read from wall-clock elapsed time rather than accumulated per-frame
+    /// deltas, so the gradient moves at a constant rate however the frame loop
+    /// is pacing, and a slow frame does not make it jump.
+    pub(crate) fn logo_phase(&self) -> f64 {
+        // One full sweep of the ramp every twelve seconds: slow enough to read
+        // as the theme's own colour rather than as an animation.
+        (self.logo_mark.elapsed().as_secs_f64() / 12.0).fract()
+    }
+
     pub(crate) fn clear_popup_cover(&mut self) {
         self.popup_track_id = None;
         self.track_popup_cover = None;
@@ -1212,6 +1236,10 @@ impl App {
         let prefs = tokio::task::spawn_blocking(load_prefs)
             .await
             .unwrap_or_else(|_| Prefs::default());
+        // Sampled before anything can write the file, and never persisted: the
+        // onboarding view shows on the launch that found no config, so a
+        // reinstall over an existing profile does not greet the user again.
+        let onboard = !prefs_path().exists();
         let keybindings = build_keybindings(&prefs.keybindings);
         let initial_cursor = state.queue_cursor;
 
@@ -1259,6 +1287,10 @@ impl App {
             preview_hover: None,
             preview_since: None,
             preview_fired: false,
+            peek_station: None,
+            peek_restore: None,
+            onboard,
+            logo_mark: std::time::Instant::now(),
             input_mode: InputMode::Normal,
             search_query: String::new(),
             scroll_offset: [0; LIB_CATEGORIES.len() + LibraryFilter::ALL.len()],
@@ -1521,10 +1553,9 @@ impl App {
     /// Whether Zen claims `key` for itself instead of letting the normal
     /// dispatch have it.
     ///
-    /// Zen used to swallow everything it did not name, which left the queue,
-    /// search, the command palette and the transport unreachable from a
-    /// fullscreen view — the only way out was z/Esc/q. Now everything else
-    /// dispatches normally and these three are the exceptions:
+    /// Everything else dispatches normally from a fullscreen view, so the queue,
+    /// search, the command palette and the transport are all reachable without
+    /// leaving Zen. These three are the exceptions:
     ///
     /// * `q` is `Quit` everywhere else. From a fullscreen view, with the
     ///   library and the footer both off screen, that would kill playback from
@@ -2014,6 +2045,12 @@ impl App {
                 }
                 PickerId::Queue => {
                     self.clear_preview();
+                }
+                PickerId::Radio => {
+                    // A peek borrowed the transport to sound the highlighted
+                    // station; closing the picker is the user saying they are
+                    // done choosing, so the transport goes back.
+                    self.peek_end();
                 }
                 PickerId::PlaylistTrackSelect => {
                     self.pending_playlist_id = None;

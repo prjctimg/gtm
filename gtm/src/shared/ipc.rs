@@ -361,11 +361,10 @@ pub enum DaemonReq {
     /// Cancel the download in flight.
     ///
     /// No url, because there is only ever one: the provider manager holds a
-    /// single cancel channel and a single task. The request used to carry a url
-    /// the daemon ignored (`url: _`) while the client believed it had targeted
-    /// a particular row -- so cancelling the second of two downloads killed the
-    /// first. A request that means what it says beats one that carries a field
-    /// to look precise with.
+    /// single cancel channel and a single task, so a request carrying a url
+    /// would claim to target a particular row while cancelling the only transfer
+    /// there is. A request that means what it says beats one that carries a
+    /// field it cannot honour.
     YtCancelDownload,
     YtFetchPlaylist {
         url: String,
@@ -514,10 +513,10 @@ pub enum DaemonReq {
     /// once they do, pushing a status event — the TUI never binds a socket or
     /// polls.
     ///
-    /// This used to take a `callback port`. Last.fm's desktop flow has no
-    /// callback (§4.2: the browser process is over once permission is granted),
-    /// so the port was never reachable — the listener it opened could not
-    /// receive anything.
+    /// Last.fm's desktop flow has no callback (§4.2: the browser process is over
+    /// once permission is granted), so there is nothing to listen for and the
+    /// port an older client may still send is accepted and discarded rather than
+    /// reported as a protocol error.
     LastfmOauthStart,
     /// Fetch an image URL as base64 cover bytes, through the cover cache.
     ///
@@ -1331,9 +1330,8 @@ impl DaemonReq {
                 DaemonReq::GetImageCover { url: x.url }
             }
             "lastfm_oauth_start" => {
-                // A `port` used to be required here and is still accepted, then
-                // discarded: an older client sending it is not a protocol
-                // error, and there is nothing left for a port to select.
+                // A `port` is accepted from an older client and then discarded:
+                // there is nothing left for a port to select.
                 #[derive(Deserialize)]
                 struct Params {
                     #[allow(dead_code)]
@@ -1721,11 +1719,10 @@ pub enum DaemonEvent {
     /// A provider failed in a way the user has to act on, as opposed to a track
     /// that merely is not playable.
     ///
-    /// Provider-side rejections used to reach the user as silence: librespot
-    /// logs a rejected audio-item request to its own logger, the resulting
-    /// `Unavailable` event was consumed to end the source, and the queue moved
-    /// on — so a token that Spotify refuses produced no sound and no message.
-    /// This carries the diagnosis instead.
+    /// librespot logs a rejected audio-item request to its own logger and the
+    /// resulting `Unavailable` event is consumed to end the source, so a token
+    /// Spotify refuses would otherwise produce no sound and no message. This
+    /// carries the diagnosis instead.
     #[serde(rename = "provider_error")]
     ProviderError { provider: String, message: String },
     #[serde(rename = "heartbeat")]
@@ -2356,10 +2353,10 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            // Both lyrics commands answer with the same shape. `lyrics_search`
-            // used to be absent here, so a provider track — which has no library
-            // row and can only be searched by artist and title — decoded to a
-            // bare `Value` and every such lookup reported "unexpected response"
+            // Both lyrics commands answer with the same shape: `lyrics_search` is keyed by
+            // artist and title rather than by a library row, so a provider track
+            // — which has no row and can only be searched that way — decodes to a
+            // bare `Value` and every such lookup reports "unexpected response"
             // while the daemon had in fact found the lyrics.
             "get_lyrics" | "lyrics_search" => {
                 match serde_json::from_value::<Option<LrcData>>(field(&data, "lyrics")) {

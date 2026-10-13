@@ -58,10 +58,10 @@ pub struct Args {
 
     /// Write a shell completion script to stdout and exit
     ///
-    /// Hidden: packaging calls it, users do not. Completions used to come from
-    /// a hand-maintained copy of this struct, which is why the shipped scripts
-    /// stopped matching the CLI. Generating from the real command tree makes
-    /// drift impossible.
+    /// Hidden: packaging calls it, users do not. Completions are generated from the
+    /// real command tree rather than a hand-maintained copy of this struct,
+    /// which is what stops the shipped scripts from drifting out of match with
+    /// the CLI.
     #[arg(long, value_name = "SHELL", hide = true)]
     pub completions: Option<clap_complete::Shell>,
 
@@ -1005,16 +1005,15 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                                 .map(|ln| ln.text.trim().to_string())
                         });
                         // Full-frame redraw rather than the `\r` + cursor-up
-                        // this used. Once the frame is a variable number of
-                        // rows tall, partial overwrites leave the tail of a
+                        // partial overwrite. Once the frame is a variable number of
+                        // rows tall, a partial one leaves the tail of a
                         // taller previous frame on screen; home-and-clear is
                         // the only correct one.
                         //
-                        // The playback status leads the line. It used to be
-                        // absent from the streamed frame altogether, so a
-                        // long-running `status --stream` reported a track and a
-                        // running position with no way to tell playing from
-                        // paused -- the one fact a status line exists for. The
+                        // The playback status leads the line, so a
+                        // long-running `status --stream` always says whether it
+                        // is playing or paused -- the one fact a status line
+                        // exists for. The
                         // plain-text labels are used rather than the coloured
                         // ones the one-shot path prints, because this frame is
                         // cleared and rewritten twice a second.

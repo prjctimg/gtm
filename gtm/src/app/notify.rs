@@ -192,9 +192,8 @@ impl App {
 
     /// Whether a multiselect step can move a row, naming the missing half.
     ///
-    /// Two preconditions, and the arm used to check both in one condition and
-    /// then say nothing about either: with multiselect off, or with the library
-    /// holding the cursor, the row moved the palette and stopped.
+    /// Two preconditions, each reported by name: with multiselect off, or with the library
+    /// holding the cursor, the row moves the palette and stops.
     pub fn multiselect_ready(&mut self, what: &str) -> bool {
         if !self.multiselect_mode {
             self.notify_silent(

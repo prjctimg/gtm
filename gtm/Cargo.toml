@@ -25,6 +25,7 @@ debug-fail = ["dep:rustc-hash"]
 # pane needs: row offsets for the scroll and the highlight have to agree with
 # what ratatui's wrapper actually renders, and only ratatui knows that.
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+tui-big-text = "0.8"
 crossterm = { version = "0.28", features = ["bracketed-paste"] }
 tachyonfx = "0.22"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "process", "io-std", "signal"] }

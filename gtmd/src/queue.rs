@@ -326,11 +326,11 @@ pub fn move_track(state: &mut DaemonState, from: u64, to: u64) -> bool {
         t
     };
     // `to` is already a merged-view index and `insert_at` reads it as one.
-    // It used to be converted to a *local* index first, which then had the
-    // queue length subtracted from it a second time inside `insert_at` — so a
-    // move into the default-list region landed `ulen` slots too early. With a
-    // queue of 2 over a default list of 4, moving row 0 to row 5 produced
-    // `B C D A E F` instead of `B C D E F A`.
+    // Converting it to a *local* index first would have `insert_at` subtract
+    // the queue length a second time, landing a move into the default-list
+    // region `ulen` slots too early. With a queue of 2 over a default list of
+    // 4, moving row 0 to row 5 would produce `B C D A E F` instead of
+    // `B C D E F A`.
     insert_at(state, track, to);
     true
 }
@@ -347,12 +347,11 @@ pub fn clear(state: &mut DaemonState) {
 
 const AUDIO_EXTENSIONS: &[&str] = &["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus"];
 
-/// Audio that `wma` used to sit beside in [`AUDIO_EXTENSIONS`] and that nothing
-/// can decode.
+/// Audio that nothing in the build can decode.
 ///
 /// Symphonia's `all-codecs` is aac, adpcm, alac, flac, mp1, mp2, mp3, pcm and
 /// vorbis; there is no WMA decoder in it or anywhere else in the build. Listing
-/// the extension anyway meant `queue-add` took the file, reported success, and
+/// the extension would make `queue-add` take the file, report success, and
 /// the failure only surfaced once playback reached it. Rejecting it here says
 /// "unsupported" instead of letting it look playable.
 const UNDECODABLE_EXTENSIONS: &[&str] = &["wma"];
@@ -516,9 +515,9 @@ mod tests {
     /// A move across the user-queue/default-list boundary lands where it was
     /// asked to.
     ///
-    /// The target index used to be converted to a *local* index and then had the
-    /// queue length subtracted from it again inside `insert_at`, so moving row 0
-    /// to the end of a 2-track queue over a 4-track library produced
+    /// The target index is passed through as a merged-view index. Converting it to
+    /// a *local* index and letting `insert_at` subtract the queue length again
+    /// moves row 0 to the end of a 2-track queue over a 4-track library to
     /// `B C D A E F` instead of `B C D E F A`.
     #[test]
     fn a_move_into_the_default_region_lands_where_asked() {

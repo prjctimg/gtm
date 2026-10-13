@@ -40,8 +40,8 @@ pub const FRESHNESS: std::time::Duration = std::time::Duration::from_secs(90);
 /// Successes required before the reading flips to online, and failures before it
 /// flips to offline.
 ///
-/// One each way is what the probe used to do, and a marginal link produced a
-/// badge that changed every thirty seconds forever. Two stops the flapping
+/// One each way makes a marginal link produce a
+/// badge that changes every thirty seconds forever. Two stops the flapping
 /// without making a real outage take twice as long to admit.
 pub const ONLINE_STREAK: u32 = 2;
 pub const OFFLINE_STREAK: u32 = 2;

@@ -104,11 +104,12 @@ pub fn parse_color(s: &str) -> Result<Color, String> {
 /// being replaced by a monochrome fallback.
 ///
 /// Every highlighted row in every picker goes through here, so this is the one
-/// place that decides whether a selection is legible. It used to compare a raw
-/// 0-255 luminance delta against a flat `90.0`, which is not a contrast ratio:
-/// two colours can differ by 90 and still be a 1.2:1 pair (a mid grey and a
+/// place that decides whether a selection is legible. The threshold is a
+/// contrast ratio, not a raw
+/// 0-255 luminance delta: two colours can differ by 90 and still be a 1.2:1
+/// pair (a mid grey and a
 /// slightly darker mid grey), and two colours 80 apart can be a comfortable
-/// 6:1. The threshold therefore let themes through whose selected rows were
+/// 6:1. A flat threshold therefore lets themes through whose selected rows were
 /// unreadable, and the fix is the standard measure rather than a tuned number.
 pub fn readable_fg(fg: Color, bg: Color) -> Color {
     /// WCAG AA for normal text.

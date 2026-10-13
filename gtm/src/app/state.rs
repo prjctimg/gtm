@@ -17,10 +17,10 @@ pub enum TrackInfoKind {
     SpotifyPlaylist,
     /// Drill-down row in a Spotify playlist (no local cover available).
     SpotifyTrack,
-    /// Row in a loaded chart. A chart is not the local library, so the `Track`
-    /// arm used to index `tracks_cache` by the row position — showing an
-    /// unrelated local track's title and cover beside the chart, and at chart
-    /// level 0/1 indexing the *sources* list into it.
+    /// Row in a loaded chart. A chart is not the local library, so this is
+    /// its own row type: indexing `tracks_cache` by the row position would show
+    /// an unrelated local track's title and cover beside the chart, and at chart
+    /// level 0/1 index the *sources* list into it.
     ChartTrack,
     /// Row in the Charts category's source list (level 0). A provider, not a
     /// track, and it carries no artwork, so the card describes the source.
@@ -666,11 +666,12 @@ pub struct LyricsView {
     pub row: Option<usize>,
     /// What `current` is holding.
     ///
-    /// A lyrics reply that finds nothing used to be written into `current` as a
-    /// "No lyrics found" line, which is indistinguishable from a real result.
+    /// A lyrics reply that finds nothing is never written into `current` as a
+    /// "No lyrics found" line, which would be indistinguishable from a real
+    /// result.
     /// A podcast transcript is fetched by episode name, not by the playing
     /// track, and is still on screen when the track changes — so the next
-    /// track's lyrics fetch either replaced it or, coming back empty, replaced
+    /// track's lyrics fetch either replaces it or, coming back empty, replaces
     /// it with "No lyrics found". The kind makes the two tellable apart.
     pub kind: LyricsKind,
 }

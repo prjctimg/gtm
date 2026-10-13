@@ -136,7 +136,7 @@ impl Default for LyricsManager {
 impl LyricsManager {
     pub fn new() -> Self {
         let client = Client::builder()
-            .user_agent("gtm/0.2 (+https://github.com/prjctimg/gtm)")
+            .user_agent("gtm/0.2 (+https://gtmd.dev)")
             .build()
             .unwrap_or_else(|_| Client::new());
         Self {
@@ -681,7 +681,7 @@ fn parse_lrclib_response(json: &serde_json::Value) -> Option<LrcData> {
     // `syncedLyrics` that is really plain text with no time tags; only accept
     // it as synced when timestamps are actually present, otherwise fall back
     // to `plainLyrics`. Untimed `syncedLyrics` is still served when that is all
-    // a record has, so nothing that used to display is dropped.
+    // a record has, so nothing displayable is dropped.
     if let Some(s) = synced
         && !s.is_empty()
     {

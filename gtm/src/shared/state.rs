@@ -614,10 +614,10 @@ impl SavedState {
     /// or is corrupted.
     pub fn load(path: &std::path::Path) -> Option<Self> {
         let data = std::fs::read_to_string(path).ok()?;
-        // Not `.ok()`. A malformed or unrecognised state file used to be
-        // discarded in total silence, so every persisted preference, the queue
-        // and the resume position vanished and the only symptom was that
-        // gtm had "forgotten" everything. One unrecognised key could take the
+        // Not `.ok()`. A malformed or unrecognised state file is
+        // never discarded in silence, or every persisted preference, the queue
+        // and the resume position would vanish and the only symptom would be that
+        // gtm had "forgotten" everything. One unrecognised key can take the
         // whole file with it, which is why the fields above all default.
         match serde_json::from_str(&data) {
             Ok(state) => Some(state),

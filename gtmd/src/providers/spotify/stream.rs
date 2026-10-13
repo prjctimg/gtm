@@ -339,10 +339,9 @@ impl rodio::Source for PcmStreamSource {
 /// stays under the argument ceiling as fields are added.
 ///
 /// No client id: the session registers as [`LIBRESPOT_CLIENT_ID`], which is
-/// also the app the OAuth flow authorizes against. It used to be a separate
-/// field whose documented purpose was to be *different* from the app that
-/// minted `token` — that is the conflation login5 refuses, and it only ever
-/// traded one failure for the other.
+/// also the app the OAuth flow authorizes against. A client id meant to differ
+/// from the app that minted `token` is the conflation login5 refuses, so there
+/// is one id and it is the app's own.
 pub struct SessionSpec<'a> {
     pub token: &'a str,
     pub config_dir: &'a Path,
@@ -596,10 +595,10 @@ impl StreamManager {
                                 "spotify refused {} consecutive track loads",
                                 LOAD_REFUSALS_REPORTED
                             );
-                            // This message used to blame Connect registration,
-                            // which is now gone as a cause — the session never
-                            // registers, so a device that failed to register
-                            // cannot be what happened. What is left on this path
+                            // The message names the account rather than Connect
+                            // registration: the session never registers, so a
+                            // device that failed to register cannot be what
+                            // happened. What is left on this path
                             // is the account: `Unavailable` is what the CDN and
                             // Web API answer for a track the account may not
                             // play (no Premium, market restriction, region).
@@ -964,9 +963,9 @@ mod tests {
 
     /// The per-track summary is the only thing that separates "librespot never
     /// delivered" from "delivered but dropped before the ring", so it has to
-    /// survive the target registry being cleared for an ended track. It used to
-    /// consult that registry, which `EndOfTrack` empties before the source
-    /// drains, so it reported nothing at all.
+    /// survive the target registry being cleared for an ended track, so it is read
+    /// from the per-track state rather than from that registry, which `EndOfTrack`
+    /// empties before the source drains.
     #[test]
     fn the_summary_survives_the_target_being_cleared() {
         let target = target_for(&test_uri());

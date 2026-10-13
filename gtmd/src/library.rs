@@ -672,9 +672,10 @@ impl Library {
     /// Remove duplicate entries from a playlist, keeping the earliest one, and
     /// return how many rows went.
     ///
-    /// It used to group by `track_id`, which the `(playlist_id, track_id)`
-    /// primary key already forbids: the command could never remove a row, and
-    /// was a position repack wearing a name that promised otherwise. The
+    /// Grouped by `path`, which is what the `(playlist_id, track_id)`
+    /// primary key leaves room for: grouping by `track_id` forbids the command
+    /// from ever removing a row, which makes it a position repack wearing a name
+    /// that promises otherwise. The
     /// duplication it can actually find is two *different* `track_id`s pointing
     /// at the same file — `tracks.path` is indexed but not unique, so a
     /// re-scan or a manual edit can produce that, and the primary key does not

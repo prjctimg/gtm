@@ -221,6 +221,17 @@ impl App {
         self.track_anim_trigger = true;
     }
 
+    /// Repaint just the footer.
+    ///
+    /// The volume readout is the footer's alone, so a volume change has no
+    /// business invalidating the track list and the cover art: holding a volume
+    /// key rebuilt every widget once per step. `data_dirty` is still set
+    /// because the periodic repaint is what would otherwise have caught it, and
+    /// this is the change that marks the frame.
+    pub(crate) fn mark_footer_dirty(&mut self) {
+        self.data_dirty = true;
+    }
+
     /// Invalidate the reconciliation itself, so the next frame trusts no
     /// tracker. For the events that make every `prev_*` value suspect rather
     /// than just one of them wrong: a reconnect, a full state resnapshot, a
@@ -1681,11 +1692,12 @@ impl App {
                 self.prev_status = self.state.status;
                 changed = true;
             }
-            // Volume changes: update the previous volume tracker without
-            // triggering an animation, but still refresh the readouts.
-            if self.state.volume != self.prev_volume || full_sync {
+            // Volume is read by the footer's readout and nowhere else, so it is
+            // reconciled apart from the sweep below: a held volume key was
+            // invalidating the track list and the cover art once per step.
+            let volume_changed = self.state.volume != self.prev_volume || full_sync;
+            if volume_changed {
                 self.prev_volume = self.state.volume;
-                changed = true;
             }
             if self.np_cover.track_id != self.prev_cover_id || full_sync {
                 self.prev_cover_id = self.np_cover.track_id;
@@ -1693,6 +1705,8 @@ impl App {
             }
             if changed {
                 self.mark_all_dirty();
+            } else if volume_changed {
+                self.mark_footer_dirty();
             }
 
             // Duration the bar and the elapsed readout are measured against: the

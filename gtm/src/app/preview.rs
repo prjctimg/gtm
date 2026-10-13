@@ -55,16 +55,27 @@ impl App {
         }
         // "Nothing else playing" is read from the transport, not from who
         // started the sound, so a preview never cuts off a track the user chose.
-        if self.state.status != PlaybackStatus::Stopped {
+        // Inside the radio picker the rest is a *peek*, which may also borrow a
+        // paused player and is handed back when the picker closes.
+        let peek = self.pickers.top().is_some_and(|o| o.id == PickerId::Radio);
+        if peek {
+            if !self.peekable() {
+                return;
+            }
+        } else if self.state.status != PlaybackStatus::Stopped {
             return;
         }
         self.preview_fired = true;
         match target.kind {
             PreviewKind::Radio { id, name } => {
-                let c = self.client.clone();
-                tokio::spawn(async move {
-                    let _ = c.radio().play(&id, &name).await;
-                });
+                if peek {
+                    self.peek_play(&id, &name);
+                } else {
+                    let c = self.client.clone();
+                    tokio::spawn(async move {
+                        let _ = c.radio().play(&id, &name).await;
+                    });
+                }
             }
             PreviewKind::Chart(track) => {
                 let c = self.client.clone();
@@ -145,5 +156,65 @@ impl App {
             key: format!("chart:{chart}|{}|{}", t.uri, t.title),
             kind: PreviewKind::Chart(t.clone()),
         })
+    }
+}
+
+/// Peeking into a station: sounding it without leaving the row it was found on.
+///
+/// A peek differs from the library list's hover preview in two ways. It may
+/// borrow a *paused* player — the user stopped to browse, and putting the music
+/// back afterwards is expected rather than rude — so it keeps what it displaced.
+/// And it is undone explicitly, when the picker closes, rather than fading out
+/// on its own.
+impl App {
+    /// Whether the transport is free for a peek to borrow.
+    ///
+    /// Playing audio over an audible track would cut it off, so only silence and
+    /// a pause qualify. A pause is remembered so the peek can give it back.
+    fn peekable(&mut self) -> bool {
+        match self.state.status {
+            PlaybackStatus::Stopped => true,
+            PlaybackStatus::Paused => {
+                let Some(track) = self.state.current_track.as_ref() else {
+                    return false;
+                };
+                self.peek_restore = Some((track.path.clone(), self.state.time_pos));
+                true
+            }
+            PlaybackStatus::Playing => false,
+        }
+    }
+
+    /// Begin a peek of `id`, unless that station is the one already sounding.
+    pub(crate) fn peek_play(&mut self, id: &str, name: &str) {
+        if self.peek_station.as_deref() == Some(id) {
+            return;
+        }
+        self.peek_station = Some(id.to_string());
+        let c = self.client.clone();
+        let (id, name) = (id.to_string(), name.to_string());
+        tokio::spawn(async move {
+            let _ = c.radio().play(&id, &name).await;
+        });
+    }
+
+    /// Put the transport back the way a peek found it.
+    ///
+    /// A peek that displaced a paused track resumes it at the position it held;
+    /// a peek that started from silence just stops. Idempotent, so closing the
+    /// picker twice is harmless.
+    pub(crate) fn peek_end(&mut self) {
+        if self.peek_station.take().is_none() {
+            return;
+        }
+        let c = self.client.clone();
+        match self.peek_restore.take() {
+            Some((path, pos)) => tokio::spawn(async move {
+                let _ = c.play(&path, pos).await;
+            }),
+            None => tokio::spawn(async move {
+                let _ = c.stop().await;
+            }),
+        };
     }
 }

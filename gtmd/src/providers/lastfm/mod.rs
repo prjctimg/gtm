@@ -603,9 +603,9 @@ mod tests {
 
     /// The authorize page only renders something the user can *authorize* when
     /// the request carries a token. Without it Last.fm shows a page with no
-    /// token on it, which is why the flow used to need a callback server and a
-    /// manual copy-paste: the URL it produced was never a URL that could
-    /// complete anything. §4.2 of the auth spec gives the shape exactly.
+    /// token on it, so there is no callback to complete and nothing to copy by
+    /// hand: the URL has to be the one that authorises on its own.
+    /// §4.2 of the auth spec gives the shape exactly.
     #[test]
     fn the_authorize_url_carries_the_token() {
         let mut mgr = LastfmManager::new();

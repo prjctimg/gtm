@@ -35,10 +35,10 @@ fn lyridx_timed_lines() {
 /// A provider that returns lines out of timestamp order must still highlight
 /// the right verse.
 ///
-/// Matching used to take the last qualifying line *in slice order*, which is
-/// the same as the latest timestamp only while the file is sorted. One line out
-/// of order parked the highlight on the wrong verse for the rest of the track,
-/// and the failure was invisible: the highlight kept moving, just against the
+/// Matching takes the last qualifying line by *timestamp*, not by slice
+/// position; the two agree only while the file is sorted. One line out
+/// of order would park the highlight on the wrong verse for the rest of the track,
+/// and the failure would be invisible: the highlight keeps moving, just against the
 /// wrong lyrics.
 #[test]
 fn lyridx_out_of_order_lines_match_by_timestamp() {
@@ -159,7 +159,7 @@ fn pinned_category_indices_do_not_move() {
     }
 }
 
-/// Every absorbed view has to land somewhere, or the rows it used to occupy are
+/// Every absorbed view has to land somewhere as a group, or its rows are
 /// simply gone.
 #[test]
 fn every_absorbed_view_became_a_group() {
@@ -234,11 +234,12 @@ fn stale_left_pane_lists_keep_known_categories() {
 
 /// A client id pasted into the port box must be reported, not swallowed.
 ///
-/// The two fields are one Tab apart, and a non-numeric port used to fall back
-/// to the default: the flow then linked the account against librespot's shared
+/// The two fields are one Tab apart, so a non-numeric port has to be an error
+/// rather than a silent fallback: the flow would otherwise
+/// link the account against librespot's shared
 /// app while appearing to honour the id, with no message anywhere. The symptom
 /// — a token that never gets its own quota, and playlists that fail to sync —
-/// was indistinguishable from the id being rejected.
+/// is indistinguishable from the id being rejected.
 #[test]
 fn a_non_numeric_port_is_an_error_not_a_default() {
     // A real client id in the port field is the exact mistake that was silent.

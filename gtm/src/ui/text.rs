@@ -93,8 +93,8 @@ pub(crate) fn library_stats_line(app: &App) -> String {
             (total_dur % 3600) / 60
         );
     }
-    // The grouped lists count their own rows. They used to fall through to the
-    // track count below, so the footer read "812 tracks | 3h 12m" under a list
+    // The grouped lists count their own rows rather than falling through to the
+    // track count below, so the footer never reads "812 tracks | 3h 12m" under a list
     // of forty genres — a count of the wrong list, sitting under the one thing
     // on screen that says how many there actually are.
     if app.library_category == LIB_ALL && !matches!(app.library_filter, LibraryFilter::Tracks) {

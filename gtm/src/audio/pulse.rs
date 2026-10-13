@@ -32,8 +32,8 @@ struct PaPlaybackSource {
     ring: SharedRingBuffer,
     volume: Arc<AtomicU8>,
     /// Consecutive polls that returned empty while the decode thread was still
-    /// feeding the ring — used to report underruns once per burst instead of
-    /// once per poll.
+    /// feeding the ring, collapsed into one report per burst rather than
+    /// one per poll.
     underrun_burst: u32,
 }
 

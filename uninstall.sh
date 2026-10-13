@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gtm uninstaller — see https://github.com/prjctimg/gtm
+# gtm uninstaller — see https://gtmd.dev
 #
 # Usage:
 #   curl -fsSL https://gtmd.dev/uninstall.sh | bash
@@ -29,7 +29,7 @@ BOLD='\033[1m'
 
 usage() {
   cat <<EOF
-gtm uninstaller — https://github.com/prjctimg/gtm
+gtm uninstaller — https://gtmd.dev
 
 Usage: uninstall.sh [options]
 

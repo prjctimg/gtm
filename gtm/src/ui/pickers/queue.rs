@@ -151,9 +151,9 @@ impl Pickers {
                 height: preview_h,
             };
             // The strip describes the highlighted row, which is `sel` — not the
-            // entry after the playing cursor. Both used to be the cursor, so
-            // moving through the queue left the artwork on the track that was
-            // already playing while the title beside it named another.
+            // entry after the playing cursor. Taking the cursor would leave the
+            // artwork on the track that was
+            // already playing while the title beside it names another.
             Self::render_preview(f, preview_area, app, sel);
         }
     }

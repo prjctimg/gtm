@@ -1820,11 +1820,12 @@ const IPC_TIMEOUT_SECS: u64 = 30;
 impl IpcWorker {
     /// One wake-up per event, not twenty per second.
     ///
-    /// This loop used to poll the socket on a 50 ms timeout so it could get back
-    /// and look at the command channel -- twenty wake-ups a second for the life
+    /// This loop is woken by the command channel rather than polling the socket on
+    /// a 50 ms timeout so it could get back
+    /// and look at it -- twenty wake-ups a second for the life
     /// of the process, each one to notice that nothing had happened. On a phone
     /// that is a measurable share of a core spent on the scheduler, and the
-    /// commands it was making room for were then delayed by up to a frame of it
+    /// commands it made room for were delayed by up to a frame of it
     /// anyway.
     ///
     /// The socket and the command channel are now the two arms of one select,

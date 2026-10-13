@@ -22,13 +22,12 @@ impl App {
 
     /// Pull one of the three history lists for the Playlists view.
     ///
-    /// Dispatched on [`HistList`], named rather than numbered. This used to match
-    /// `7 => most_played, 8 => recently_played`, which were the *old* category
-    /// indices — `Most Played` was category 5, not 7 — so every caller asked for
-    /// the wrong list and only got away with it because the wrong answer was a
-    /// list of tracks either way. The catch-all made it worse: a genuinely
-    /// unknown category silently became "recently added". Nothing dispatches on
-    /// a category index any more, so there is nothing left to fall through.
+    /// Dispatched on [`HistList`], named rather than numbered. The names are what
+    /// make the call correct: a category index is only meaningful against a
+    /// particular category ordering, and a wrong one yields a list of tracks
+    /// either way, so the mismatch stays invisible. Nothing dispatches on
+    /// a category index any more, and there is no catch-all arm for an
+    /// unrecognised value to land in.
     pub(crate) fn fetch_list_tracks(&mut self, list: HistList) {
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();

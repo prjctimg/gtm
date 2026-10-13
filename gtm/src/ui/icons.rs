@@ -7,13 +7,11 @@
 
 use crate::ui::*;
 
-// Seven rows, in `LIB_CATEGORIES` order. The four that used to follow Radio --
-// Most Played, Recently Played, Recently Added, Folders -- are groups now
-// (of Playlists and of Library), so they have no icon of their own. They used
-// to be *indexed* anyway: the renderer reads `icons.get(i)`, so a table with
-// eleven entries against seven categories kept four icons that no row could
-// reach, and dropping the rows without dropping the table would have left the
-// survivors on the wrong glyphs.
+// Six rows, in `LIB_CATEGORIES` order. The four views that follow Radio in the
+// picker — Most Played, Recently Played, Recently Added, Folders — are groups
+// (of Playlists and of Library), so they have no icon of their own and are not
+// in this table: the renderer reads `icons.get(i)` positionally, so an entry
+// per row that no row can reach would put the survivors on the wrong glyphs.
 pub(crate) const LIBRARY_ICONS_NERD: &[&str] = &[
     "\u{f001}",  // Library: nf-md-music_note
     "\u{f03a}",  // Playlists: nf-md-playlist_music
@@ -97,4 +95,20 @@ pub(crate) fn service_icon_glyph(icon_style: &str, service: &str) -> &'static st
         "Discord" => "\u{1f4ac}",
         _ => "",
     }
+}
+
+/// Every provider the client can talk to, as (glyph, display name).
+///
+/// Ordered as a user would meet them rather than as the code does: the two
+/// that carry playback, then the directories and scrobbling around them. The
+/// onboarding view draws these inline, so the pairs have to be stable — this is
+/// the only list of its kind, and it derives its glyphs from the same table the
+/// rest of the UI reads so a font that cannot render one degrades in one place.
+pub(crate) fn providers() -> Vec<(&'static str, &'static str)> {
+    [
+        "Spotify", "YouTube", "Radio", "Podcast", "Last.fm", "Discord", "Local",
+    ]
+    .into_iter()
+    .map(|name| (service_icon_glyph("mdi", name), name))
+    .collect()
 }

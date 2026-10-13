@@ -126,10 +126,11 @@ const PREFETCH_CONCURRENCY: usize = 8;
 
 /// Warm the cover cache for every distinct album image in `tracks`.
 ///
-/// Browsing a playlist used to fetch each cover on demand, one per scroll or
-/// Enter, and a cover already seen was only remembered in the 64-entry memory
-/// LRU. Persisting through [`CoverCache::get_url`] keys each image by URL on
-/// disk, so the second visit — and the next login, which throws the in-memory
+/// Each cover is fetched on demand, one per scroll or
+/// Enter, and remembering it only in a 64-entry memory
+/// LRU would make a second pass a second request. Persisting through
+/// [`CoverCache::get_url`] keys each image by URL on
+/// disk, so a revisit — and the next login, which throws the in-memory
 /// half away — is served without a request.
 ///
 /// Runs detached and never surfaces an error: a missing cover is a blank row,

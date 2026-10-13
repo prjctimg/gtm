@@ -321,7 +321,8 @@ pub struct FooterRenderOutput {
     pub right_bg: Color,
 }
 
-/// Cached footer render used to suppress refresh during tab transitions.
+/// Cached footer render, plus the flag that suppresses a refresh during tab
+/// transitions.
 #[derive(Default)]
 pub struct FooterCache {
     pub last: Option<FooterRenderOutput>,

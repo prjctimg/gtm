@@ -740,12 +740,11 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 if (name == "item" || name == "entry")
                     && let Some(mut p) = ep.take()
                 {
-                    // An entry with no audio URL used to be discarded here. That
-                    // is what made the whole feed look broken when a single
-                    // item used an enclosure shape the parser did not read: the
-                    // episode silently vanished from the list, and with it the
-                    // transcript, the title and the date that were all sitting
-                    // right there. The entry is kept, and `play` reports that
+                    // An entry is kept even when its audio URL is unreadable, so
+                    // that one enclosure shape the parser does not read does not
+                    // make the whole feed look broken: dropping the entry would
+                    // take the transcript, the title and the date with it, all of
+                    // which are sitting right there. `play` reports that
                     // the audio is missing rather than the episode being a lie.
                     p.transcripts.retain(|t| t.is_present());
                     if p.title.trim().is_empty() {
@@ -1111,8 +1110,8 @@ Hello]]></podcast:transcript>
         assert_eq!(f.episodes[0].url, "https://cdn.example.com/1.mp3");
     }
 
-    /// An entry with genuinely no audio anywhere used to be discarded, taking
-    /// its transcript, title and date with it. It is kept, and the queue route
+    /// An entry with genuinely no audio anywhere is kept, along with its
+    /// transcript, title and date. The queue route
     /// is the thing that refuses it — with the episode's name.
     #[test]
     fn an_entry_with_no_audio_is_kept_not_discarded() {

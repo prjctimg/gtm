@@ -3,13 +3,12 @@
 // Deferred (lazy) audio mixer: keeps daemon startup off the audio-device
 // critical path.
 //
-// `Daemon::new` used to call `init_mixer` eagerly, which opens the PulseAudio
-// connection, enumerates devices, and on Termux may spawn the PulseAudio
-// server — all synchronously *before* the IPC socket binds. `DeferredMixer`
-// implements the same `Mixer` trait but runs the factory closure on the first
-// real mixer call instead, so the socket is bound and serving before any
-// audio-device or network I/O happens. Initialization is retried on every
-// call until it succeeds; once it succeeds the inner mixer is cached.
+// `DeferredMixer` implements the same `Mixer` trait as `init_mixer` but runs the
+// factory closure on the first real mixer call, so the IPC socket is bound and
+// serving before any audio-device or network I/O happens. Opening the
+// PulseAudio connection, enumerating devices and, on Termux, spawning the
+// PulseAudio server all stay off the startup path. Initialization is retried on
+// every call until it succeeds; once it succeeds the inner mixer is cached.
 //
 // This is free software released under the GPL-3.0 license.
 

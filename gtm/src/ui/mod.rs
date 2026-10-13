@@ -67,6 +67,10 @@ pub mod pickers;
 pub mod text;
 pub mod widgets;
 
+// The oversized-type surfaces. Not glob-exported: `idle` and `onboard` are
+// ordinary function names, and a glob would put both in every `use crate::ui::*`.
+pub mod bigtext;
+
 // One glob per helper module: every leaf then needs a single
 // `use crate::ui::*;` instead of importing each shared item itself.
 pub(crate) use chrome::*;

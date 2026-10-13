@@ -77,6 +77,13 @@ pub(crate) fn build_keybindings(
 impl App {
     pub(crate) async fn handle_key(&mut self, key: event::KeyEvent) -> bool {
         let tx = self.cmd_tx();
+        // The onboarding view is a splash, not a mode: the first keypress ends
+        // it and falls through, so the key that dismissed it also does what the
+        // user meant.
+        if self.onboard {
+            self.onboard = false;
+            self.mark_all_dirty();
+        }
         // Ctrl+Z: suspend to background (pass-through SIGTSTP)
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('z') {
             self.pending_suspend = true;

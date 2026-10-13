@@ -150,12 +150,12 @@ impl Cmd {
 
     /// Scrobble the track being left, without blocking playback on Last.fm.
     ///
-    /// A scrobble is a Last.fm HTTP request with a ten-second timeout on it, and
-    /// every path that leaves a track used to await that inline *before* starting
-    /// the next one. A slow or unreachable Last.fm therefore put up to ten
-    /// seconds between pressing Enter and hearing anything -- on the track-change
-    /// paths, the stream paths and the crossfade alike. The delay was worst
-    /// exactly where it was least welcome: starting a stream is the case where
+    /// A scrobble is a Last.fm HTTP request with a ten-second timeout on it, so it
+    /// is dispatched off the track-change path rather than awaited inline
+    /// before the next track starts. Awaiting it would put up to ten seconds
+    /// between pressing Enter and hearing anything — on the track-change paths,
+    /// the stream paths and the crossfade alike. The delay would be worst
+    /// exactly where it is least welcome: starting a stream is the case where
     /// the user is already waiting on a network round-trip.
     ///
     /// Split so that nothing waits. The listened-time read stays inline, because
@@ -1704,9 +1704,8 @@ pub(crate) struct DaemonInner {
     ///
     /// The handle owns the only sender of the cancellation channel, and a
     /// dropped sender closes the receiver the server selects on -- so parking it
-    /// here is what keeps the service up. It used to be a field on `Daemon`,
-    /// which meant the bind that produced it had to finish before the accept
-    /// loop could start.
+    /// here is what keeps the service up, and it must be parked before the bind
+    /// so the accept loop cannot start against a channel that is about to close.
     #[cfg(feature = "mpris")]
     pub(crate) mpris: tokio::sync::Mutex<Option<MprisHandle>>,
     pub(crate) event_tx: broadcast::Sender<DaemonEvent>,
@@ -2291,9 +2290,9 @@ impl Daemon {
 
         // The only chart provider left is the free, no-auth iTunes feed, so it
         // is always registered and Top Charts works before any account is
-        // linked. The Spotify provider used to be added here (and again from
-        // the OAuth-link path) but it read editorial playlist tracklists, which
-        // Spotify removed for developer-mode integrations in 2026.
+        // linked. Spotify is deliberately absent: it read editorial playlist
+        // tracklists, which Spotify removed for developer-mode integrations in
+        // 2026.
         {
             let mut charts = inner.charts.lock().await;
             charts.add_free_defaults();
@@ -3873,10 +3872,10 @@ impl Daemon {
                 }
             }
             // Cycle to the next station only when this call did not just park
-            // the current one. `Next` on a queued station used to pop that
-            // station into the ring and then immediately pop it straight back
-            // out, so the real queue, the default list and the fallback were
-            // never reached — the same station replayed until a second press.
+            // the current one. Parking pushes the station into the ring, so
+            // cycling from a parked station would pop that same station
+            // straight back out; the real queue, the default list and the
+            // fallback are only reached on a second press.
             if !parked_radio
                 && state
                     .current_track

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gtm installer — see https://github.com/prjctimg/gtm
+# gtm installer — see https://gtmd.dev
 #
 # Usage:
 #   curl -fsSL https://gtmd.dev/install.sh | bash

@@ -1592,10 +1592,11 @@ fn parse_view_count(s: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
-    /// The produced file used to be found by taking the newest audio file in
+    /// The produced file is named from the template rather than found by taking the
+    /// newest audio file in
     /// the download directory. With a `%(title)s` template and nothing clearing
     /// the directory between runs, a leftover from a different video can be
-    /// newer, and the daemon queues the wrong track under the right title.
+    /// newer, and the daemon would queue the wrong track under the right title.
     #[test]
     fn destination_line_names_the_produced_file() {
         assert_eq!(

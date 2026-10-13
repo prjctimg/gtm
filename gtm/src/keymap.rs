@@ -143,7 +143,8 @@ fn key_matches(event: &KeyEvent, binding: &KeyEvent) -> bool {
     // Chord modifiers (Ctrl/Alt/Cmd) must match exactly when a binding
     // specifies them, and a binding recorded without chords never fires for
     // a chord-carrying press: some terminals drop CONTROL on punctuation,
-    // which used to let plain playback bindings (e.g. `,` seek) swallow
+    // and without the chord test a plain playback binding (e.g. `,` seek)
+    // would swallow
     // shortcuts like Ctrl+, (Settings picker).
     let chords = KeyModifiers::CONTROL
         | KeyModifiers::ALT

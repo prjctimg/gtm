@@ -1281,8 +1281,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A Web API link with no playback credential is the state that used to
-    /// play nothing while reporting itself as fully linked.
+    /// A Web API link with no playback credential plays nothing while reporting
+    /// itself as fully linked, so it has to be distinguishable.
     ///
     /// One token can only be minted by one app, so a Web API token from the
     /// user's own app is refused by a session registering as librespot's while
