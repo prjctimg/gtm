@@ -159,6 +159,17 @@ impl App {
     }
 }
 
+/// What a peek displaced, held until the picker closes.
+///
+/// The transport has no single verb for "load this and leave it paused", so
+/// restoring a pause takes two; remembering that it *was* a pause is what makes
+/// the difference between browsing and accidentally listening.
+pub(crate) struct PeekRestore {
+    pub(crate) path: String,
+    pub(crate) pos: f64,
+    pub(crate) paused: bool,
+}
+
 /// Peeking into a station: sounding it without leaving the row it was found on.
 ///
 /// A peek differs from the library list's hover preview in two ways. It may
@@ -169,8 +180,14 @@ impl App {
 impl App {
     /// Whether the transport is free for a peek to borrow.
     ///
-    /// Playing audio over an audible track would cut it off, so only silence and
-    /// a pause qualify. A pause is remembered so the peek can give it back.
+    /// Playing audio over an audible track would cut it off, so only silence
+    /// and a pause qualify. A pause is remembered so the peek can give it back.
+    ///
+    /// A player that is already sounding *is* free when the sound is a previous
+    /// peek's: moving the cursor to another station is the point of peeking, and
+    /// the station it replaces is one the user only ever asked to hear. Without
+    /// this the first peek made the transport unpeekable, so the cursor could
+    /// change but the music never could.
     fn peekable(&mut self) -> bool {
         match self.state.status {
             PlaybackStatus::Stopped => true,
@@ -178,10 +195,14 @@ impl App {
                 let Some(track) = self.state.current_track.as_ref() else {
                     return false;
                 };
-                self.peek_restore = Some((track.path.clone(), self.state.time_pos));
+                self.peek_restore = Some(PeekRestore {
+                    path: track.path.clone(),
+                    pos: self.state.time_pos,
+                    paused: true,
+                });
                 true
             }
-            PlaybackStatus::Playing => false,
+            PlaybackStatus::Playing => self.peek_station.is_some(),
         }
     }
 
@@ -200,17 +221,25 @@ impl App {
 
     /// Put the transport back the way a peek found it.
     ///
-    /// A peek that displaced a paused track resumes it at the position it held;
-    /// a peek that started from silence just stops. Idempotent, so closing the
-    /// picker twice is harmless.
+    /// A peek that displaced a *paused* track brings it back where it stopped
+    /// and leaves it paused: the user paused it, and a peek that resumed it on
+    /// the way out would have turned browsing into listening. A peek that
+    /// started from silence just stops. Idempotent, so closing the picker twice
+    /// is harmless.
     pub(crate) fn peek_end(&mut self) {
         if self.peek_station.take().is_none() {
             return;
         }
         let c = self.client.clone();
         match self.peek_restore.take() {
-            Some((path, pos)) => tokio::spawn(async move {
-                let _ = c.play(&path, pos).await;
+            Some(r) => tokio::spawn(async move {
+                let _ = c.play(&r.path, r.pos).await;
+                // The daemon has no "load without playing", so the pause is
+                // reapplied right after. It only takes effect if the play
+                // landed, which is why it is not fired unconditionally.
+                if r.paused {
+                    let _ = c.pause().await;
+                }
             }),
             None => tokio::spawn(async move {
                 let _ = c.stop().await;

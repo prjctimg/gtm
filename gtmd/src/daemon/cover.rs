@@ -41,25 +41,27 @@ impl Cover {
         track_id: i64,
         path: Option<String>,
     ) -> Result<DaemonRes, CoreError> {
-        let res = Self::resolve(inner, track_id, path).await;
+        let res = Self::resolve(inner, track_id, path.clone()).await;
         if let Ok(DaemonRes::CoverArt {
             data: Some(ref b64),
         }) = res
             && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64)
         {
-            Self::push_palette(inner, track_id, bytes);
+            Self::push_palette(inner, track_id, path.as_deref(), bytes);
         }
         res
     }
 
     /// Extract and broadcast the palette for the current track, given its art.
     ///
-    /// Guarded on the current track because this runs for whatever row the
-    /// client asked about — a scroll through the library is a dozen requests
-    /// and only one of them is the song playing.
-    fn push_palette(inner: &DaemonInner, track_id: i64, bytes: Vec<u8>) {
+    /// Guarded on the request naming the track on air, because this runs for
+    /// whatever row the client asked about — a scroll through the library is a
+    /// dozen requests, and only one of them is the song playing. The other
+    /// eleven would each repaint the whole theme.
+    fn push_palette(inner: &DaemonInner, track_id: i64, path: Option<&str>, bytes: Vec<u8>) {
         let state = inner.state.clone();
         let events = inner.event_tx.clone();
+        let path = path.map(str::to_string);
         tokio::task::spawn_blocking(move || {
             let pal = gtm::shared::reactive::extract_palette(&bytes);
             let (a, b, c) = pal.map_or_else(
@@ -74,12 +76,9 @@ impl Cover {
             // repaint the UI in the wrong album's colors.
             tokio::runtime::Handle::current().block_on(async {
                 let current = state.read().await;
-                let on_air = current
-                    .current_track
-                    .as_ref()
-                    .is_some_and(|t| t.id == track_id);
+                let is_on_air = on_air(&current, track_id, path.as_deref());
                 drop(current);
-                if on_air {
+                if is_on_air {
                     let _ = events.send(DaemonEvent::ReactivePalette {
                         primary: a,
                         secondary: b,

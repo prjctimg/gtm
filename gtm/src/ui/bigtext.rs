@@ -1,16 +1,14 @@
 // Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
-// Oversized type: the idle logo and the first-run onboarding view
+// Oversized type: the first-run onboarding view
 //
 // This is free software released under the GPL-3.0 license.
 
-//! The `gtm` wordmark, and the one view that is about the program rather than
-//! the music.
+//! The one view that is about the program rather than the music.
 //!
-//! Both surfaces here are one idea at two scales: a name drawn in glyphs large
-//! enough to be the subject of the screen. The idle logo is the app waiting;
-//! the onboarding view is the app introducing itself. Neither is a status
-//! message, so neither is typeset like one.
+//! The name is drawn in glyphs large enough to be the subject of the screen,
+//! with the full title set beside it in ordinary type so the wordmark is never
+//! asked to carry the meaning on its own.
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -19,6 +17,16 @@ use ratatui::widgets::{Paragraph, Widget};
 use tui_big_text::{BigText, PixelSize};
 
 use crate::theme::{AppTheme, blend_colors};
+
+/// The program's name, drawn oversized.
+const WORDMARK: &str = "gtm";
+
+/// What the program is, set beside the name. Read rather than recognised, which
+/// is why it is body text and not more glyphs.
+const TITLE: &str = "terminal audio player";
+
+/// Where the name points.
+const SITE: &str = "gtmd.dev";
 
 /// Cells one glyph occupies at `size`, as (width, height).
 ///
@@ -38,7 +46,14 @@ fn glyph_box(size: PixelSize) -> (u16, u16) {
     }
 }
 
-/// The largest size whose three-glyph wordmark fits `area`.
+/// How wide `WORDMARK` is at `size`, in cells.
+fn mark_width(size: PixelSize) -> u16 {
+    glyph_box(size)
+        .0
+        .saturating_mul(WORDMARK.chars().count() as u16)
+}
+
+/// The largest size at which the wordmark still fits `area`.
 ///
 /// Clipped, a wordmark stops being a wordmark, so the sizes are walked in order
 /// and the smallest is used when nothing fits — a 20-column terminal still gets
@@ -53,8 +68,8 @@ fn fit(area: Rect) -> PixelSize {
         PixelSize::QuarterHeight,
         PixelSize::Octant,
     ] {
-        let (gw, gh) = glyph_box(size);
-        if u32::from(gw) * 3 <= u32::from(area.width) && gh <= area.height {
+        let (_, gh) = glyph_box(size);
+        if u32::from(mark_width(size)) <= u32::from(area.width) && gh <= area.height {
             return size;
         }
     }
@@ -71,11 +86,12 @@ fn wordmark(app: &AppTheme, phase: f64) -> Vec<Line<'static>> {
     // The theme's own accents, cycled: a theme that ships one accent still gets
     // a gradient because the ramp repeats.
     let ramp = [app.accent, app.secondary_accent, app.tertiary_accent];
-    "gtm"
+    let n = ramp.len() as f64;
+    WORDMARK
         .chars()
         .enumerate()
         .map(|(i, c)| {
-            let t = (i as f64 / 3.0 + phase).rem_euclid(1.0);
+            let t = (i as f64 / n + phase).rem_euclid(1.0);
             let color = blend_colors(ramp[i % 3], ramp[(i + 1) % 3], t);
             Line::from(Span::styled(c.to_string(), Style::default().fg(color)))
         })
@@ -84,11 +100,12 @@ fn wordmark(app: &AppTheme, phase: f64) -> Vec<Line<'static>> {
 
 /// The wordmark centred in `area`.
 fn logo(f: &mut ratatui::Frame, area: Rect, app: &AppTheme, phase: f64, size: PixelSize) {
-    let (gw, gh) = glyph_box(size);
+    let (_, gh) = glyph_box(size);
+    let w = mark_width(size);
     let slot = Rect {
-        x: area.x + area.width.saturating_sub(gw.saturating_mul(3)) / 2,
+        x: area.x + area.width.saturating_sub(w) / 2,
         y: area.y + area.height.saturating_sub(gh) / 2,
-        width: gw.saturating_mul(3).min(area.width),
+        width: w.min(area.width),
         height: gh.min(area.height),
     };
     f.render_widget(
@@ -111,32 +128,13 @@ fn caption(f: &mut ratatui::Frame, area: Rect, text: &str, style: Style) {
     );
 }
 
-/// The idle screen: the wordmark, and the site it came from underneath.
-///
-/// Drawn when nothing is playing and no track is on air, so the pane is the
-/// program's name rather than a track list that looks broken.
-pub(crate) fn idle(f: &mut ratatui::Frame, area: Rect, app: &AppTheme, phase: f64) {
-    if area.width < 8 || area.height < 4 {
-        return;
-    }
-    let (_, gh) = glyph_box(fit(area));
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(gh.saturating_add(1)),
-            Constraint::Length(gh),
-            Constraint::Length(1),
-        ])
-        .split(area);
-    logo(f, rows[1], app, phase, fit(area));
-    caption(f, rows[2], "gtmd.dev", Style::default().fg(app.fg_dim));
-}
-
 /// The first-run onboarding view.
 ///
-/// Three things in order of size: the wordmark, the site, and the providers the
-/// program can talk to. The provider line is the only part that has to be read
-/// rather than recognised, so it keeps body text styling.
+/// Laid out around one rule: the name is the biggest thing on the screen and
+/// everything else is support, so the wordmark takes the largest size that
+/// leaves room for the text beneath it and the slack is split above and below
+/// rather than pooled at the top. A view pinned to the top edge with an empty
+/// lower two thirds reads as a rendering fault, not as a welcome.
 pub(crate) fn onboard(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -144,32 +142,45 @@ pub(crate) fn onboard(
     icon_style: &str,
     phase: f64,
 ) {
-    if area.width < 24 || area.height < 10 {
-        return;
-    }
-    // Half-height rather than the largest that fits: onboarding has to leave
-    // room for the two captions and the provider line, and a wordmark that eats
-    // the pane makes them the smaller thing instead.
-    let size = PixelSize::HalfHeight;
-    let (_, gh) = glyph_box(size);
+    // One blank row of breathing room either side of the text block, and the
+    // rows the block itself needs. The wordmark is fitted into what is left.
+    let text_rows = 5u16;
+    let gutter = 1u16;
+    let (_, gh) = glyph_box(PixelSize::Full);
+    let room_h = area.height.saturating_sub(text_rows + gutter * 2);
+    let room_w = area.width;
+    let size = if room_h >= gh && u32::from(mark_width(PixelSize::Full)) <= u32::from(room_w) {
+        PixelSize::Full
+    } else {
+        fit(area)
+    };
+    let (_, mark_h) = glyph_box(size);
+
+    // Slack is divided evenly: half opens the composition, half closes it.
+    let slack = area.height.saturating_sub(mark_h + text_rows + gutter * 2) / 2;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),
-            Constraint::Length(gh),
+            Constraint::Length(slack),
+            Constraint::Length(gutter),
+            Constraint::Length(mark_h),
+            Constraint::Length(gutter),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(area);
-    logo(f, rows[1], app, phase, size);
-    caption(f, rows[2], "gtmd.dev", Style::default().fg(app.accent));
+
+    logo(f, rows[2], app, phase, size);
+    caption(f, rows[4], TITLE, Style::default().fg(app.fg));
+    caption(f, rows[5], SITE, Style::default().fg(app.accent));
     caption(
         f,
-        rows[3],
+        rows[6],
         "Supported providers",
-        Style::default().fg(app.fg).add_modifier(Modifier::BOLD),
+        Style::default().fg(app.fg_dim).add_modifier(Modifier::BOLD),
     );
     let providers: Vec<String> = crate::ui::providers(icon_style)
         .iter()
@@ -177,13 +188,13 @@ pub(crate) fn onboard(
         .collect();
     caption(
         f,
-        rows[4],
+        rows[7],
         &providers.join("   "),
         Style::default().fg(app.fg_dim),
     );
     caption(
         f,
-        rows[5],
+        rows[8],
         "press any key to continue",
         Style::default().fg(app.fg_dim).add_modifier(Modifier::DIM),
     );

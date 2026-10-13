@@ -410,10 +410,11 @@ pub struct App {
     /// The row a peek is sounding from, and the track it displaced.
     ///
     /// A peek borrows the transport, so closing the picker owes the transport
-    /// back: what was playing and where it was paused are both needed to put
-    /// the player back exactly as it was. Empty when no peek is outstanding.
+    /// back: what was playing, where it stopped, and whether it was paused.
+    /// The last of those is what keeps a peek from resuming a track the user
+    /// deliberately paused. Empty when no peek is outstanding.
     pub(crate) peek_station: Option<String>,
-    pub(crate) peek_restore: Option<(String, f64)>,
+    pub(crate) peek_restore: Option<PeekRestore>,
     /// The onboarding view: true on the launch that found no config file, and
     /// cleared by the first keypress.
     pub onboard: bool,
@@ -2246,6 +2247,7 @@ pub mod search;
 pub mod settings_keys;
 pub mod state;
 pub mod theme;
+pub(crate) use preview::PeekRestore;
 
 // Per-provider actions live under `providers`; re-exported here so the glob
 // import every sibling module relies on keeps resolving them.

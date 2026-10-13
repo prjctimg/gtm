@@ -122,11 +122,27 @@ fn pad(c: [u8; 3]) -> [f32; 4] {
 /// Two targets that swap roles each frame, so one can be sampled while the
 /// other is written. Sampling and writing the same texture in one pass is
 /// undefined, and for a feedback effect the two frames are the point.
+///
+/// Holds one bind group per target rather than a single one that is rebuilt:
+/// a bind group names the view it was made from, so alternating between two of
+/// them is what makes the swap free. Rebuilding each frame would allocate a
+/// bind group sixty times a second for no reason.
 struct Targets {
     a: (wgpu::Texture, wgpu::TextureView),
     b: (wgpu::Texture, wgpu::TextureView),
+    /// Bind group that samples `a`, and one that samples `b`.
+    binds: [wgpu::BindGroup; 2],
     /// Index of the target written this frame.
     dst: usize,
+}
+
+impl Targets {
+    /// The view written this frame, and the bind group that samples the other.
+    fn pass(&self) -> (&wgpu::Texture, &wgpu::TextureView, &wgpu::BindGroup) {
+        let src = 1 - self.dst;
+        let (tex, view) = if self.dst == 0 { &self.a } else { &self.b };
+        (tex, view, &self.binds[src])
+    }
 }
 
 /// The GPU side, living entirely on the render thread.
@@ -136,7 +152,7 @@ struct Worker {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
-    targets: Option<(Targets, wgpu::BindGroup)>,
+    targets: Option<Targets>,
     done: SyncSender<RgbaImage>,
     clock: f32,
 }
@@ -164,21 +180,19 @@ impl Worker {
         };
         self.clock += job.dt;
         self.resize(w, h);
-        let Some((targets, bind)) = &self.targets else {
+        let Some(targets) = &self.targets else {
             return true;
         };
         self.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniform));
 
-        let dst = targets.dst;
-        let src = 1 - dst;
+        let (tex, view, bind) = targets.pass();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("flame"),
             });
         {
-            let view = if dst == 0 { &targets.a.1 } else { &targets.b.1 };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("flame"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -196,11 +210,12 @@ impl Worker {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
+            // Samples the *other* target, so the pass reads last frame's
+            // history and writes this frame's without ever touching both.
             pass.set_bind_group(0, bind, &[]);
             pass.draw(0..3, 0..1);
             // The pass ends on drop; wgpu 30 has no explicit `end`.
         }
-        let _ = src;
 
         // Row alignment is 256 bytes for a copy out of a texture, so the
         // readback is padded even though the image is not.
@@ -213,7 +228,6 @@ impl Worker {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let tex = if dst == 0 { &targets.a.0 } else { &targets.b.0 };
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: tex,
@@ -272,8 +286,10 @@ impl Worker {
             }
         }
         buffer.unmap();
-        if let Some((t, _)) = &mut self.targets {
-            t.dst = 1 - dst;
+        if let Some(t) = &mut self.targets {
+            // Next frame writes what this one sampled, so the two alternate and
+            // the effect always reads the frame before it.
+            t.dst = 1 - t.dst;
         }
         // A full mailbox means the TUI is not keeping up; dropping the frame is
         // the correct response and is not an error.
@@ -287,7 +303,7 @@ impl Worker {
         let current = self
             .targets
             .as_ref()
-            .and_then(|(t, _)| t.a.0.size().width.eq(&w).then(|| t.a.0.size().height))
+            .and_then(|t| t.a.0.size().width.eq(&w).then(|| t.a.0.size().height))
             .is_some_and(|hh| hh == h);
         if current {
             return;
@@ -314,12 +330,20 @@ impl Worker {
         };
         let (a0, av0) = mk("flame-a");
         let (b0, bv0) = mk("flame-b");
-        let targets = Targets {
+        // Two bind groups, one per source view. A bind group names the view it
+        // was made from, so this is what lets the pass alternate between them
+        // instead of rebuilding one per frame.
+        let binds = [self.bind_group(&av0), self.bind_group(&bv0)];
+        self.targets = Some(Targets {
             a: (a0, av0),
             b: (b0, bv0),
+            binds,
             dst: 0,
-        };
-        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        });
+    }
+
+    fn bind_group(&self, view: &wgpu::TextureView) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("flame"),
             layout: &self.layout,
             entries: &[
@@ -329,11 +353,10 @@ impl Worker {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&targets.a.1),
+                    resource: wgpu::BindingResource::TextureView(view),
                 },
             ],
-        });
-        self.targets = Some((targets, bind));
+        })
     }
 }
 

@@ -684,10 +684,24 @@ impl Cmd {
             None => {
                 let (title, artist, album) = match &kind {
                     RemoteKind::Podcast { .. } => ("Podcast Episode", "Podcast", "Podcast"),
+                    // A station with no name in its path is a station opened
+                    // from somewhere that had none to give; the id is the only
+                    // honest label left, and it beats a blank now-playing line.
                     RemoteKind::Radio {
-                        station_name: name, ..
-                    } => (name.as_str(), "Radio", "Radio"),
-                    RemoteKind::Stream { .. } => ("Stream", "Internet Radio", "Stream"),
+                        station_id,
+                        station_name,
+                    } => {
+                        let name = match station_name.trim() {
+                            "" => station_id.as_str(),
+                            n => n,
+                        };
+                        (name, "Radio", "Radio")
+                    }
+                    // A bare stream URL names nothing, so the host is used: it
+                    // is what the listener would call the station anyway, and
+                    // it identifies the source the way the literal "Stream"
+                    // never did.
+                    RemoteKind::Stream { url } => (stream_label(url), "Internet Radio", "Stream"),
                     RemoteKind::YtDlp { url } => {
                         let label = ytdlp_label(url).unwrap_or("YouTube");
                         (label, label, label)
@@ -3674,10 +3688,7 @@ impl Daemon {
             let current = tokio::runtime::Handle::current();
             current.block_on(async {
                 let state = state.read().await;
-                let still_current = state
-                    .current_track
-                    .as_ref()
-                    .is_some_and(|t| t.id == id && t.path == path_key);
+                let still_current = on_air(&state, id, Some(&path_key));
                 drop(state);
                 if !still_current {
                     return;
@@ -3690,7 +3701,29 @@ impl Daemon {
             });
         });
     }
+}
 
+/// Whether a cover request was for the track on air, and so may hand its bytes
+/// to the palette extractor.
+///
+/// The path decides, because it is the one field the client always supplies and
+/// the one that identifies a track rather than a row. The id is only consulted
+/// when there is no path to compare, and then only when it is a real library
+/// id: `0` is the sentinel the resolver assigns to anything it could not look
+/// up, so a dozen unrelated rows share it. Matching on that alone let a scroll
+/// through the library repaint the entire theme from whichever row the cursor
+/// happened to rest on.
+pub(crate) fn on_air(state: &DaemonState, id: i64, path: Option<&str>) -> bool {
+    let Some(t) = state.current_track.as_ref() else {
+        return false;
+    };
+    match path.filter(|p| !p.is_empty()) {
+        Some(p) => t.path == p,
+        None => id != 0 && t.id == id,
+    }
+}
+
+impl Daemon {
     pub(crate) fn save_state(inner: &DaemonInner) {
         if inner.config.test_mode {
             return;

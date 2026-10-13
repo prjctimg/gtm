@@ -237,13 +237,6 @@ impl Render {
             Render::loader(f, area, app, "Loading library\u{2026}");
             return;
         }
-        // Nothing on air: the pane is the program's name rather than a track
-        // list with nothing to say.
-        if app.state.current_track.is_none() {
-            fill_pane(f, area, app);
-            crate::ui::bigtext::idle(f, area, &app.theme, app.logo_phase());
-            return;
-        }
         Render::library(f, area, app);
     }
 

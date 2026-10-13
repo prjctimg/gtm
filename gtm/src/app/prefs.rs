@@ -221,7 +221,12 @@ pub(crate) fn default_time_format() -> String {
 }
 
 pub(crate) fn default_theme_mode() -> String {
-    "auto".into()
+    // Dark, not auto: a music player is a dark-room app and the reactive wash
+    // is tuned against a dark base. Leaving it on auto meant a light-mode
+    // desktop got the album colours washed into a light chrome, where the
+    // contrast adjustments in `derive_theme` pull the wrong way. A user who
+    // wants light sets `light` explicitly.
+    "dark".into()
 }
 
 /// Resolve which theme to start with. Honors the user's persisted
@@ -287,7 +292,11 @@ impl Default for Prefs {
             theme_name: default_theme_name(),
             transparent_bg: false,
             transparent_pickers: false,
-            reactive_theme: false,
+            // On by default: the palette is the one thing the daemon computes
+            // for every track, and a feature nobody sees is a feature nobody
+            // turns on. The intensity is what bounds it, so this is safe to
+            // ship enabled.
+            reactive_theme: true,
             reactive_theme_intensity: default_reactive_intensity(),
             footer_preset_name: default_preset_name(),
             progress_style: ProgressStyle::default(),

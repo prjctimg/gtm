@@ -64,12 +64,17 @@ impl Radio {
     pub async fn play(
         inner: &DaemonInner,
         station_id: &str,
-        _station_name: &str,
+        station_name: &str,
     ) -> Result<DaemonRes, CoreError> {
         // Don't push radio into the queue - live streams don't belong there.
-        // play_remote() builds the TrackInfo from the Radio kind's station_id,
-        // so the playlist-name fallback is no longer needed.
-        let path = format!("radio://{station_id}");
+        // The name rides in the path because `parse_remote_path` reads it back
+        // out to label the track: a station published as `radio://<id>` alone
+        // has no name to resolve, and the now-playing line came up empty
+        // whenever the stream published no ICY title to stand in for it.
+        let path = match station_name.trim() {
+            "" => format!("radio://{station_id}"),
+            name => format!("radio://{station_id}/{name}"),
+        };
         Cmd::play(inner, &path, 0.0, false).await
     }
 }

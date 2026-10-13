@@ -53,6 +53,20 @@ pub(crate) fn parse_remote_path(path: &str) -> Option<RemoteKind> {
     None
 }
 
+/// The host of a bare stream URL, as a display name.
+///
+/// Strips the scheme, any credentials, the port and a leading `www.`, which
+/// leaves the part a listener would actually recognise. Falls back to the whole
+/// URL when there is no parseable host, so the label is never empty.
+pub(crate) fn stream_label(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let rest = rest.split_once('@').map_or(rest, |(_, r)| r);
+    let rest = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host = rest.split_once(':').map_or(rest, |(h, _)| h);
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    if host.is_empty() { url } else { host }
+}
+
 /// Result of resolving a provider remote path into a playable transport.
 pub(crate) struct RemoteResolved {
     pub(crate) url: String,
