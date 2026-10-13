@@ -1255,6 +1255,12 @@ impl Render {
         } else {
             left_inner.height.saturating_sub(list_top)
         };
+        // The card takes every row the list did not claim. Capping it at
+        // `info_block_h` instead left a strip of blank rows along the bottom of
+        // the pane on anything taller than a small terminal, which read as the
+        // card being cut off rather than as breathing room. The card scales its
+        // artwork to the box it is handed, so the extra rows become a larger
+        // cover rather than dead space.
         let track_info_h: u16 = if has_card {
             let left = left_inner
                 .height
@@ -1262,7 +1268,7 @@ impl Render {
                 .saturating_sub(list_top)
                 .saturating_sub(card_gap)
                 .saturating_sub(1);
-            info_block_h().min(left)
+            left
         } else {
             0
         };
@@ -2212,7 +2218,7 @@ impl Render {
             Render::spot_card(f, left_info_area, app);
         } else if app.show_preview
             && app.track_popup_visible
-            && left_info_area.height >= info_block_h()
+            && left_info_area.height >= info_block_min_h()
             && (info_sep_area.height > 0 || left_info_area.height > 0)
             && !lyrics_in_lib
         {
@@ -2985,12 +2991,15 @@ impl Render {
 
         if can_cover {
             // Adaptive cover: use as much of the card height for cover as
-            // fits while keeping the field block whole below it.
+            // fits while keeping the field block whole below it. `COVER_H` is
+            // the size the card is *designed* at rather than a ceiling — on a
+            // pane tall enough to hold more, the artwork grows into it so the
+            // block fills its box instead of trailing blank rows.
             let card_h = area.height;
             let text_need = INFO_FIELDS_H;
             let cover_h_avail = card_h.saturating_sub(text_need).saturating_sub(2);
-            let cover_h_eff = COVER_H
-                .min(cover_h_avail.max(4))
+            let cover_h_eff = cover_h_avail
+                .max(COVER_H)
                 .min(area.height.saturating_sub(text_need + 2));
             let cover_w_eff = (cover_h_eff * 2).min(area.width.saturating_sub(2));
             let split = Layout::default()
@@ -3016,7 +3025,11 @@ impl Render {
                     app.popup_cover_stateful.as_mut(),
                     app.track_popup_cover.as_deref(),
                     app.theme.fg_dim,
-                    None,
+                    // A row whose art is still resolving, or genuinely has none,
+                    // would otherwise leave an empty rectangle where the card's
+                    // artwork should be — indistinguishable from a rendering
+                    // fault. The now-playing pane already marks this case.
+                    Some(" \u{266b} "),
                 );
             }
 

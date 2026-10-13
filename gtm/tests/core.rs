@@ -4395,12 +4395,60 @@ fn the_left_pane_keeps_both_the_list_and_the_card() {
         .expect("the card's row budget moved");
     let card = &chrome[at..(at + 600).min(chrome.len())];
     assert!(
-        card.contains("info_block_h().min(left)"),
+        card.contains("saturating_sub(card_gap)") && card.contains("left"),
         "the card is no longer sized from what the list left over"
     );
     assert!(
         !card.contains("need.min(avail_h.max(6))"),
         "the card is back to a floor of six rows, which is what squeezed the list"
+    );
+    // It takes all of them. Capping the card at its designed height left a strip
+    // of blank rows along the bottom of any pane taller than a small terminal,
+    // which read as the card being cut off rather than as breathing room.
+    assert!(
+        !card.contains("info_block_h()"),
+        "the card is capped at its designed height again, leaving blank rows below it"
+    );
+}
+
+/// The info card must draw on a pane too short for its full height.
+///
+/// The cover shrinks with the box, so the card can render in less than the
+/// height it is designed at. Gating on the designed height instead meant the
+/// card silently vanished below roughly thirty rows of pane, which is most
+/// terminals — the user saw a left pane with a category list and nothing under
+/// it, with nothing on screen to say the art was missing rather than unrendered.
+#[test]
+fn the_info_card_survives_a_short_pane() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let text = include_str!("../src/ui/text.rs");
+
+    assert!(
+        text.contains("pub(crate) const INFO_CARD_MIN_H"),
+        "the card has no floor height distinct from its designed height"
+    );
+    assert!(
+        text.contains("pub(crate) fn info_block_min_h()"),
+        "nothing distinguishes the floor from the designed height"
+    );
+    let at = chrome
+        .find("&& left_info_area.height >=")
+        .expect("the info card's height gate moved");
+    let gate = &chrome[at..(at + 60).min(chrome.len())];
+    assert!(
+        gate.contains("info_block_min_h()"),
+        "the card is gated on its designed height, so it vanishes on a short pane"
+    );
+    assert!(
+        !gate.contains("info_block_h()"),
+        "the card is gated on its designed height again"
+    );
+
+    // And a row with no art yet shows the placeholder rather than an empty
+    // rectangle, which is indistinguishable from a rendering fault.
+    assert!(
+        chrome.contains(r#"Some(" \u{266b} ")"#),
+        "a missing cover leaves the card's artwork area blank"
     );
 }
 

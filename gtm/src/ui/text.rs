@@ -58,9 +58,18 @@ pub(crate) fn left_list_top(cover_band: u16) -> u16 {
     cover_band.saturating_sub(1).max(4)
 }
 
-pub(crate) const INFO_CARD_H: u16 = 16;
-
+/// Rows the track-info card's field block needs, when there is no artwork to
+/// show above it.
 pub(crate) const INFO_TEXT_H: u16 = 6;
+
+/// The smallest box the info card can be drawn legibly into.
+///
+/// Lower than [`INFO_CARD_H`]: with artwork this is cover plus fields, and the
+/// cover shrinks with the box, so a card that would not fit at full size still
+/// renders a smaller cover instead of nothing at all. Gating on the full height
+/// meant the card silently vanished on any pane under roughly thirty rows, which
+/// is most of them.
+pub(crate) const INFO_CARD_MIN_H: u16 = 8;
 
 /// Rows the track-info card's field block needs: title, artist, album, meta.
 ///
@@ -69,11 +78,12 @@ pub(crate) const INFO_TEXT_H: u16 = 6;
 /// floating card can size its box from the same count.
 pub(crate) const INFO_FIELDS_H: u16 = 4;
 
-pub(crate) fn info_block_h() -> u16 {
+/// The height below which the info card is not worth drawing at all.
+pub(crate) fn info_block_min_h() -> u16 {
     if no_image_protocol() {
         INFO_TEXT_H
     } else {
-        INFO_CARD_H
+        INFO_CARD_MIN_H
     }
 }
 
