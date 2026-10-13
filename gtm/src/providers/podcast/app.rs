@@ -29,18 +29,17 @@ impl App {
     /// want. The daemon caches by query, so repeating a search is free.
     pub fn search_podcasts(&mut self, term: String) {
         let term = term.trim().to_string();
-        // An empty term is allowed and means "what is popular". The daemon's
-        // directory call answers it, and refusing it here is what left the
-        // picker with nothing to show until the user had typed something.
-        if term.is_empty() && !self.podcast.results.is_empty() {
-            // Already holding the popular list: clearing and re-fetching on
-            // every debounce tick would empty the pane the user is reading.
+        let directory = term.is_empty();
+        // Already holding the popular list: clearing and re-fetching on every
+        // debounce tick would empty the pane the user is reading.
+        if directory && self.podcast.directory && !self.podcast.results.is_empty() {
             return;
         }
         // A new term invalidates the old rows immediately: leaving yesterday's
         // results on screen under the new query is the one thing that would read
         // as a search that found them.
         self.podcast.results.clear();
+        self.podcast.directory = directory;
         self.podcast.searching = true;
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
@@ -93,15 +92,31 @@ impl App {
     /// old query produced — a result list left under an edited query is the one
     /// state that reads as "the search found these".
     pub fn arm_podcast_search(&mut self) {
-        // Not cleared unconditionally any more. An emptied query is the popular
-        // list, so wiping the rows on every keystroke of the way back to empty
-        // emptied the pane instead of returning it to the default view. The rows
-        // go only when the new query is actually a search.
+        // The rows go only when the new query is actually a search. An emptied
+        // query is the directory's own landing page, and `search_podcasts`
+        // already leaves an already-shown landing page alone — so wiping here
+        // would empty the pane on every keystroke of the way back to blank
+        // instead of letting it settle back to the directory.
         if !self.picker_query_is_empty_podcast() {
             self.podcast.results.clear();
+            self.podcast.directory = false;
         }
         self.podcast.search_deadline =
             Some(std::time::Instant::now() + Duration::from_millis(SEARCH_DEBOUNCE_MS));
+    }
+
+    /// Open the picker on the directory rather than on the user's own
+    /// subscriptions.
+    ///
+    /// The category's first screen used to be whatever the user had already
+    /// subscribed to, so a fresh install opened a picker with nothing in it and
+    /// the only way out was knowing that `/` searches. The Radio category
+    /// reaches Radio Browser the same way, and the directory — what is popular
+    /// — is the answer to "what can I listen to" for someone who has not
+    /// subscribed to anything yet.
+    pub fn open_podcast_dir(&mut self) {
+        self.pickers.open(PickerId::PodcastFeeds);
+        self.arm_podcast_search();
     }
 
     /// Whether the podcast picker's query is blank.

@@ -355,10 +355,22 @@ impl YoutubeManager {
     /// `--js-runtime` when configured. yt-dlp refuses both `--cookies` forms at
     /// the same time, so at most one cookie flag is emitted.
     ///
-    /// When nothing is configured, the cookie store of an installed major
-    /// browser is auto-detected from its standard location and passed via
-    /// `--cookies-from-browser`, so YouTube playback/downloads work out of the
-    /// box instead of failing with HTTP 403.
+    /// A browser's cookies are *not* auto-detected. They used to be, because an
+    /// anonymous client was answered with HTTP 403; that is no longer true, and
+    /// sending a logged-in cookie is now the thing that breaks playback. YouTube
+    /// has enabled the SABR-only streaming experiment for many accounts, and a
+    /// logged-in request lands in it: every progressive format is withheld as
+    /// "missing a URL", no format selector can match, and `yt-dlp` fails with
+    /// `Requested format is not available` while listing *zero* audio formats.
+    /// The same URL resolves anonymously. An auto-detect therefore turned a
+    /// working anonymous path into a failing one for anyone with a logged-in
+    /// YouTube profile — which is most people — and it failed with an error
+    /// that names formats rather than cookies, so nothing pointed at the cause.
+    ///
+    /// Cookies remain available, and are still what an age-restricted or
+    /// private video needs; they are now something the user sets rather than
+    /// something the daemon assumes. `fallback_cookies` below still supplies
+    /// them automatically when a request is actually refused for want of them.
     fn ytdlp_auth_args(&self) -> Vec<std::ffi::OsString> {
         let mut args: Vec<std::ffi::OsString> = Vec::new();
         if let Some(source) = &self.cookie_source {
@@ -367,15 +379,18 @@ impl YoutubeManager {
         } else if let Some(path) = &self.cookie_file {
             args.push("--cookies".into());
             args.push(path.as_os_str().into());
-        } else if let Some(browser) = cookie_source() {
-            args.push("--cookies-from-browser".into());
-            args.push(browser.into());
         }
         if let Some(runtime) = &self.js_runtime {
             args.push("--js-runtime".into());
             args.push(runtime.as_str().into());
         }
         args
+    }
+
+    /// Whether the caller configured cookies itself, and so must not have them
+    /// swapped for an auto-detected browser's behind its back.
+    pub fn has_cookies(&self) -> bool {
+        self.cookie_source.is_some() || self.cookie_file.is_some()
     }
 
     /// Copy of [`Self::ytdlp_auth_args`] for callers that need the flags while
@@ -833,18 +848,25 @@ async fn resolve_ytdlp(
         .await
         .map_err(|e| format!("semaphore: {e}"))?;
 
+    // Owned rather than borrowed so the 403 fallback below can swap the cookie
+    // flags for an installed browser's without the caller re-entering.
+    let mut auth = auth.to_vec();
     let mut base_args: Vec<std::ffi::OsString> = vec![
         "--no-playlist".into(),
         "-f".into(),
         "bestaudio[ext=m4a]/bestaudio".into(),
     ];
     base_args.extend(extra.iter().map(|s| std::ffi::OsString::from(*s)));
-    base_args.extend(auth.iter().cloned());
 
     let mut last_detail = String::from("unknown error");
+    // The whole stderr, kept alongside the last line: the SABR signature is
+    // spread over a WARNING about formats missing a URL and an ERROR about the
+    // selector finding none, so the last line alone does not identify it.
+    let mut last_stderr = String::new();
     for attempt in 0..=YTDLP_RATE_LIMIT_RETRIES {
-        gate_ytdlp_launch(gate).await;
         let mut args = base_args.clone();
+        args.extend(auth.iter().cloned());
+        gate_ytdlp_launch(gate).await;
         args.push(url.to_string().into());
         let output = timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output())
             .await
@@ -855,6 +877,7 @@ async fn resolve_ytdlp(
             return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
+        last_stderr = stderr.to_string();
         last_detail = stderr
             .lines()
             .rev()
@@ -867,13 +890,34 @@ async fn resolve_ytdlp(
             tokio::time::sleep(backoff).await;
             continue;
         }
+        // HTTP 403 with no cookies configured is the one case an anonymous
+        // client cannot get past: an age-restricted or private video. Retry with
+        // an installed browser's cookies rather than failing, since that is what
+        // they are for. A SABR failure is deliberately *not* retried this way —
+        // that is the case where cookies are the cause, and `is_starved`
+        // recognises it so it can be reported as what it is.
+        if is_forbidden(&stderr)
+            && !auth.iter().any(is_cookie_flag)
+            && let Some(browser) = cookie_source()
+        {
+            debug!("yt-dlp refused with 403; retrying with browser cookies");
+            auth = vec!["--cookies-from-browser".into(), browser.into()];
+            continue;
+        }
         break;
     }
     drop(permit);
-    let hint = if last_detail.contains("403") || last_detail.contains("Forbidden") {
+    let hint = if is_forbidden(&last_stderr) {
         " (cookies unavailable: set a logged-in cookies.txt in Settings → YouTube)"
-    } else if last_detail.contains("429") || last_detail.contains("Too Many Requests") {
+    } else if is_rate_limited(&last_stderr) {
         " (YouTube rate limit: wait a moment, then retry)"
+    } else if is_starved(&last_stderr) && auth.iter().any(is_cookie_flag) {
+        // Cookies were configured and are what produced an account with no
+        // downloadable formats. Naming that is the only way the user learns the
+        // fix is Settings → YouTube rather than a different video.
+        " (this YouTube account is in the SABR-only streaming experiment: clear the cookies in Settings → YouTube to use anonymous access)"
+    } else if is_starved(&last_stderr) {
+        " (YouTube offered no audio format for this video)"
     } else {
         ""
     };
@@ -883,6 +927,31 @@ async fn resolve_ytdlp(
 /// True when a yt-dlp stderr dump indicates the rate limiter fired.
 fn is_rate_limited(stderr: &str) -> bool {
     stderr.contains("429") || stderr.to_ascii_lowercase().contains("too many requests")
+}
+
+/// True when a yt-dlp stderr dump indicates the request needs an account.
+fn is_forbidden(stderr: &str) -> bool {
+    stderr.contains("403") || stderr.contains("Forbidden")
+}
+
+/// True when `arg` is one of the two mutually exclusive cookie flags.
+fn is_cookie_flag(arg: &std::ffi::OsString) -> bool {
+    let arg = arg.as_os_str();
+    arg == "--cookies" || arg == "--cookies-from-browser"
+}
+
+/// True when a yt-dlp stderr dump indicates the account is inside YouTube's
+/// SABR-only streaming experiment.
+///
+/// The signature is an account that has the experiment enabled: `web_embedded`
+/// returns no progressive URLs, so every format is dropped as "missing a URL",
+/// no selector matches, and yt-dlp reports only that the requested format is
+/// unavailable — while `--list-formats` shows no audio at all. Retrying with the
+/// same cookies cannot help; they are the cause.
+fn is_starved(stderr: &str) -> bool {
+    stderr.contains("Requested format is not available")
+        || stderr.contains("SABR-only")
+        || stderr.contains("missing a URL")
 }
 
 /// Hold the shared launch gate until at least [`YTDLP_MIN_LAUNCH_GAP`] has

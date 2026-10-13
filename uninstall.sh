@@ -39,10 +39,25 @@ Options:
       --purge           Also remove config, library and caches (asks first)
   -y, --yes             Non-interactive: never prompt
 
+Purge targeting. \`--purge\` reads XDG_CONFIG_HOME, XDG_DATA_HOME,
+XDG_CACHE_HOME and XDG_RUNTIME_DIR from the environment, so a run meant to
+touch a sandbox reaches the real profile whenever those are still exported —
+overriding HOME alone changes nothing. Name what to purge and the inherited
+values are ignored entirely:
+
+      --home <dir>       Treat <dir> as the user's home for every purge
+                         target, ignoring inherited XDG_* variables
+      --config-dir <dir> Purge <dir>/gtm instead of the XDG config root
+      --data-dir <dir>   Purge <dir>/gtm instead of the XDG data root
+      --cache-dir <dir>  Purge <dir>/gtm instead of the XDG cache root
+      --runtime-dir <dir>
+                         Purge <dir>/gtm instead of XDG_RUNTIME_DIR
+
 Examples:
   curl -fsSL https://gtmd.dev/uninstall.sh | bash
   uninstall.sh --purge
   uninstall.sh --prefix /usr/local
+  uninstall.sh --purge -y --home /tmp/sandbox
 EOF
 }
 
@@ -62,6 +77,11 @@ stage_fail() { printf " ${RED}✘${NC}\n" >&2; }
 PREFIX="${PREFIX:-$HOME/.local}"
 PURGE=0
 ASSUME_YES=0
+PURGE_HOME=""
+PURGE_CONFIG=""
+PURGE_DATA=""
+PURGE_CACHE=""
+PURGE_RUNTIME=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -81,6 +101,21 @@ while [[ $# -gt 0 ]]; do
         die "--prefix requires a directory argument"
       fi
       ;;
+    --home | --config-dir | --data-dir | --cache-dir | --runtime-dir)
+      opt="$1"
+      if [[ -n "${2:-}" ]]; then
+        case "$opt" in
+          --home) PURGE_HOME="$2" ;;
+          --config-dir) PURGE_CONFIG="$2" ;;
+          --data-dir) PURGE_DATA="$2" ;;
+          --cache-dir) PURGE_CACHE="$2" ;;
+          --runtime-dir) PURGE_RUNTIME="$2" ;;
+        esac
+        shift 2
+      else
+        die "${opt} requires a directory argument"
+      fi
+      ;;
     -y | --yes)
       ASSUME_YES=1
       shift
@@ -90,6 +125,16 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# `--home` now decides every purge target, so the one value nobody means is the
+# one that must be refused: the filesystem root. Without this it resolves to
+# `//.config` and friends, which the out-of-scope guard below correctly accepts
+# as "under the home I was given".
+if [ -n "$PURGE_HOME" ]; then
+  case "$PURGE_HOME" in
+    / | // | "") die "--home must name a directory, not the filesystem root" ;;
+  esac
+fi
 
 datarootdir="${DATAROOTDIR:-${PREFIX}/share}"
 datadir="${DATADIR:-${datarootdir}}"
@@ -112,6 +157,43 @@ elvish_comp_dir="${ELVISH_COMPLETION_DIR:-$HOME/.elvish/lib}"
 powershell_comp_dir="${POWERSHELL_COMPLETION_DIR:-${xdg_data}/powershell/Modules}"
 applications_dir="${APPLICATIONS_DIR:-${datadir}/applications}"
 icons_dir="${ICONS_DIR:-${datadir}/icons/hicolor/scalable/apps}"
+
+# Where \`--purge\` looks. Defaults to the XDG variables, which is right for a
+# real uninstall and wrong for anything trying to run against a sandbox: those
+# variables are inherited from the invoking shell, so setting HOME to a
+# temporary directory and expecting the purge to follow it silently deletes the
+# live profile instead. Naming the target explicitly is what makes a scoped run
+# actually scoped, so --home discards the inherited values outright rather than
+# merging with them.
+purge_config_root="${XDG_CONFIG_HOME:-$HOME/.config}"
+purge_data_root="${XDG_DATA_HOME:-$HOME/.local/share}"
+purge_cache_root="${XDG_CACHE_HOME:-$HOME/.cache}"
+purge_runtime_root="${XDG_RUNTIME_DIR:-}"
+if [ -n "$PURGE_HOME" ]; then
+  purge_config_root="${PURGE_HOME}/.config"
+  purge_data_root="${PURGE_HOME}/.local/share"
+  purge_cache_root="${PURGE_HOME}/.cache"
+  purge_runtime_root="${PURGE_HOME}/run"
+fi
+[ -n "$PURGE_CONFIG" ] && purge_config_root="$PURGE_CONFIG"
+[ -n "$PURGE_DATA" ] && purge_data_root="$PURGE_DATA"
+[ -n "$PURGE_CACHE" ] && purge_cache_root="$PURGE_CACHE"
+[ -n "$PURGE_RUNTIME" ] && purge_runtime_root="$PURGE_RUNTIME"
+
+# A purge root that resolved to / or to an empty string would take the machine
+# with it, and one outside an explicit --home is a sign the caller expected the
+# inherited values to have been overridden and were not.
+purge_guard() {
+  local root="$1" name="$2"
+  case "$root" in
+    "" | "/")
+      die "refusing to purge ${name}: resolved to '${root}'"
+      ;;
+  esac
+  if [ -n "$PURGE_HOME" ] && [[ "$root" != "$PURGE_HOME"/* ]]; then
+    die "refusing to purge ${name} at ${root}: outside --home ${PURGE_HOME}"
+  fi
+}
 
 # Remove <path> when it exists, reporting the basename rather than the whole
 # path: the list is long and the prefix on every line is noise. A missing file
@@ -238,17 +320,20 @@ fi
 
 if [ "${PURGE}" = 1 ]; then
   stage "🗑️  config, library and caches"
-  rm_path "${XDG_CONFIG_HOME:-$HOME/.config}/gtm" "config"
-  rm_path "${XDG_DATA_HOME:-$HOME/.local/share}/gtm" "library, state and covers"
-  rm_path "${XDG_CACHE_HOME:-$HOME/.cache}/gtm" "cover cache"
+  purge_guard "$purge_config_root" config
+  purge_guard "$purge_data_root" data
+  purge_guard "$purge_cache_root" cache
+  rm_path "${purge_config_root}/gtm" "config"
+  rm_path "${purge_data_root}/gtm" "library, state and covers"
+  rm_path "${purge_cache_root}/gtm" "cover cache"
   # The runtime directory holds the daemon's socket and pid file. A running
   # daemon is already gone by this point (both the systemd and the pkill stage
   # above), so the leftovers are stale sockets — but if one is somehow still
   # holding the file, leave it: deleting a live daemon's socket breaks the
   # client with no way back short of a restart.
-  if [ -n "${XDG_RUNTIME_DIR:-}" ] \
+  if [ -n "$purge_runtime_root" ] \
     && ! { command -v pgrep >/dev/null 2>&1 && pgrep -x gtmd >/dev/null 2>&1; }; then
-    rm_path "${XDG_RUNTIME_DIR}/gtm" "runtime files"
+    rm_path "${purge_runtime_root}/gtm" "runtime files"
   fi
   stage_ok
 fi

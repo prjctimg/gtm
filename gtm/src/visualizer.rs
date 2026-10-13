@@ -1210,7 +1210,6 @@ impl AudioVisualizer {
 
     /// Block columns with fine fractional heights (`▁…█`).
     fn render_blocks(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
-        const B: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row_from_top in (0..height).rev() {
             let mut spans: Vec<Span<'static>> = Vec::new();
@@ -1220,9 +1219,9 @@ impl AudioVisualizer {
                 let full_rows = filled.floor() as usize;
                 let frac = filled - filled.floor();
                 let glyph = if row_from_top < full_rows {
-                    B[7]
+                    BLOCKS[7]
                 } else if row_from_top == full_rows && frac > 0.0 && full_rows < height {
-                    B[((frac * 8.0) as usize).min(7)]
+                    BLOCKS[((frac * 8.0) as usize).min(7)]
                 } else {
                     " "
                 };
@@ -1288,17 +1287,10 @@ impl AudioVisualizer {
 
     /// Braille cells with a 4-step color ramp by amplitude.
     fn render_gradient(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
-        self.render_braille_grid(num_bars, height, theme, |val, theme| {
-            if val > 0.75 {
-                theme.accent
-            } else if val > 0.5 {
-                tinted(theme, theme.fg_bright)
-            } else if val > 0.25 {
-                tinted(theme, theme.fg)
-            } else {
-                tinted(theme, theme.fg_dim)
-            }
-        })
+        // The same four-step ramp every other amplitude-driven preset uses: a
+        // second copy of it here is a second answer to "how bright is a value
+        // of 0.6", and the two would drift.
+        self.render_braille_grid(num_bars, height, theme, amplitude_color)
     }
 
     fn render_braille(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
@@ -1516,30 +1508,30 @@ impl Visualizer for AudioVisualizer {
         if w < 4 || h < 3 || (!self.playing && self.resting) {
             return Frame::Cells(Lines(Vec::new()));
         }
-        if self.preset == VisualizerPreset::Flame {
-            // The GPU path first when one came up, and the CPU heat field when
-            // it did not. `Shader::draw` answers `None` on the very first call
-            // by design — a device that exists still has a frame in flight —
-            // so `None` means "cells this frame", not "give up on the GPU".
-            #[cfg(feature = "shader-viz")]
+        // The GPU path first wherever a preset has a shader, and the cell
+        // renderer otherwise. `Shader::draw` answers `None` on the very first
+        // call by design — a device that exists still has a frame in flight —
+        // so `None` means "cells this frame", not "give up on the GPU".
+        #[cfg(feature = "shader-viz")]
+        if let Some(preset) = self.gpu_preset() {
             if self.gpu.is_none()
                 && let Some(gpu) = crate::shader::Shader::new()
             {
                 self.gpu = Some(gpu);
             }
-            #[cfg(feature = "shader-viz")]
-            if self.gpu.is_some()
-                // Built before the borrow: the job reads the band model, which
-                // `gpu.draw` needs `&mut` for.
-                && let Some(job) = self.shader_job(frame)
+            // Built before the borrow: the job reads the band and waveform
+            // models, which `gpu.draw` needs `&mut` for.
+            if let Some(job) = self.shader_job(preset, frame)
                 && let Some(gpu) = self.gpu.as_mut()
                 && let Some(img) = gpu.draw(job)
             {
                 return Frame::Pixels(img);
             }
-            if self.heat_rows > 0 && self.heat_cols > 0 {
-                return Frame::Pixels(self.flame_image(frame.theme));
-            }
+        }
+        // Flame still has a CPU heat field behind the shader, so a machine with
+        // no device keeps the effect rather than losing the preset.
+        if self.preset == VisualizerPreset::Flame && self.heat_rows > 0 && self.heat_cols > 0 {
+            return Frame::Pixels(self.flame_image(frame.theme));
         }
         Frame::Cells(
             self.render(Rect::new(0, 0, w, h), frame.theme)
@@ -1549,29 +1541,77 @@ impl Visualizer for AudioVisualizer {
 }
 
 impl AudioVisualizer {
-    /// The work item for one GPU flame frame.
+    /// The GPU preset that draws `self.preset`, or `None` when it has none.
     ///
-    /// Built from the same smoothed bands and the same theme ramp the cell
-    /// renderer uses, so the two paths cannot drift apart: the GPU changes how
-    /// the heat becomes pixels, not what the heat is.
+    /// Only presets whose look survives the trip through a terminal cell go
+    /// here. The frame is read back and printed with `▀`, which resolves one
+    /// horizontal and two vertical samples per cell — so a bar grid, a trace and
+    /// a meter are exact, while a braille dot grid (2 wide by 4 tall) and a
+    /// four-wide dot bar cannot be drawn at all through it and would come back
+    /// as a blur of half-blocks. Those stay on the cell renderer, where the
+    /// glyph is the whole point.
     #[cfg(feature = "shader-viz")]
-    fn shader_job(&self, frame: &AudioFrame) -> Option<crate::shader::Draw> {
-        let cols = self.heat_cols.max(1);
+    fn gpu_preset(&self) -> Option<crate::shader::Preset> {
+        use crate::shader::Preset;
+        match self.preset {
+            VisualizerPreset::Flame => Some(Preset::Flame),
+            VisualizerPreset::Gradient => Some(Preset::Gradient),
+            VisualizerPreset::Mirror => Some(Preset::Mirror),
+            VisualizerPreset::Wave => Some(Preset::Wave),
+            VisualizerPreset::Stereo => Some(Preset::Stereo),
+            // Glyph-identity presets, and the two dot grids that lose too much
+            // to the transport. See the note above.
+            VisualizerPreset::Braille
+            | VisualizerPreset::Blocks
+            | VisualizerPreset::Spectrum
+            | VisualizerPreset::BarsDot
+            | VisualizerPreset::ClassicPeak
+            | VisualizerPreset::Columns
+            | VisualizerPreset::Retro => None,
+        }
+    }
+
+    /// The work item for one GPU frame.
+    ///
+    /// Built from the same smoothed bands, the same waveform and the same theme
+    /// ramp the cell renderer uses, so the two paths cannot drift apart: the GPU
+    /// changes how the levels become pixels, not what the levels are.
+    #[cfg(feature = "shader-viz")]
+    fn shader_job(
+        &self,
+        preset: crate::shader::Preset,
+        frame: &AudioFrame,
+    ) -> Option<crate::shader::Draw> {
+        let cols = self.heat_cols.clamp(1, 64);
         let bands = resample_bands_linear(&self.bands, cols);
+        // The waveform is decimated to the pane's own width, which is what the
+        // trace reads; resampling a longer ring would only add jitter.
+        let wave: Vec<f32> = frame
+            .wave
+            .iter()
+            .copied()
+            .filter(|v| v.is_finite())
+            .take(64)
+            .collect();
         let t = frame.theme;
-        let level = |c: Color| match c {
-            Color::Rgb(r, g, b) => [r, g, b],
-            _ => [0, 0, 0],
-        };
         Some(crate::shader::Draw {
+            preset,
             playing: self.playing,
             dt: frame.dt as f32,
             bands: std::array::from_fn(|i| bands.get(i).copied().unwrap_or(0.0)),
             band_count: bands.len().min(64) as u32,
+            wave: std::array::from_fn(|i| wave.get(i).copied().unwrap_or(0.0)),
+            wave_count: wave.len().min(64) as u32,
+            stereo: [
+                self.stereo_level[0],
+                self.stereo_level[1],
+                self.stereo_peak[0],
+                self.stereo_peak[1],
+            ],
             cells: frame.size,
-            cool: level(t.fg_dim),
-            warm: level(t.accent),
-            peak: level(t.secondary_accent),
+            cool: rgb_of(t.fg_dim),
+            warm: rgb_of(t.accent),
+            peak: rgb_of(t.secondary_accent),
         })
     }
 }

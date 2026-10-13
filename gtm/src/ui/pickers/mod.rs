@@ -604,29 +604,82 @@ impl Pickers {
             }
         }
     }
+}
 
+/// Hints that a picker need not spell out, because the screen already says it.
+///
+/// Each entry is matched against one whitespace-separated token of a hint, case
+/// and trailing punctuation ignored. Kept as data rather than as logic in the
+/// renderer so that adding a picker cannot quietly reintroduce a line of
+/// "Enter: open".
+const OBVIOUS: [&str; 7] = [
+    "esc",
+    "enter",
+    "\u{2191}/\u{2193}",
+    "\u{2193}",
+    "\u{2191}",
+    "\u{2190}/\u{2192}",
+    "tab",
+];
+
+/// Drop the obvious entries from a picker hint and rejoin what is left.
+///
+/// A hint is a list of `key: what it does` entries separated by three spaces or
+/// by `\u{b7}`; the description of an entry may itself contain single spaces, so
+/// the split is on the separator and never on whitespace. An entry goes when its
+/// key is one the screen already communicates — Esc is a chip in the corner,
+/// Enter acts on the highlighted row, arrows move a list that visibly moves —
+/// and stays otherwise. Testing the key rather than the whole entry is what
+/// keeps "Ctrl+Enter: add" while "Enter: open" goes.
+fn filter_hint(hint: &str) -> String {
+    let kept: Vec<&str> = hint
+        .split('\u{b7}')
+        .flat_map(|s| s.split("   "))
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .filter(|entry| {
+            let key = entry
+                .split(':')
+                .next()
+                .unwrap_or(entry)
+                .trim()
+                .to_ascii_lowercase();
+            !OBVIOUS.contains(&key.as_str())
+        })
+        .collect();
+    kept.join("   ")
+}
+
+/// The hint the top picker is currently showing, already filtered.
+///
+/// This is what the copy binding hands to the clipboard: the text on screen is
+/// the text worth keeping, and re-deriving it from the picker's own hint string
+/// would copy the parts that were just removed.
+pub(crate) fn hint_text(app: &App) -> Option<&String> {
+    app.hint_shown.as_ref().filter(|h| !h.is_empty())
+}
+
+impl Pickers {
     pub(crate) fn picker_panel<'a>(
-        app: &App,
+        app: &mut App,
         title: impl Into<Cow<'a, str>>,
         help: Option<&'a str>,
     ) -> Block<'a> {
-        // The "Esc" affordance lives at the top-right corner, inline with the
-        // picker title. Any trailing "Esc: …" token is lifted off the hint and
-        // the chip itself is always the bare "Esc" label, padded with two
-        // spaces either side so it reads as a button.
-        let bottom_hint = match help {
-            Some(h) => {
-                let trimmed = h.trim_end();
-                match trimmed.rfind("Esc:") {
-                    Some(pos) if !trimmed[pos + 4..].contains(':') => {
-                        Some(trimmed[..pos].trim_end())
-                    }
-                    _ => Some(trimmed),
-                }
-            }
-            None => None,
-        };
-        let bottom_hint = bottom_hint.filter(|h| !h.is_empty());
+        // The hint names only the keys that are not already obvious from the
+        // screen: Enter acts on the highlighted row, Esc closes, arrows move a
+        // list the user can see moving. Those are documented once, in `?`, and
+        // spending a line on them in every picker spends the width on nothing.
+        // What is left is the part that cannot be guessed — modifier combos,
+        // bare letter verbs, field cycling, steppers.
+        //
+        // The copy of the hint kept in `hint_text` is the filtered one, because
+        // that is what the user is looking at and the thing worth keeping.
+        let bottom_hint = help.map(filter_hint).filter(|h| !h.is_empty());
+        // Recorded because the alternate screen is destroyed on exit and most
+        // terminals do not put it in the scrollback, so there is no way for the
+        // user to select the hint by dragging over it. The copy binding reads
+        // back exactly what was rendered.
+        app.hint_shown.clone_from(&bottom_hint);
         // Always a bare "Esc" — never "Esc: close" — with 2-space padding.
         let esc_label = "  Esc  ".to_string();
 

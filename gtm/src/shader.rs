@@ -29,6 +29,10 @@ const RISE: f32 = 90.0;
 /// address space requires a 16-byte stride.
 const BANDS: usize = 64;
 
+/// Waveform samples, interleaved L/R, packed the same way. A multiple of four so
+/// the packing never has a ragged tail.
+const WAVE: usize = 64;
+
 /// Device pixels per cell. Two matches the `▀` rasteriser's two vertical samples
 /// per cell; more would be read back and thrown away.
 const SCALE: u32 = 2;
@@ -40,12 +44,88 @@ const MAILBOX: usize = 2;
 /// device as gone and letting the caller fall back.
 const MAP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// The presets that render on the GPU, and the WGSL behind each.
+///
+/// Only presets whose look is an *image* live here. A preset whose identity is a
+/// particular terminal glyph — the block ramp in `Blocks`, the peak marker in
+/// `Spectrum`, the caps in `ClassicPeak` — cannot survive the round trip: the
+/// frame is read back as pixels and printed through `▀` half-blocks, so a bar
+/// drawn as `▅` would come back as a stack of block pairs with no memory of
+/// being a `▅`. Those stay on the cell renderer, where the glyph is the point.
+///
+/// A preset is absent from this list rather than mapped to a fallback, because
+/// an absent preset and a broken one must not look the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Preset {
+    Flame,
+    Gradient,
+    Mirror,
+    Wave,
+    Stereo,
+}
+
+impl Preset {
+    /// Every GPU preset, for warming pipelines.
+    pub const ALL: [Preset; 5] = [
+        Preset::Flame,
+        Preset::Gradient,
+        Preset::Mirror,
+        Preset::Wave,
+        Preset::Stereo,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Preset::Flame => "flame",
+            Preset::Gradient => "gradient",
+            Preset::Mirror => "mirror",
+            Preset::Wave => "wave",
+            Preset::Stereo => "stereo",
+        }
+    }
+
+    /// The WGSL module for this preset: the shared block, then its own fragment
+    /// stage.
+    ///
+    /// WGSL has no include, so the concatenation happens here. One definition of
+    /// the uniform is worth more than five copies of it that can drift apart
+    /// from `Uniforms` without anything noticing until the pixels go wrong.
+    pub fn source(self) -> String {
+        match self {
+            Preset::Flame => include_str!("shaders/flame.wgsl").to_string(),
+            Preset::Gradient => concat!(
+                include_str!("shaders/common.wgsl.inc"),
+                include_str!("shaders/gradient.wgsl")
+            )
+            .to_string(),
+            Preset::Mirror => concat!(
+                include_str!("shaders/common.wgsl.inc"),
+                include_str!("shaders/mirror.wgsl")
+            )
+            .to_string(),
+            Preset::Wave => concat!(
+                include_str!("shaders/common.wgsl.inc"),
+                include_str!("shaders/wave.wgsl")
+            )
+            .to_string(),
+            Preset::Stereo => concat!(
+                include_str!("shaders/common.wgsl.inc"),
+                include_str!("shaders/stereo.wgsl")
+            )
+            .to_string(),
+        }
+    }
+}
+
 /// One frame's worth of work, handed to the render thread.
 ///
 /// `Copy` because one of these crosses the channel every frame and the mailbox
 /// is the only thing standing between the TUI thread and a stalled driver.
 #[derive(Clone, Copy, Debug)]
 pub struct Draw {
+    /// Which shader renders this frame. The device is shared; the pipeline is
+    /// not, so this is what selects one.
+    pub preset: Preset,
     pub playing: bool,
     /// Seconds since the previous frame, so cooling and rise are frame-rate
     /// independent.
@@ -53,6 +133,12 @@ pub struct Draw {
     /// Log-spaced band levels, already smoothed by the shared audio model.
     pub bands: [f32; BANDS],
     pub band_count: u32,
+    /// Decimated waveform for the oscilloscope, already interleaved L/R and
+    /// normalised to -1..1. Empty when the stream is silent.
+    pub wave: [f32; WAVE],
+    pub wave_count: u32,
+    /// Left and right levels and their slow-falling peaks, for the meters.
+    pub stereo: [f32; 4],
     /// Pane size in cells.
     pub cells: (u16, u16),
     /// Theme ramp ends, 0–255, so the shader follows the reactive palette
@@ -78,6 +164,13 @@ struct Uniforms {
     band_count: u32,
     band_width: u32,
     bands: [[f32; 4]; 16],
+    /// `wave_count` then three words of padding: the array below is a fixed
+    /// size, so the count cannot sit inside it.
+    wave_count: u32,
+    pad2: [u32; 3],
+    wave: [[f32; 4]; WAVE / 4],
+    /// Left/right level and left/right peak.
+    stereo: [f32; 4],
     cool: [f32; 4],
     warm: [f32; 4],
     peak: [f32; 4],
@@ -99,15 +192,24 @@ impl Uniforms {
             size: [w, h],
             band_count: job.band_count,
             band_width: (w / job.band_count.max(1)).max(1),
-            bands: std::array::from_fn(|i| {
-                let v = |k: usize| job.bands.get(i * 4 + k).copied().unwrap_or(0.0);
-                [v(0), v(1), v(2), v(3)]
-            }),
+            bands: std::array::from_fn(|i| pack(&job.bands, i)),
+            wave_count: (job.wave_count as usize).min(WAVE / 2) as u32 * 2,
+            pad2: [0; 3],
+            wave: std::array::from_fn(|i| pack(&job.wave, i)),
+            stereo: job.stereo,
             cool: pad(job.cool),
             warm: pad(job.warm),
             peak: pad(job.peak),
         })
     }
+}
+
+/// Four consecutive samples as a `vec4`, zero-padded past the end of the slice.
+///
+/// The uniform address space wants a 16-byte stride per array element, so an
+/// `array<f32, N>` is not expressible; this is the packing that replaces it.
+fn pack(src: &[f32], i: usize) -> [f32; 4] {
+    std::array::from_fn(|k| src.get(i * 4 + k).copied().unwrap_or(0.0))
 }
 
 fn pad(c: [u8; 3]) -> [f32; 4] {
@@ -150,11 +252,83 @@ struct Worker {
     device: wgpu::Device,
     queue: wgpu::Queue,
     layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     targets: Option<Targets>,
+    /// One pipeline per preset, built on first use.
+    ///
+    /// Compiled lazily because a session that never reaches a preset should
+    /// never pay for it, and kept because compilation is the expensive part:
+    /// building this on every switch would stutter the frame the user is
+    /// looking at.
+    pipelines: [Option<wgpu::RenderPipeline>; Preset::ALL.len()],
     done: SyncSender<RgbaImage>,
     clock: f32,
+}
+
+impl Worker {
+    /// The pipeline for `preset`, compiling it on first use.
+    ///
+    /// Returned by clone rather than by reference: compiling needs `&mut self`,
+    /// and a borrow of the cache would then overlap every other use of the
+    /// worker for the rest of the frame. A `RenderPipeline` is a handle, so the
+    /// clone costs a refcount rather than a pipeline.
+    ///
+    /// `None` when the module is rejected: an invalid shader falls back to the
+    /// cells rather than taking the whole pane down, which is what a panic in
+    /// the render thread would do.
+    fn pipeline(&mut self, preset: Preset) -> Option<wgpu::RenderPipeline> {
+        let slot = Preset::ALL.iter().position(|p| *p == preset)?;
+        if self.pipelines[slot].is_none() {
+            self.pipelines[slot] = Some(self.build(preset));
+        }
+        self.pipelines[slot].clone()
+    }
+
+    fn build(&self, preset: Preset) -> wgpu::RenderPipeline {
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(preset.name()),
+                source: wgpu::ShaderSource::Wgsl(preset.source().into()),
+            });
+        let layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(preset.name()),
+                bind_group_layouts: &[Some(&self.layout)],
+                immediate_size: 0,
+            });
+        self.device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(preset.name()),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        // The flame writes a heat value rather than a colour and
+                        // reads it back as next frame's history, so there is
+                        // nothing to blend; the rest write final colour, which
+                        // still does not need blending into an empty target.
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+    }
 }
 
 impl Worker {
@@ -180,6 +354,11 @@ impl Worker {
         };
         self.clock += job.dt;
         self.resize(w, h);
+        // Pipeline first: resolving it may compile the module, which needs
+        // `&mut self`, so it cannot overlap the borrow of the targets.
+        let Some(pipeline) = self.pipeline(job.preset) else {
+            return true;
+        };
         let Some(targets) = &self.targets else {
             return true;
         };
@@ -209,7 +388,7 @@ impl Worker {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(&pipeline);
             // Samples the *other* target, so the pass reads last frame's
             // history and writes this frame's without ever touching both.
             pass.set_bind_group(0, bind, &[]);
@@ -400,13 +579,10 @@ impl Shader {
         }))
         .ok()?;
 
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("flame.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/flame.wgsl").into()),
-        });
-
+        // Shared by every preset: one uniform block and one history texture, so
+        // a bind group is built once per resize rather than once per preset.
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("flame"),
+            label: Some("viz"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -430,38 +606,6 @@ impl Shader {
                 },
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("flame"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("flame"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    // The heat value is data, not colour: it is read back as the
-                    // next frame's history, so there is nothing to blend.
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
 
         let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("uniforms"),
@@ -474,7 +618,7 @@ impl Shader {
             device,
             queue,
             layout,
-            pipeline,
+            pipelines: std::array::from_fn(|_| None),
             uniforms,
             targets: None,
             done: done_tx,

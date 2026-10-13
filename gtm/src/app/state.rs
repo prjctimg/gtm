@@ -484,6 +484,15 @@ pub struct PodcastView {
     /// When the picker's query should be sent to the directory. Settled rather
     /// than immediate: a third-party query should not fire per keystroke.
     pub search_deadline: Option<std::time::Instant>,
+    /// Whether `results` is the directory's own landing page — what is popular —
+    /// rather than the answer to a query.
+    ///
+    /// Both are "the list with no query typed", so without this the two cannot
+    /// be told apart: the picker would open showing the results of whatever was
+    /// last searched and call it the directory, and clearing the query back to
+    /// empty would be a no-op because a non-empty result set always looked
+    /// like the landing page.
+    pub directory: bool,
 }
 
 /// Which list the unified Radio picker is showing.

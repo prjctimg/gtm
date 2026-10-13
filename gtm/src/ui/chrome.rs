@@ -1262,13 +1262,12 @@ impl Render {
         // artwork to the box it is handed, so the extra rows become a larger
         // cover rather than dead space.
         let track_info_h: u16 = if has_card {
-            let left = left_inner
+            left_inner
                 .height
                 .saturating_sub(list_rows)
                 .saturating_sub(list_top)
                 .saturating_sub(card_gap)
-                .saturating_sub(1);
-            left
+                .saturating_sub(1)
         } else {
             0
         };

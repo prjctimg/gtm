@@ -415,6 +415,15 @@ pub struct App {
     /// deliberately paused. Empty when no peek is outstanding.
     pub(crate) peek_station: Option<String>,
     pub(crate) peek_restore: Option<PeekRestore>,
+    /// The hint the top picker rendered last frame, already filtered of the
+    /// obvious bindings.
+    ///
+    /// Recorded at render rather than derived on demand because the hint is a
+    /// literal at each call site, and the alternate screen leaves the user
+    /// nothing to drag-select. This is what the copy binding hands over, so it
+    /// is the text that was on screen and not the text the picker was built
+    /// from.
+    pub(crate) hint_shown: Option<String>,
     /// The onboarding view: true on the launch that found no config file, and
     /// cleared by the first keypress.
     pub onboard: bool,
@@ -839,7 +848,49 @@ pub(crate) fn self_err(ipc_tx: &mpsc::UnboundedSender<IpcResult>, msg: String) {
 /// X11, `pbcopy`/`clip` elsewhere). The payload is written to stdin and the
 /// tool detaches itself to serve the selection, so this never blocks the UI
 /// loop. Best-effort: an unavailable tool surfaces as a readable error.
+/// Ask the terminal to put `text` on the clipboard, via OSC 52.
+///
+/// Base64 of the payload, in the form `ESC ] 52 ; c ; <b64> BEL`. Written to
+/// the tty directly because there is no ratatui backend for an escape sequence
+/// that is not a colour change.
+///
+/// Returns false rather than reporting success: the terminal may simply not
+/// answer, and the caller needs to know whether to try the CLI ladder.
+fn osc52(text: &str) -> bool {
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = text.as_bytes();
+    let mut b64 = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in (0..4).rev() {
+            b64.push(B64[((n >> (i * 6)) & 63) as usize] as char);
+        }
+    }
+    let seq = format!("\x1b]52;c;{b64}\x07");
+    // Best effort: a tty that cannot be opened just means OSC 52 is not
+    // available here, which is the same answer as a terminal ignoring it.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/tty")
+        .and_then(|mut f| {
+            use std::io::Write as _;
+            f.write_all(seq.as_bytes())
+        })
+        .is_ok()
+}
+
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    // OSC 52 first: the terminal sets its own clipboard, so it works over ssh
+    // and on a headless box where none of the CLI tools exist or can reach a
+    // display. The ladder below is the fallback for terminals that ignore it.
+    if osc52(text) {
+        return Ok(());
+    }
     let tool: &str = if cfg!(target_os = "macos") {
         "pbcopy"
     } else if cfg!(target_os = "windows") {
@@ -1286,6 +1337,7 @@ impl App {
             preview_fired: false,
             peek_station: None,
             peek_restore: None,
+            hint_shown: None,
             onboard,
             logo_mark: std::time::Instant::now(),
             input_mode: InputMode::Normal,

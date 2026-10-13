@@ -234,7 +234,7 @@ impl Pickers {
     ///
     /// An empty value clears the id, which is how presence is turned off --
     /// there is no separate on/off switch, because an id is the whole setting.
-    pub(crate) fn render_discord_setup(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    pub(crate) fn render_discord_setup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(app, " Discord Rich Presence ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);

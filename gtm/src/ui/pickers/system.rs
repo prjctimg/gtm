@@ -8,7 +8,7 @@
 use crate::ui::*;
 
 impl Pickers {
-    pub(crate) fn render_about(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    pub(crate) fn render_about(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(app, " About ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -343,7 +343,7 @@ impl Pickers {
         }
     }
 
-    pub(crate) fn render_sleep_timer(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    pub(crate) fn render_sleep_timer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         if app.sleep_timer.input_mode {
             let block = Self::picker_panel(app, " Sleep Timer: Manual Input ", None);
             let inner = block.inner(area);

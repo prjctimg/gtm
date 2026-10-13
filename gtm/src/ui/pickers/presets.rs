@@ -464,6 +464,11 @@ impl Pickers {
 
     pub(crate) fn render_theme(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
+        // The panel is built before the theme list is borrowed: it records the
+        // hint it rendered, and so takes the app mutably, which cannot overlap
+        // a borrow of `app.themes`.
+        let block = Self::picker_panel(app, " Theme ", None);
+        let inner = block.inner(area);
         let filtered: Vec<_> = app
             .themes
             .iter()
@@ -477,8 +482,6 @@ impl Pickers {
             .top()
             .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
 
-        let block = Self::picker_panel(app, " Theme ", None);
-        let inner = block.inner(area);
         f.render_widget(block, area);
 
         let cursor_style = cursor_span_style(app);
@@ -565,7 +568,7 @@ impl Pickers {
         f.render_widget(list, inner);
     }
 
-    pub(crate) fn render_crossfade(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    pub(crate) fn render_crossfade(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(app, " Crossfade Options ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);

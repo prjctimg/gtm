@@ -17,10 +17,13 @@ impl Pickers {
     /// a subscription, and stacking them behind each other meant the empty state
     /// of a fresh install was a dead end with a URL box as its only exit.
     pub(crate) fn render_podcast_feeds(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        // A search replaces the subscriptions for as long as it has results:
-        // showing both at once under one cursor would mean one set of keys doing
-        // two different things depending on what scrolled into view.
-        let searching = !app.podcast.results.is_empty() || app.podcast.searching;
+        // The directory replaces the subscriptions for as long as it is showing:
+        // both at once under one cursor would mean one set of keys doing two
+        // different things depending on what scrolled into view. The directory is
+        // the landing screen, so a fresh install opens on it rather than on an
+        // empty list of subscriptions the user has not made yet.
+        let searching =
+            app.podcast.directory || !app.podcast.results.is_empty() || app.podcast.searching;
         let mut rows = Vec::new();
         if searching {
             for r in &app.podcast.results {
@@ -48,9 +51,15 @@ impl Pickers {
         }
         let mut prepend = Vec::new();
         if searching {
-            if let Some(top) = app.pickers.top() {
+            if app.podcast.directory {
                 prepend.push(Line::from(Span::styled(
-                    format!(" search: {}", top.query),
+                    " popular now \u{2014} type to search",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+            } else if let Some(top) = app.pickers.top() {
+                let label = format!(" search: {}", top.query);
+                prepend.push(Line::from(Span::styled(
+                    label,
                     Style::default().fg(app.theme.fg_dim),
                 )));
             }
@@ -66,21 +75,21 @@ impl Pickers {
             app,
             ScrollList {
                 title: if searching {
-                    " Podcasts \u{2014} search "
+                    " Podcasts \u{2014} directory "
                 } else {
                     " Podcasts "
                 },
                 hint: if searching {
                     "enter subscribe \u{b7} esc back to subscriptions"
                 } else {
-                    "/ search \u{b7} a add by URL"
+                    "/ directory \u{b7} a add by URL"
                 },
                 empty_msg: if searching {
                     " no results \u{2014} esc to go back"
                 } else if app.podcast.feeds_pending {
                     " loading feeds\u{2026}"
                 } else {
-                    "no subscriptions \u{2014} press / to search, a to add by URL"
+                    "no subscriptions \u{2014} press / for the directory"
                 },
             },
             prepend,

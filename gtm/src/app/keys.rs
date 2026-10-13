@@ -884,11 +884,10 @@ impl App {
                         if self.library_category == LIB_PODCASTS {
                             // The Podcasts category browses the public podcast
                             // directory rather than filtering its feed rows: `/`
-                            // opens the directory picker with the popular list
-                            // loading, the way the Radio category reaches Radio
-                            // Browser. Without this the category had no search
-                            // surface of its own.
-                            self.pickers.open(PickerId::PodcastFeeds);
+                            // opens the directory picker on the popular list,
+                            // the way the Radio category reaches Radio Browser.
+                            // Esc then goes back to the subscriptions.
+                            self.open_podcast_dir();
                             self.dismiss_track_popup();
                             self.on_picker_opened(PickerId::PodcastFeeds);
                         } else {
@@ -1994,6 +1993,38 @@ impl App {
                 }
                 _ => {}
             }
+        }
+
+        // Any picker: 'y' copies its hint. The alternate screen is destroyed on
+        // exit and most terminals do not keep it in the scrollback, so there is
+        // nothing to drag-select and the hint is only reachable by asking for
+        // it. What is copied is what was rendered, so it matches the screen.
+        if key.code == KeyCode::Char('y')
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && self
+                .pickers
+                .top()
+                .is_some_and(|o| o.id != PickerId::Notifications)
+            && let Some(hint) = crate::ui::pickers::hint_text(self)
+        {
+            let hint = hint.clone();
+            match copy_to_clipboard(&hint) {
+                Ok(()) => self.notify_typed(
+                    "System",
+                    format!("Hint copied: {hint}"),
+                    NotificationKind::Success,
+                    true,
+                    NotifType::System,
+                ),
+                Err(e) => self.notify_typed(
+                    "System",
+                    format!("Copy failed: {e}"),
+                    NotificationKind::Error,
+                    true,
+                    NotifType::System,
+                ),
+            }
+            return;
         }
 
         // Notifications picker: 'y' copies the highlighted notification's text

@@ -135,7 +135,7 @@ impl Pickers {
         }
     }
 
-    pub(crate) fn render_playlist_select(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    pub(crate) fn render_playlist_select(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let help = if app.playlist_creating {
             None
         } else {
@@ -388,7 +388,7 @@ impl Pickers {
     /// Read-only and non-navigable: there is nothing to select here, so
     /// `picker_item_count` is zero and the arrow keys do nothing rather than
     /// moving a cursor over a form.
-    pub(crate) fn render_track_info(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    pub(crate) fn render_track_info(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(app, " Track Info ", Some("Esc: close"));
         let inner = block.inner(area);
         f.render_widget(block, area);

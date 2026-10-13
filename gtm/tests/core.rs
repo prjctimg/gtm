@@ -4418,6 +4418,74 @@ fn the_left_pane_keeps_both_the_list_and_the_card() {
 /// card silently vanished below roughly thirty rows of pane, which is most
 /// terminals — the user saw a left pane with a category list and nothing under
 /// it, with nothing on screen to say the art was missing rather than unrendered.
+/// The picker hint must spend its width on the keys that cannot be guessed.
+///
+/// Every picker funnels its hint through one filter, so a picker cannot
+/// reintroduce a line of "Enter: open" by accident. What survives is the part a
+/// new user cannot infer from the screen: modifier combos, bare letter verbs,
+/// vim motions and steppers.
+#[test]
+fn picker_hints_drop_only_the_obvious() {
+    let mod_src = include_str!("../src/ui/pickers/mod.rs");
+    let at = mod_src
+        .find("fn filter_hint(")
+        .expect("the hint filter moved");
+    let body = &mod_src[at..(at + 1200).min(mod_src.len())];
+
+    // The split is on the separator, never on whitespace: the description of an
+    // entry contains spaces, and splitting on those turned "Ctrl+D: download"
+    // into the orphan words "download".
+    assert!(
+        body.contains(r#"split("   ")"#),
+        "the hint is split on whitespace, so entries lose their key"
+    );
+    assert!(
+        body.contains("u{b7}"),
+        "the separator form used by the radio and podcast hints is not handled"
+    );
+
+    // And it tests the key, which is what separates an obvious binding from one
+    // that only looks similar.
+    assert!(
+        body.contains("entry.split(':').next()"),
+        "the filter matches whole entries, so Ctrl+Enter would be dropped with Enter"
+    );
+
+    for key in ["esc", "enter", "tab", "↑/↓", "←/→"] {
+        assert!(
+            mod_src.contains(&format!("\"{key}\"")),
+            "an obvious binding is missing from the filter: {key}"
+        )
+    }
+}
+
+/// The hint must be copyable, because the alternate screen cannot be selected.
+#[test]
+fn the_picker_hint_is_copyable() {
+    let app_src = include_str!("../src/app/mod.rs");
+    assert!(
+        app_src.contains("]52;c;"),
+        "no OSC 52, so the clipboard cannot be set over ssh or on a headless box"
+    );
+    assert!(app_src.contains("fn osc52("), "the OSC 52 writer is gone");
+    let mod_src = include_str!("../src/ui/pickers/mod.rs");
+    assert!(
+        mod_src.contains("fn hint_text("),
+        "nothing reads back the hint that was rendered"
+    );
+    let keys = include_str!("../src/app/keys.rs");
+    assert!(
+        keys.contains("crate::ui::pickers::hint_text(self)"),
+        "no key copies the picker hint"
+    );
+}
+
+/// The info card must draw on a pane too short for its full height.
+///
+/// The cover shrinks with the box, so the card can render in less than the
+/// height it is designed at. Gating on the designed height instead meant the
+/// card silently vanished below roughly thirty rows of pane, which is most
+/// terminals.
 #[test]
 fn the_info_card_survives_a_short_pane() {
     let chrome = include_str!("../src/ui/chrome.rs");
