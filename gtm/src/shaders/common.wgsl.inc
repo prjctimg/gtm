@@ -74,12 +74,14 @@ fn wave_at(i: u32) -> vec2<f32> {
     if (i >= u.wave_count) {
         return vec2<f32>(0.0);
     }
-    let packed = u.wave[i / 4u];
-    switch (i % 4u) {
-        case 0u: { return vec2<f32>(packed.x, packed.y); }
-        case 1u: { return vec2<f32>(packed.z, packed.w); }
-        default: { return vec2<f32>(0.0); }
+    // A vec4 is two vec2 samples, not four: the index is `i / 2` and the
+    // component is chosen by `i % 2`. Dividing by four skipped every other pair
+    // and left the trace drawn from half the buffer.
+    let packed = u.wave[i / 2u];
+    if ((i % 2u) == 0u) {
+        return vec2<f32>(packed.x, packed.y);
     }
+    return vec2<f32>(packed.z, packed.w);
 }
 
 /// The theme's accents as colours in 0..1, interpolating the ramp.

@@ -193,7 +193,11 @@ impl Uniforms {
             band_count: job.band_count,
             band_width: (w / job.band_count.max(1)).max(1),
             bands: std::array::from_fn(|i| pack(&job.bands, i)),
-            wave_count: (job.wave_count as usize).min(WAVE / 2) as u32 * 2,
+            // Samples, not floats: one `vec4` carries two of them, so the
+            // ceiling is half the array. Capped before the rounding, not after —
+            // capping after let a full buffer report twice what it held and the
+            // sampler read past the end.
+            wave_count: ((job.wave_count as usize).min(WAVE / 2) & !1) as u32,
             pad2: [0; 3],
             wave: std::array::from_fn(|i| pack(&job.wave, i)),
             stereo: job.stereo,
