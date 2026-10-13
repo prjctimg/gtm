@@ -125,7 +125,10 @@ impl App {
 
     fn custom_station_target(&self, i: usize) -> Option<PreviewTarget> {
         self.radio.custom.get(i).map(|s| {
-            let id = s.uuid.clone().unwrap_or_else(|| format!("custom:{}", i + 1));
+            let id = s
+                .uuid
+                .clone()
+                .unwrap_or_else(|| format!("custom:{}", i + 1));
             PreviewTarget {
                 key: format!("radio:{id}"),
                 kind: PreviewKind::Radio {

@@ -1407,12 +1407,16 @@ pub trait Visualizer: Send + 'static {
     fn draw(&mut self, frame: &AudioFrame) -> Frame;
 }
 
+/// How a registered visualizer is built. One name per factory, so a caller
+/// asks for a name and gets an instance rather than a type it must know.
+type VisualizerFactory = fn() -> Box<dyn Visualizer>;
+
 /// Factories for the visualizers the client ships. The built-in `Audio` one is
 /// registered here and gates on the same `ExtensionId::Visualizer` kill switch
 /// that already decides whether spectrum frames move at all.
 #[derive(Default)]
 pub struct VisualizerRegistry {
-    entries: Vec<(&'static str, fn() -> Box<dyn Visualizer>)>,
+    entries: Vec<(&'static str, VisualizerFactory)>,
 }
 
 impl VisualizerRegistry {
@@ -1423,7 +1427,7 @@ impl VisualizerRegistry {
         registry
     }
 
-    pub fn register(&mut self, name: &'static str, factory: fn() -> Box<dyn Visualizer>) {
+    pub fn register(&mut self, name: &'static str, factory: VisualizerFactory) {
         if !self.entries.iter().any(|(n, _)| *n == name) {
             self.entries.push((name, factory));
         }
@@ -1444,11 +1448,7 @@ impl VisualizerRegistry {
 /// Route A: sample an RGBA frame into `▀` cells, the foreground the upper pixel
 /// and the background the lower one. It works on every terminal the cell
 /// renderer works on, which is why the eager shader path falls back to it.
-pub fn pixels_to_lines(
-    img: &RgbaImage,
-    out_w: u16,
-    out_h: u16,
-) -> Lines<'static> {
+pub fn pixels_to_lines(img: &RgbaImage, out_w: u16, out_h: u16) -> Lines<'static> {
     let (ow, oh) = (out_w.max(1) as u32, out_h.max(1) as u32);
     let (iw, ih) = (img.width().max(1), img.height().max(1));
     let mut lines = Vec::with_capacity(oh as usize);
@@ -1474,10 +1474,7 @@ pub fn pixels_to_lines(
             } else {
                 Color::Rgb(bot[0], bot[1], bot[2])
             };
-            spans.push(Span::styled(
-                "▀",
-                Style::default().fg(fg).bg(bg),
-            ));
+            spans.push(Span::styled("▀", Style::default().fg(fg).bg(bg)));
         }
         lines.push(Line::from(spans));
     }
@@ -1631,7 +1628,8 @@ mod tests {
         assert!(v.resting, "decay-to-rest must trigger while stopped");
         assert!(v.bands.iter().all(|&b| b < PAUSED_DECAY_EPSILON));
         assert!(
-            v.render(Rect::new(0, 0, 40, 6), &crate::theme::chadrula()).is_none(),
+            v.render(Rect::new(0, 0, 40, 6), &crate::theme::chadrula())
+                .is_none(),
             "a stopped visualizer must draw nothing"
         );
     }
@@ -1646,7 +1644,10 @@ mod tests {
             v.backdate_tick();
         }
         assert!(v.bars.iter().any(|&b| b > 0.5));
-        assert!(v.render(Rect::new(0, 0, 40, 6), &crate::theme::chadrula()).is_some());
+        assert!(
+            v.render(Rect::new(0, 0, 40, 6), &crate::theme::chadrula())
+                .is_some()
+        );
     }
 
     /// The whole point of the reactive theme here: changing only the artwork

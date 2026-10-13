@@ -1,0 +1,69 @@
+# gtm RPM Spec — binary packaging of prebuilt release artifacts.
+#
+# Build (from the repository root, with a staged rootfs tree in ./stage):
+#   rpmbuild -bb \
+#     --define "_topdir $PWD/rpmbuild" \
+#     --define "gtm_version <X.Y.Z>" \
+#     --define "gtm_staging $PWD/stage" \
+#     dist/rpm/gtm.spec
+#
+# The stage tree is a rootfs-style layout (usr/bin/gtm, usr/share/man/man1,
+# ...) assembled by the release workflow.
+
+%global debug_package %{nil}
+%global _userunitdir %{_prefix}/lib/systemd/user
+
+Name: gtm
+Version: %{gtm_version}
+Release: 1
+Summary: gtm - feature rich and cross platform terminal audio player
+License: GPL-3.0-only
+URL: https://github.com/prjctimg/gtm
+Requires: alsa-lib
+
+%description
+gtm is a feature rich and cross platform terminal audio player with
+background playback and YouTube/Spotify integration.
+
+%install
+cp -a %{gtm_staging}/. %{buildroot}/
+
+%files
+%{_datadir}/licenses/gtm/LICENSE
+%{_bindir}/gtm
+%{_bindir}/gtmd
+%{_userunitdir}/gtmd.service
+%{_mandir}/man1/gtm.1*
+%{_mandir}/man1/gtmd.1*
+%{_mandir}/man1/gtmd-ipc.1*
+%{_datadir}/applications/gtm.desktop
+%{_datadir}/icons/hicolor/scalable/apps/gtm.svg
+%{_datadir}/bash-completion/completions/gtm
+%{_datadir}/bash-completion/completions/gtmd
+%{_datadir}/zsh/site-functions/_gtm
+%{_datadir}/zsh/site-functions/_gtmd
+%{_datadir}/fish/vendor_completions.d/gtm.fish
+%{_datadir}/fish/vendor_completions.d/gtmd.fish
+%{_datadir}/elvish/lib/gtm.elv
+%{_datadir}/elvish/lib/gtmd.elv
+%{_datadir}/powershell/Modules/gtm.ps1
+%{_datadir}/powershell/Modules/gtmd.ps1
+
+%post
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+fi
+
+%preun
+if [ "$1" = 0 ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl --user disable --now gtmd.service >/dev/null 2>&1 || true
+fi
+
+%postun
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+fi
+
+%changelog
+* %{gtm_changelog_date} prjctimg <prjctimg@outlook.com> - %{gtm_version}-1
+- Initial binary package release

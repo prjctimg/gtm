@@ -400,7 +400,7 @@ impl App {
         }
         let first = self.list_scroll;
         let last = first
-            .saturating_add(self.viewport_items.max(8) as usize)
+            .saturating_add(self.viewport_items.max(8))
             .saturating_add(3);
         let urls: Vec<String> = match self.track_info_kind() {
             TrackInfoKind::Chart => self.charts.charts

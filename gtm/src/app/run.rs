@@ -1220,9 +1220,7 @@ impl App {
                             && self.popup_track_id == Some(track_id)
                             && self.popup_slot.matches(fetch_gen)
                         {
-                            self.popup_id_cover = cover
-                                .clone()
-                                .map(|bytes| (track_id, bytes));
+                            self.popup_id_cover = cover.clone().map(|bytes| (track_id, bytes));
                             self.track_popup_cover = cover;
                             self.popup_cover_sync();
                             self.cover_art_dirty = true;
