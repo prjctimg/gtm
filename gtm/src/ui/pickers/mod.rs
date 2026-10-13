@@ -128,15 +128,12 @@ impl Pickers {
             PickerId::Radio => {
                 // One merged panel, sized like the Spotify picker.
                 //
-                // The panel is a fixed 60 columns rather than following the longest
-                // station name in every
-                // sub-list, which could reach 100. Radio Browser station names are
-                // arbitrarily long and frequently so, so a content-sized panel
-                // would be at its
-                // widest for the rows that needed it least: a station called
-                // "Radio Paradise — Main Mix Channel, 128k AAC" pushed the
-                // list to the edge of a 120-column terminal and the *next*
-                // picker open was a different size. A fixed box with the
+                // Fixed at 60 columns rather than measured from the station
+                // names. Radio Browser names are arbitrarily long and often so,
+                // so a content-sized panel is widest exactly for the rows that
+                // need it least — "Radio Paradise — Main Mix Channel, 128k AAC"
+                // pushes the list to the edge of a 120-column terminal, and the
+                // *next* picker opens a different size. A fixed box with the
                 // highlighted row's text scrolling inside it is the same trick
                 // the footer and the track card already use.
                 (60, 28)

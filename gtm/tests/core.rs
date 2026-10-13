@@ -4230,6 +4230,10 @@ fn a_state_change_refreshes_every_widget() {
         .find("pub(crate) fn mark_all_dirty")
         .expect("no mark_all_dirty");
     let sweep = &run[at..(at + 700).min(run.len())];
+    let footer_at = run
+        .find("pub(crate) fn mark_footer_dirty")
+        .expect("no mark_footer_dirty");
+    let mark_footer_dirty = &run[footer_at..(footer_at + 400).min(run.len())];
     for flag in [
         "self.data_dirty = true;",
         "self.cover_art_dirty = true;",
@@ -4242,20 +4246,16 @@ fn a_state_change_refreshes_every_widget() {
         );
     }
 
-    // Every reconciliation must set `changed`, not merely update its tracker.
-    // Scoped to the single line rather than to a window: each branch assigns its
-    // tracker before the next comparison is written, so a window search runs
-    // past the block and finds the following branch's marker instead of its own.
+    // Every reconciliation must either set `changed` or, for a tracker whose
+    // widgets do not need a full sweep, mark only what reads it. Scoped to the
+    // single line rather than to a window: each branch assigns its tracker
+    // before the next comparison is written, so a window search runs past the
+    // block and finds the following branch's marker instead of its own.
     let recon = run
         .find("// Detect state changes.")
         .expect("the reconciliation block moved");
     let recon = &run[recon..(recon + 3200).min(run.len())];
-    for tracker in [
-        "prev_track_id",
-        "prev_status",
-        "prev_volume",
-        "prev_cover_id",
-    ] {
+    for tracker in ["prev_track_id", "prev_status", "prev_cover_id"] {
         // The assignment and its `changed = true` sit on the *next* line, so
         // this looks at the following one rather than the remainder of this.
         let lines: Vec<&str> = recon.lines().collect();
@@ -4269,6 +4269,29 @@ fn a_state_change_refreshes_every_widget() {
             "a {tracker} change no longer marks the frame for a sweep"
         );
     }
+    // Volume is the exception, and deliberately so: the footer's readout is the
+    // only thing that reads it, so a held volume key must not invalidate the
+    // track list and the cover art. It still has to mark the frame, through the
+    // narrow repaint, or the readout would wait for the periodic sweep.
+    assert!(
+        recon.contains("mark_footer_dirty"),
+        "a volume change marks nothing, so the footer waits for the periodic sweep"
+    );
+    let lines: Vec<&str> = recon.lines().collect();
+    let vol_at = lines
+        .iter()
+        .position(|l| l.contains("self.prev_volume = "))
+        .unwrap_or_else(|| panic!("prev_volume is no longer reconciled"));
+    let vol_block = &lines[vol_at..(vol_at + 4).min(lines.len())].join("\n");
+    assert!(
+        !vol_block.contains("changed = true;"),
+        "a volume change marks a full sweep again, so holding the key rebuilds every widget"
+    );
+    assert!(
+        !mark_footer_dirty.contains("cover_art_dirty")
+            && !mark_footer_dirty.contains("track_anim_trigger"),
+        "mark_footer_dirty must stay narrow: only the footer reads volume"
+    );
     assert!(
         recon.contains("std::mem::take(&mut self.full_sync)"),
         "a latched full sync is not consumed, so it would sweep every frame forever"
