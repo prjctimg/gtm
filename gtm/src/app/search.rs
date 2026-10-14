@@ -1101,9 +1101,28 @@ impl App {
     pub fn group_representative(&self, pos: usize) -> Option<&TrackInfo> {
         let filter = self.library_filter;
         let name = self.library_groups_of(filter).get(pos)?.0.clone();
-        self.library_tracks()
+        let mut rows = self
+            .library_tracks()
             .into_iter()
-            .find(|t| Self::group_key(filter, t) == name)
+            .filter(|t| Self::group_key(filter, t) == name);
+        let first = rows.next()?;
+        // A group is one row on screen, so the card draws one sleeve for it, and
+        // the sleeve has to be the group's rather than the first track's: "the
+        // single" is a track with no album art, and the rest of that album has
+        // plenty. Prefer a member the art cache can actually answer for — a local
+        // path it can place, or a row that carries a cover url — and fall back to
+        // the head of the group only when nothing in it has art to name.
+        Some(match rows.find(|t| self.row_has_art(t)) {
+            Some(with_art) => with_art,
+            None => first,
+        })
+    }
+
+    /// Whether the art for `t` is reachable: a local file the daemon can place
+    /// beside its audio, or a remote row naming its own image.
+    fn row_has_art(&self, t: &TrackInfo) -> bool {
+        std::path::Path::new(&t.path).is_absolute() && t.id != 0
+            || t.cover_url.as_deref().is_some_and(|u| !u.is_empty())
     }
 
     /// The key a track is filed under for `filter` — one rule, because every

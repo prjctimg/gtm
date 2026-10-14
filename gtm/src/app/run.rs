@@ -22,6 +22,8 @@ pub(crate) fn parse_oauth_port(raw: &str) -> Result<u16, String> {
 }
 
 impl App {
+    /// Open the `gtm setup` walkthrough, either the service chooser or the
+    /// matching setup picker directly. Called from `gtm setup SERVICE`.
     pub fn open_setup_picker(&mut self, service: Option<&str>) {
         match service.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
             Some("spotify") => {
@@ -414,6 +416,13 @@ impl App {
                     // Any PlaybackStarted consumes the manual-advance flag.
                     self.manual_track_advance = false;
                     self.manual_advance_until = None;
+                    // Something started that the peek did not start, so the peek
+                    // no longer owns the transport. Left outstanding it would
+                    // stop this — or rewind to whatever it displaced — on the
+                    // next close of the radio picker, minutes away.
+                    if !self.sounding_peek() {
+                        self.peek_drop();
+                    }
                 }
                 // Advancing off the end of the queue stops playback instead of
                 // starting it, and so does a play the daemon refused -- and the
@@ -983,6 +992,9 @@ impl App {
                     }
                     IpcResult::ChartTracksLoaded(tracks) => {
                         self.charts.chart_tracks = tracks;
+                        // The chart itself has no artwork of its own, so the
+                        // sleeve its top entry just resolved is filed under it.
+                        self.charts.remember_cover();
                         // Warm the left card for the row that is now
                         // highlighted. Without this the card waits for the next
                         // cursor move, and at the row the user actually landed
@@ -1919,6 +1931,10 @@ impl App {
                 terminal.clear()?;
             }
         }
+        // The last chance to hand back a borrowed transport: the daemon outlives
+        // this process, so a peek still outstanding at exit keeps its station
+        // playing with no picker on screen to close and nothing left to undo it.
+        self.peek_end();
         Ok(())
     }
 

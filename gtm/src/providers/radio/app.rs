@@ -335,6 +335,10 @@ impl App {
                         None => format!("custom:{}", i + 1),
                     };
                     let c = self.client.clone();
+                    // The peek is over, not ended: the station sounding now is
+                    // this one by the user's own choice, so handing the
+                    // transport back would stop the music they just asked for.
+                    self.peek_drop();
                     self.pickers.close_top();
                     tokio::spawn(async move {
                         let _ = c.radio().play(&id, &station.name).await;
@@ -349,6 +353,7 @@ impl App {
                 };
                 if let Some(station) = stations.get(i).cloned() {
                     let c = self.client.clone();
+                    self.peek_drop();
                     self.pickers.close_top();
                     tokio::spawn(async move {
                         let _ = c.radio().play(&station.id, &station.name).await;

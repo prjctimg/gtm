@@ -226,18 +226,20 @@ impl Render {
     }
 
     pub(crate) fn content(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        // The onboarding view answers the whole pane: a library behind a welcome
-        // screen would be the first thing to read as broken.
-        if app.onboard {
-            crate::ui::bigtext::onboard(f, area, &app.theme, &app.icon_style, app.logo_phase());
-            return;
-        }
         if !app.is_ready {
             fill_pane(f, area, app);
             Render::loader(f, area, app, "Loading library\u{2026}");
-            return;
+        } else {
+            Render::library(f, area, app);
         }
-        Render::library(f, area, app);
+        // The welcome is a pane over the library rather than a view in place of
+        // it, the same as every picker: the program has already drawn itself by
+        // the time this shows, and a full view that hides it reads as a splash
+        // for something with nothing behind it.
+        if app.onboard {
+            dim_background(f, area);
+            crate::ui::bigtext::onboard(f, area, app);
+        }
     }
 
     /// Zen mode: render exactly one fullscreen surface at a time — the

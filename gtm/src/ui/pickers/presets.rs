@@ -192,71 +192,80 @@ impl Pickers {
     ) -> Vec<Line<'static>> {
         let w = width as usize;
         let mut lines = Vec::new();
+        // Every preset but Wave reads levels rather than samples, and PCM is
+        // signed: the absolute value is the level, and clamping keeps a loud
+        // transient from indexing past the top of a glyph ramp.
+        let levels: Vec<f32> = bars.iter().map(|b| b.abs().clamp(0.0, 1.0)).collect();
+        // One pass per row over the levels, handing the preset's own mapping the
+        // cell it is drawing: the row, the column, and the level there. Each
+        // preset is then the glyph-and-colour choice and nothing else, rather
+        // than a second copy of the loop that walks them.
+        let row = |n: usize, mut cell: Box<dyn FnMut(usize, usize, f32) -> (char, Color)>| {
+            (0..n)
+                .map(|r| {
+                    Line::from(
+                        levels
+                            .iter()
+                            .take(w)
+                            .enumerate()
+                            .map(|(x, &b)| {
+                                let (ch, color) = cell(r, x, b);
+                                Span::styled(ch.to_string(), Style::default().fg(color))
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
 
         match preset {
             VisualizerPreset::Braille => {
-                for row in 0..2 {
-                    let mut spans = Vec::with_capacity(w);
-                    for &b in bars.iter().take(w) {
-                        let level = (b * 4.0) as u32;
-                        let ch = match row {
-                            0 => {
-                                if level >= 4 {
-                                    '⣿'
-                                } else if level >= 3 {
-                                    '⣷'
-                                } else if level >= 2 {
-                                    '⣧'
-                                } else if level >= 1 {
-                                    '⣇'
-                                } else {
-                                    '⠀'
-                                }
-                            }
-                            _ => {
-                                if level >= 2 {
-                                    '⣿'
-                                } else if level >= 1 {
-                                    '⡇'
-                                } else {
-                                    '⠀'
-                                }
-                            }
+                lines.extend(row(
+                    2,
+                    Box::new(|r, _, b| {
+                        let l = (b * 4.0) as u32;
+                        let ch = match r {
+                            0 => match l {
+                                4.. => '⣿',
+                                3.. => '⣷',
+                                2.. => '⣧',
+                                1.. => '⠇',
+                                _ => '⠀',
+                            },
+                            _ => match l {
+                                2.. => '⣿',
+                                1.. => '⡇',
+                                _ => '⠀',
+                            },
                         };
-                        spans.push(Span::styled(
-                            ch.to_string(),
-                            Style::default().fg(app.theme.accent),
-                        ));
-                    }
-                    lines.push(Line::from(spans));
-                }
+                        (ch, app.theme.accent)
+                    }),
+                ));
             }
             VisualizerPreset::Blocks | VisualizerPreset::Mirror => {
-                let levels = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-                for row in 0..2 {
-                    let mut spans = Vec::with_capacity(w);
-                    for &b in bars.iter().take(w) {
+                const GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+                lines.extend(row(
+                    2,
+                    Box::new(move |r, _, b| {
                         let idx = ((b * 7.0).round() as usize).min(7);
-                        let ch = if row == 0 {
-                            levels[idx]
-                        } else {
-                            levels[7 - idx]
-                        };
+                        let ch = if r == 0 { GLYPHS[idx] } else { GLYPHS[7 - idx] };
                         let color = if b > 0.7 {
                             app.theme.warning
                         } else {
                             app.theme.accent
                         };
-                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-                    }
-                    lines.push(Line::from(spans));
-                }
+                        (ch, color)
+                    }),
+                ));
             }
             VisualizerPreset::Gradient => {
-                for row in 0..2 {
-                    let mut spans = Vec::with_capacity(w);
-                    for (i, &b) in bars.iter().take(w).enumerate() {
-                        let t = i as f64 / w.max(1) as f64;
+                lines.extend(row(
+                    2,
+                    Box::new(|_, x, b| {
+                        // The ramp runs across the pane, which is the point of
+                        // this preset: one colour per third of the width rather
+                        // than a level-coloured bar like every other.
+                        let t = x as f64 / w.max(1) as f64;
                         let color = if t < 0.33 {
                             app.theme.accent
                         } else if t < 0.66 {
@@ -264,54 +273,41 @@ impl Pickers {
                         } else {
                             app.theme.tertiary_accent
                         };
-                        let ch = if row == 0 {
-                            if b > 0.5 {
-                                '█'
-                            } else if b > 0.25 {
-                                '▄'
-                            } else {
-                                '▁'
-                            }
+                        let ch = if b > 0.5 {
+                            '█'
+                        } else if b > 0.25 {
+                            if t < 0.5 { '▄' } else { '▀' }
                         } else {
-                            if b > 0.5 {
-                                '█'
-                            } else if b > 0.25 {
-                                '▀'
-                            } else {
-                                '▔'
-                            }
+                            if t < 0.5 { '▁' } else { '▔' }
                         };
-                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-                    }
-                    lines.push(Line::from(spans));
-                }
+                        (ch, color)
+                    }),
+                ));
             }
             VisualizerPreset::Spectrum => {
-                for row in 0..2 {
-                    let mut spans = Vec::with_capacity(w);
-                    for &b in bars.iter().take(w) {
-                        let level = (b * 7.0).round() as usize;
-                        let ch = if row == 0 {
-                            ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'][level.min(7)]
-                        } else {
-                            ['█', '▇', '▆', '▅', '▄', '▃', '▂', '▁'][level.min(7)]
-                        };
-                        // The real renderer ramps through `amplitude_color`; a
-                        // hardcoded orange here both ignored the theme and
-                        // previewed a preset that does not look like itself.
-                        let color = crate::visualizer::amplitude_color(b, &app.theme);
-                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-                    }
-                    lines.push(Line::from(spans));
-                }
+                // The real renderer ramps through `amplitude_color`; a hardcoded
+                // colour here both ignored the theme and previewed a preset that
+                // does not look like itself.
+                lines.extend(row(
+                    2,
+                    Box::new(|r, _, b| {
+                        const UP: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+                        const DOWN: [char; 8] = ['█', '▇', '▆', '▅', '▄', '▃', '▂', '▁'];
+                        let i = ((b * 7.0).round() as usize).min(7);
+                        (
+                            if r == 0 { UP[i] } else { DOWN[i] },
+                            crate::visualizer::amplitude_color(b, &app.theme),
+                        )
+                    }),
+                ));
             }
             VisualizerPreset::BarsDot => {
-                for row in 0..2 {
-                    let mut spans = Vec::with_capacity(w);
-                    for &b in bars.iter().take(w) {
-                        let level = (b * 7.0) as u32;
-                        let ch = if row == 0 {
-                            match level {
+                lines.extend(row(
+                    2,
+                    Box::new(|r, _, b| {
+                        let l = (b * 7.0) as u32;
+                        let ch = if r == 0 {
+                            match l {
                                 6.. => '⣿',
                                 4.. => '⣷',
                                 2.. => '⣧',
@@ -319,26 +315,22 @@ impl Pickers {
                                 _ => '⠀',
                             }
                         } else {
-                            match level {
+                            match l {
                                 4.. => '⣿',
                                 2.. => '⡇',
                                 1.. => '⠁',
                                 _ => '⠀',
                             }
                         };
-                        spans.push(Span::styled(
-                            ch.to_string(),
-                            Style::default().fg(app.theme.accent),
-                        ));
-                    }
-                    lines.push(Line::from(spans));
-                }
+                        (ch, app.theme.accent)
+                    }),
+                ));
             }
             VisualizerPreset::ClassicPeak => {
-                for row in 0..2 {
-                    let mut spans = Vec::with_capacity(w);
-                    for &b in bars.iter().take(w) {
-                        let (ch, color) = if row == 0 {
+                lines.extend(row(
+                    2,
+                    Box::new(|r, _, b| {
+                        if r == 0 {
                             if b > 0.78 {
                                 ('⎺', app.theme.accent)
                             } else {
@@ -348,17 +340,15 @@ impl Pickers {
                             ('▏', app.theme.fg_bright)
                         } else {
                             (' ', app.theme.bg)
-                        };
-                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-                    }
-                    lines.push(Line::from(spans));
-                }
+                        }
+                    }),
+                ));
             }
             VisualizerPreset::Columns => {
-                for row in 0..2 {
-                    let mut spans = Vec::with_capacity(w);
-                    for &b in bars.iter().take(w) {
-                        let (ch, color) = if row == 0 {
+                lines.extend(row(
+                    2,
+                    Box::new(|r, _, b| {
+                        if r == 0 {
                             if b > 0.55 {
                                 ('█', app.theme.warning)
                             } else {
@@ -368,42 +358,61 @@ impl Pickers {
                             ('█', app.theme.accent)
                         } else {
                             (' ', app.theme.bg)
-                        };
-                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-                    }
-                    lines.push(Line::from(spans));
-                }
+                        }
+                    }),
+                ));
             }
             VisualizerPreset::Wave => {
-                // One-dot braille sweep: dot row follows the sine, column
-                // alternates for sub-cell horizontal resolution.
-                const ONE_DOT: [char; 8] = ['⠁', '⠂', '⠄', '⡀', '⠈', '⠐', '⠠', '⣀'];
-                for _ in 0..2 {
-                    let mut spans = Vec::with_capacity(w);
-                    for i in 0..w {
-                        let t = i as f64 / w.max(1) as f64;
-                        let v = (t * std::f64::consts::TAU * 1.5).sin();
-                        let y_dot = ((1.0 - v) * 1.5) as usize;
-                        let ch = ONE_DOT[y_dot.min(3) + if i % 2 == 0 { 0 } else { 4 }];
-                        spans.push(Span::styled(
-                            ch.to_string(),
-                            Style::default().fg(app.theme.accent),
-                        ));
-                    }
-                    lines.push(Line::from(spans));
-                }
+                // A dot sweep over the samples themselves, the dot row following
+                // the signal within each cell's four rows. A sine written here
+                // instead would be the preview drawing a waveform that is not
+                // playing, which is the one thing this window now exists for.
+                //
+                // Walked over `bars` and not `levels`: this is the one preset
+                // that wants the sign, since a waveform's shape is the part
+                // above the centre line as much as the part below it.
+                const DOTS: [char; 4] = ['⠁', '⠉', '⠛', '⣿'];
+                lines.extend((0..2).map(|_| {
+                    Line::from(
+                        bars.iter()
+                            .take(w)
+                            .map(|&b| {
+                                let y = ((0.5 - b) * 3.0).round().clamp(0.0, 3.0) as usize;
+                                Span::styled(
+                                    DOTS[y].to_string(),
+                                    Style::default().fg(app.theme.accent),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                }));
             }
             VisualizerPreset::Stereo => {
+                // Read straight off the interleaved ring rather than off `bars`:
+                // the two lanes are the two channels, and a quieter copy of the
+                // left is a meter that claims a stereo source is mono.
+                let ring = &app.state.wave_samples;
+                let lanes: Vec<Vec<f32>> = if ring.len() >= 2 && app.state.wave_stereo {
+                    vec![vec![], vec![]]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(lane, mut out)| {
+                            out.extend(ring.iter().skip(lane).step_by(2).map(|s| s.abs()));
+                            out
+                        })
+                        .collect()
+                } else {
+                    vec![levels.clone(); 2]
+                };
                 let meter = w.saturating_sub(3);
-                for (lane, label) in [(0usize, "L "), (1usize, "R ")] {
+                for (lane, label) in lanes.iter().zip(["L ", "R "]) {
                     let mut spans = vec![Span::styled(
                         label,
                         Style::default()
                             .fg(app.theme.fg_dim)
-                            .add_modifier(ratatui::style::Modifier::BOLD),
+                            .add_modifier(Modifier::BOLD),
                     )];
-                    for (x, &b) in bars.iter().take(meter).enumerate() {
-                        let lvl = if lane == 0 { b } else { b * 0.72 };
+                    for (x, &lvl) in lane.iter().take(meter).enumerate() {
                         let filled = (lvl * meter as f32) as usize;
                         let (ch, color) = if x < filled {
                             ('█', app.theme.accent)
@@ -420,29 +429,30 @@ impl Pickers {
                 }
             }
             VisualizerPreset::Retro => {
-                for row in 0..3 {
-                    let mut spans = Vec::with_capacity(w);
-                    for i in 0..w {
-                        let center = i as f64 / w.max(1) as f64;
-                        let dist = (center - 0.5).abs() * 2.0;
-                        let (ch, color) = match row {
-                            0 if dist < 0.62 => ('⠛', app.theme.accent),
-                            0 => (' ', app.theme.bg),
-                            1 => ('▔', app.theme.fg_dim),
-                            _ if dist < 0.4 => ('⣀', app.theme.fg_dim),
-                            _ if dist < 0.75 => ('⣀', app.theme.secondary_accent),
-                            _ => ('⣀', app.theme.tertiary_accent),
-                        };
-                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-                    }
-                    lines.push(Line::from(spans));
-                }
+                lines.extend((0..3).map(|r| {
+                    Line::from(
+                        (0..w)
+                            .map(|x| {
+                                let dist = (x as f64 / w.max(1) as f64 - 0.5).abs() * 2.0;
+                                let (ch, color) = match r {
+                                    0 if dist < 0.62 => ('⠛', app.theme.accent),
+                                    0 => (' ', app.theme.bg),
+                                    1 => ('▔', app.theme.fg_dim),
+                                    _ if dist < 0.4 => ('⣀', app.theme.fg_dim),
+                                    _ if dist < 0.75 => ('⣀', app.theme.secondary_accent),
+                                    _ => ('⣀', app.theme.tertiary_accent),
+                                };
+                                Span::styled(ch.to_string(), Style::default().fg(color))
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                }));
             }
             VisualizerPreset::Flame => {
-                for row in 0..2 {
-                    let mut spans = Vec::with_capacity(w);
-                    for &b in bars.iter().take(w) {
-                        let (ch, color) = if row == 0 {
+                lines.extend(row(
+                    2,
+                    Box::new(|r, _, b| {
+                        if r == 0 {
                             if b > 0.6 {
                                 ('⠛', app.theme.warning)
                             } else if b > 0.25 {
@@ -452,11 +462,9 @@ impl Pickers {
                             }
                         } else {
                             ('⣀', app.theme.accent)
-                        };
-                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-                    }
-                    lines.push(Line::from(spans));
-                }
+                        }
+                    }),
+                ));
             }
         }
         lines

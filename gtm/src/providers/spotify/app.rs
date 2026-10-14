@@ -583,16 +583,7 @@ impl App {
     }
 
     pub(crate) fn spotify_preview_sync(&mut self) {
-        match (&self.spotify.preview_cover, &self.np_cover.picker) {
-            (Some(bytes), Some(picker)) => {
-                if let Ok(img) = image::load_from_memory(bytes) {
-                    self.spotify.preview_cover_stateful = Some(picker.new_resize_protocol(img));
-                } else {
-                    self.spotify.preview_cover_stateful = None;
-                }
-            }
-            _ => self.spotify.preview_cover_stateful = None,
-        }
+        self.spotify.preview_cover_stateful = self.protocol(self.spotify.preview_cover.as_deref());
     }
 
     /// Fetch cover art for the highlighted SpotifySearch picker row (a web
@@ -669,24 +660,26 @@ impl App {
         {
             return;
         }
-        let fetch_gen = self.next_cover_gen();
-        self.spotify.preview_fetch.claim(url.clone(), fetch_gen);
         if no_image_protocol() {
             return;
         }
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            let bytes = match client.spotify().track_image(&url).await {
-                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
-                _ => None,
-            };
-            let msg = match bytes {
-                Some(bytes) => IpcResult::SpotifyPreviewCover(Some(bytes), url, fetch_gen),
-                None => IpcResult::SpotifyPreviewCover(None, url, fetch_gen),
-            };
-            let _ = ipc_tx.send(msg);
-        });
+        cover_get(
+            &self.client,
+            &self.ipc_tx,
+            &mut self.spotify.preview_fetch,
+            url.clone(),
+            IpcResult::SpotifyPreviewCover,
+            move |c| {
+                Box::pin(async move {
+                    c.spotify()
+                        .track_image(&url)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(b64)
+                })
+            },
+        );
     }
 
     /// Fetch cover art for the highlighted row of the playlist drill-down.
@@ -718,22 +711,25 @@ impl App {
             return;
         }
         self.spotify.row_cover_index = Some(track.index);
-        let fetch_gen = self.next_cover_gen();
-        self.spotify.row_fetch.claim(url.clone(), fetch_gen);
         self.spotify.row_cover = None;
         self.spotify.row_cover_stateful = None;
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            let msg = match client.spotify().track_image(&url).await {
-                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD
-                    .decode(&b64)
-                    .map(Some)
-                    .unwrap_or(None),
-                _ => None,
-            };
-            let _ = ipc_tx.send(IpcResult::SpotifyRowCover(msg, url, fetch_gen));
-        });
+        cover_get(
+            &self.client,
+            &self.ipc_tx,
+            &mut self.spotify.row_fetch,
+            url.clone(),
+            IpcResult::SpotifyRowCover,
+            move |c| {
+                Box::pin(async move {
+                    c.spotify()
+                        .track_image(&url)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(b64)
+                })
+            },
+        );
     }
     /// Build the image protocol for the drill-down cover.
     ///
@@ -742,26 +738,12 @@ impl App {
     /// the half-block character fallback — which is what made these two covers
     /// look pixelated beside every other one.
     pub(crate) fn row_cover_sync(&mut self) {
-        match (&self.spotify.row_cover, &self.np_cover.picker) {
-            (Some(bytes), Some(picker)) => {
-                self.spotify.row_cover_stateful = image::load_from_memory(bytes)
-                    .ok()
-                    .map(|img| picker.new_resize_protocol(img));
-            }
-            _ => self.spotify.row_cover_stateful = None,
-        }
+        self.spotify.row_cover_stateful = self.protocol(self.spotify.row_cover.as_deref());
     }
 
     /// Build the image protocol for the highlighted playlist's cover.
     pub(crate) fn list_cover_sync(&mut self) {
-        match (&self.spotify.list_cover, &self.np_cover.picker) {
-            (Some(bytes), Some(picker)) => {
-                self.spotify.list_cover_stateful = image::load_from_memory(bytes)
-                    .ok()
-                    .map(|img| picker.new_resize_protocol(img));
-            }
-            _ => self.spotify.list_cover_stateful = None,
-        }
+        self.spotify.list_cover_stateful = self.protocol(self.spotify.list_cover.as_deref());
     }
 
     /// Drop the drill-down cover, so leaving the view does not leave a stale image
@@ -806,20 +788,23 @@ impl App {
         {
             return;
         }
-        let fetch_gen = self.next_cover_gen();
-        self.spotify.list_fetch.claim(url.clone(), fetch_gen);
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            let msg = match client.spotify().track_image(&url).await {
-                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD
-                    .decode(&b64)
-                    .map(Some)
-                    .unwrap_or(None),
-                _ => None,
-            };
-            let _ = ipc_tx.send(IpcResult::SpotifyListCover(msg, url, fetch_gen));
-        });
+        cover_get(
+            &self.client,
+            &self.ipc_tx,
+            &mut self.spotify.list_fetch,
+            url.clone(),
+            IpcResult::SpotifyListCover,
+            move |c| {
+                Box::pin(async move {
+                    c.spotify()
+                        .track_image(&url)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(b64)
+                })
+            },
+        );
     }
     /// Drop the playlist cover so a stale image cannot outlive its selection.
     pub fn clear_list_cover(&mut self) {

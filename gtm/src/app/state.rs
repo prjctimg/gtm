@@ -323,6 +323,32 @@ pub struct ChartsView {
     pub chart_tracks: Vec<crate::shared::chart::ChartTrack>,
     pub selected_source: Option<usize>,
     pub selected_chart: Option<usize>,
+    /// Artwork per chart id, filed from the tracks that chart loaded.
+    ///
+    /// A chart is a ranking rather than a release, so the providers mostly
+    /// publish no image for the list itself — iTunes carries none at all, and a
+    /// chart row with no art is a column of empty cards. Its top entry does
+    /// have one, and the track list already resolved it, so the sleeve is
+    /// remembered under the chart that owns it rather than fetched twice.
+    pub covers: std::collections::HashMap<String, String>,
+}
+
+impl ChartsView {
+    /// The artwork remembered for the chart at `i`, if it has been opened.
+    pub fn cover_of(&self, i: usize) -> Option<String> {
+        self.covers.get(&self.charts.get(i)?.id).cloned()
+    }
+
+    /// File the current chart's number-one sleeve under that chart.
+    pub fn remember_cover(&mut self) {
+        let hit = (
+            self.selected_chart.and_then(|i| self.charts.get(i)),
+            self.chart_tracks.iter().find_map(|t| t.cover_url.clone()),
+        );
+        if let (Some(chart), Some(url)) = hit {
+            self.covers.insert(chart.id.clone(), url);
+        }
+    }
 }
 
 /// One decoded cover, kept beside its bytes.
@@ -661,7 +687,7 @@ pub struct LyricsView {
     /// a fetch was pending) are dropped when they don't match this.
     pub pending_gen: Option<u64>,
     /// Monotonic generation counter for lyrics fetches, disambiguates stale
-    /// responses on fast track skips (mirrors `next_cover_gen`).
+    /// responses on fast track skips.
     pub next_gen: u64,
     pub show: bool,
     /// Whether the lyrics pane holds focus. While true, MoveUp/Down,

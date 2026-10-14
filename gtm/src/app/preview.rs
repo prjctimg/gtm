@@ -33,6 +33,14 @@ impl App {
     /// re-arms the timer when the cursor moves to another row, then starts the
     /// preview once the configured delay has elapsed with nothing else playing.
     pub(crate) fn poll_preview(&mut self) {
+        // A peek is only owed while the radio picker is the thing on screen to
+        // close. Every other way out of it — a command that closes the picker
+        // directly, a picker opened over the top — ends the borrow as surely as
+        // Esc does, and a station left sounding under a picker that is no longer
+        // there has nothing left to give it back.
+        if self.peek_station.is_some() && !self.pickers.has(PickerId::Radio) {
+            self.peek_end();
+        }
         let target = self.preview_target();
         let key = target.as_ref().map(|t| t.key.clone());
         if key != self.preview_hover {
@@ -202,8 +210,28 @@ impl App {
                 });
                 true
             }
-            PlaybackStatus::Playing => self.peek_station.is_some(),
+            PlaybackStatus::Playing => self.sounding_peek(),
         }
+    }
+
+    /// Whether the station on air is the one an outstanding peek started.
+    ///
+    /// The question every peek decision turns on: a peek owns the transport only
+    /// while what is sounding is what it started, and this says so without the
+    /// callers having to know how a station is spelled in a track path.
+    pub(crate) fn sounding_peek(&self) -> bool {
+        let Some(id) = self.peek_station.as_deref() else {
+            return false;
+        };
+        // A station is queued as `radio://<id>` or `radio://<id>/<name>`, and the
+        // id is the whole of it — so that is what is compared, rather than the
+        // whole path, which the stream's own title can change under us.
+        self.state
+            .current_track
+            .as_ref()
+            .and_then(|t| t.path.strip_prefix("radio://"))
+            .and_then(|rest| rest.split('/').next())
+            .is_some_and(|sounding| sounding == id)
     }
 
     /// Begin a peek of `id`, unless that station is the one already sounding.
@@ -219,6 +247,17 @@ impl App {
         });
     }
 
+    /// Forget an outstanding peek without touching the transport.
+    ///
+    /// The other half of [`Self::peek_end`]: for when playback has moved on by
+    /// somebody else's decision — the user picked a station of their own, a track
+    /// auto-advanced — so handing the transport back would stop or rewind what
+    /// they actually asked for.
+    pub(crate) fn peek_drop(&mut self) {
+        self.peek_station = None;
+        self.peek_restore = None;
+    }
+
     /// Put the transport back the way a peek found it.
     ///
     /// A peek that displaced a *paused* track brings it back where it stopped
@@ -227,7 +266,16 @@ impl App {
     /// started from silence just stops. Idempotent, so closing the picker twice
     /// is harmless.
     pub(crate) fn peek_end(&mut self) {
+        // A peek is only a peek while the thing sounding is the thing it
+        // started. Anything else — the user chose a station of their own, a
+        // track auto-advanced — means the transport has moved on, and stopping
+        // it here would silence the music they are actually listening to.
+        let owned = self.sounding_peek();
         if self.peek_station.take().is_none() {
+            return;
+        }
+        if !owned {
+            self.peek_restore = None;
             return;
         }
         let c = self.client.clone();

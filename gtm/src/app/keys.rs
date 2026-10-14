@@ -336,7 +336,7 @@ impl App {
                     if self.pending_motion == Some('g') {
                         // Second 'g': execute jump to start
                         self.pending_motion = None;
-                        self.set_list_pos(0);
+                        self.select_row(0);
 
                         return true;
                     } else {
@@ -352,7 +352,7 @@ impl App {
                     // Advance by one row in the *current* pane list (track
                     // lists, playlist tracks, chart tracks alike).
                     let max = self.library_list_len().saturating_sub(1);
-                    self.set_list_pos((pos + 1).min(max));
+                    self.select_row((pos + 1).min(max));
                     let count = self.selected_count();
                     self.notify_typed(
                         "System",
@@ -383,8 +383,7 @@ impl App {
                         1isize
                     };
                     let next = (self.list_pos() as isize + step).clamp(0, max_list as isize);
-                    self.set_list_pos(next as usize);
-                    self.update_track_popup();
+                    self.select_row(next as usize);
                     return true;
                 }
                 match self.keybindings.dispatch(key, KeyContext::Normal) {
@@ -813,10 +812,10 @@ impl App {
                             } else if self.browse_detail.is_some() {
                                 self.browse_detail = None;
                                 self.browse_title = None;
-                                self.set_list_pos(0);
                                 if self.library_category == LIB_SPOTIFY {
                                     self.spotify.playlist_tracks_cache.clear();
                                 }
+                                self.select_row(0);
                             } else if self.library_category == LIB_PODCASTS
                                 && self.podcast.episodes_feed_id.is_some()
                             {
@@ -824,7 +823,7 @@ impl App {
                                 // list. Same two-level shape as the charts.
                                 self.podcast.episodes.clear();
                                 self.podcast.episodes_feed_id = None;
-                                self.set_list_pos(0);
+                                self.select_row(0);
                             } else if self.library_category == LIB_CHARTS {
                                 // Top Charts: three-level back navigation, the
                                 // same shape `Esc` walks. Without this, Backspace
@@ -837,19 +836,17 @@ impl App {
                                     // Level 2 -> Level 1
                                     self.charts.selected_chart = None;
                                     self.charts.chart_tracks.clear();
-                                    self.set_list_pos(0);
                                     // The card now describes a chart, not a
                                     // track, and the two read different lists.
-                                    self.update_track_popup();
+                                    self.select_row(0);
                                 } else if self.charts.selected_source.is_some() {
                                     // Level 1 -> Level 0: refetch so a freshly
                                     // linked Spotify account shows up.
                                     self.charts.selected_source = None;
                                     self.charts.charts.clear();
                                     self.charts.chart_tracks.clear();
-                                    self.set_list_pos(0);
                                     self.fetch_chart_sources();
-                                    self.update_track_popup();
+                                    self.select_row(0);
                                 } else {
                                     self.library_pane_focus = true;
                                 }
@@ -919,16 +916,7 @@ impl App {
                             } else {
                                 1
                             };
-                            self.set_list_pos(self.list_pos().saturating_sub(step));
-                            self.update_track_popup();
-                            self.prefetch_playlist_lyrics();
-                            self.fetch_row_cover();
-                            self.fetch_list_cover();
-                            // Matches MoveDown: moving up re-enters rows the
-                            // downward pass already warmed, so without this the
-                            // covers above the cursor are the only ones left
-                            // cold.
-                            self.preload_row_covers();
+                            self.select_row(self.list_pos().saturating_sub(step));
                         }
                     }
                     Some(KeyboardAction::MoveDown) => {
@@ -958,12 +946,7 @@ impl App {
                             } else {
                                 1
                             };
-                            self.set_list_pos((self.list_pos() + step).min(max_list));
-                            self.update_track_popup();
-                            self.preload_row_covers();
-                            self.prefetch_playlist_lyrics();
-                            self.fetch_row_cover();
-                            self.fetch_list_cover();
+                            self.select_row((self.list_pos() + step).min(max_list));
                         }
                     }
                     Some(KeyboardAction::PageUp) => {
@@ -973,8 +956,7 @@ impl App {
                             self.lyrics.scroll = self.lyrics.scroll.saturating_sub(page);
                         } else if !self.library_pane_focus {
                             let page = self.viewport_items.max(1);
-                            self.set_list_pos(self.list_pos().saturating_sub(page));
-                            self.update_track_popup();
+                            self.select_row(self.list_pos().saturating_sub(page));
                         }
                     }
                     Some(KeyboardAction::PageDown) => {
@@ -991,9 +973,7 @@ impl App {
                         } else if !self.library_pane_focus {
                             let page = self.viewport_items.max(1);
                             let max_list = self.library_list_len().saturating_sub(1);
-                            self.set_list_pos((self.list_pos() + page).min(max_list));
-                            self.update_track_popup();
-                            self.preload_row_covers();
+                            self.select_row((self.list_pos() + page).min(max_list));
                         }
                     }
                     Some(KeyboardAction::MultiselectUp) => {
@@ -1004,8 +984,7 @@ impl App {
                         // two actions have always named the missing half.
                         if self.multiselect_ready("Multiselect Up") {
                             let pos = self.list_pos().saturating_sub(1);
-                            self.set_list_pos(pos);
-                            self.update_track_popup();
+                            self.select_row(pos);
                             self.add_row_selection(pos);
                         }
                     }
@@ -1013,9 +992,7 @@ impl App {
                         if self.multiselect_ready("Multiselect Down") {
                             let max_list = self.library_list_len().saturating_sub(1);
                             let pos = (self.list_pos() + 1).min(max_list);
-                            self.set_list_pos(pos);
-                            self.update_track_popup();
-                            self.preload_row_covers();
+                            self.select_row(pos);
                             self.add_row_selection(pos);
                         }
                     }
@@ -1024,7 +1001,7 @@ impl App {
                             self.lyrics.manual_scroll = true;
                             self.lyrics.scroll = 0;
                         } else if !self.library_pane_focus {
-                            self.set_list_pos(0);
+                            self.select_row(0);
                         }
                     }
                     Some(KeyboardAction::Bottom) => {
@@ -1039,7 +1016,7 @@ impl App {
                             self.lyrics.scroll = max;
                         } else if !self.library_pane_focus {
                             let max_list = self.library_list_len().saturating_sub(1);
-                            self.set_list_pos(max_list);
+                            self.select_row(max_list);
                         }
                     }
                     Some(KeyboardAction::Select) => {
@@ -1119,7 +1096,7 @@ impl App {
                                     // title left over from a Spotify drill-down must
                                     // not survive the switch.
                                     self.browse_title = None;
-                                    self.set_list_pos(0);
+                                    self.select_row(0);
                                 }
                             } else if self.library_category == LIB_PLAYLISTS {
                                 if !self.playlist_open {
@@ -1132,8 +1109,7 @@ impl App {
                                     {
                                         self.playlist_group = group;
                                         self.playlist_open = true;
-                                        self.set_list_pos(0);
-                                        self.dismiss_track_popup();
+                                        self.select_row(0);
                                         self.fetch_playlist_group();
                                         self.data_dirty = true;
                                     }
@@ -1155,8 +1131,8 @@ impl App {
                                             // any title left over from a Spotify
                                             // drill-down must not survive the switch.
                                             self.browse_title = None;
-                                            self.set_list_pos(0);
                                             self.playlist_tracks_cache.clear();
+                                            self.select_row(0);
                                             let c = self.client.clone();
                                             let ipc_tx2 = self.ipc_tx.clone();
                                             let pid = playlist.id;
@@ -1180,8 +1156,8 @@ impl App {
                                     let playlist = self.spotify.playlists[self.list_pos()].clone();
                                     self.browse_detail = Some(playlist.id.clone());
                                     self.browse_title = Some(playlist.name.clone());
-                                    self.set_list_pos(0);
                                     self.spotify.playlist_tracks_cache.clear();
+                                    self.select_row(0);
                                     let c = self.client.clone();
                                     let ipc_tx2 = self.ipc_tx.clone();
                                     let pid = playlist.id;
@@ -1222,7 +1198,7 @@ impl App {
                                     if let Some(feed) = self.podcast.feeds.get(pos).cloned() {
                                         self.podcast.episodes.clear();
                                         self.podcast.episodes_feed_id = Some(feed.id.clone());
-                                        self.set_list_pos(0);
+                                        self.select_row(0);
                                         self.fetch_podcast_episodes(feed.id);
                                     }
                                 } else {
@@ -1247,12 +1223,11 @@ impl App {
                                         self.charts.selected_chart = None;
                                         self.charts.charts.clear();
                                         self.charts.chart_tracks.clear();
-                                        self.set_list_pos(0);
                                         // The list is empty until the request
                                         // lands, so the card must go now rather
                                         // than describe a source that is no
                                         // longer the highlighted thing.
-                                        self.update_track_popup();
+                                        self.select_row(0);
                                         let source_id = self.charts.sources[pos].id.clone();
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
@@ -1281,8 +1256,7 @@ impl App {
                                     if pos < self.charts.charts.len() {
                                         self.charts.selected_chart = Some(pos);
                                         self.charts.chart_tracks.clear();
-                                        self.set_list_pos(0);
-                                        self.update_track_popup();
+                                        self.select_row(0);
                                         let source_id = self
                                             .charts
                                             .sources
@@ -1793,7 +1767,7 @@ impl App {
                     Some(KeyboardAction::JumpToEnd) => {
                         if !self.library_pane_focus {
                             let max = self.library_list_len().saturating_sub(1);
-                            self.set_list_pos(max);
+                            self.select_row(max);
                         }
                     }
                     Some(KeyboardAction::EditMetadata) => {
@@ -1849,7 +1823,7 @@ impl App {
                                 if self.browse_detail.is_some() {
                                     self.browse_detail = None;
                                     self.browse_title = None;
-                                    self.set_list_pos(0);
+                                    self.select_row(0);
                                 } else {
                                     return false;
                                 }
@@ -1858,33 +1832,30 @@ impl App {
                                 if self.browse_detail.is_some() {
                                     self.browse_detail = None;
                                     self.browse_title = None;
-                                    self.set_list_pos(0);
+                                    self.select_row(0);
                                 } else if self.library_category == LIB_PODCASTS
                                     && self.podcast.episodes_feed_id.is_some()
                                 {
                                     self.podcast.episodes.clear();
                                     self.podcast.episodes_feed_id = None;
-                                    self.set_list_pos(0);
+                                    self.select_row(0);
                                 } else if self.library_category == LIB_CHARTS {
                                     // Top Charts: three-level back navigation
                                     if self.charts.selected_chart.is_some() {
-                                        // Level 2 -> Level 1
+                                        // Level 2 -> Level 1. The card now
+                                        // describes a chart, not a track, and
+                                        // the two read different lists.
                                         self.charts.selected_chart = None;
                                         self.charts.chart_tracks.clear();
-                                        self.set_list_pos(0);
-                                        // The card now describes a chart, not a
-                                        // track, and the two read different
-                                        // lists.
-                                        self.update_track_popup();
+                                        self.select_row(0);
                                     } else if self.charts.selected_source.is_some() {
                                         // Level 1 -> Level 0: refetch so a
                                         // freshly linked Spotify shows up.
                                         self.charts.selected_source = None;
                                         self.charts.charts.clear();
                                         self.charts.chart_tracks.clear();
-                                        self.set_list_pos(0);
                                         self.fetch_chart_sources();
-                                        self.update_track_popup();
+                                        self.select_row(0);
                                     }
                                 }
                             }
@@ -3717,8 +3688,7 @@ impl App {
                                     self.pickers.close_top();
                                     if self.multiselect_ready("Multiselect Up") {
                                         let pos = self.list_pos().saturating_sub(1);
-                                        self.set_list_pos(pos);
-                                        self.update_track_popup();
+                                        self.select_row(pos);
                                         self.add_row_selection(pos);
                                     }
                                 } else if action == "multiselect down" {
@@ -3726,9 +3696,7 @@ impl App {
                                     if self.multiselect_ready("Multiselect Down") {
                                         let max = self.library_list_len().saturating_sub(1);
                                         let pos = (self.list_pos() + 1).min(max);
-                                        self.set_list_pos(pos);
-                                        self.update_track_popup();
-                                        self.preload_row_covers();
+                                        self.select_row(pos);
                                         self.add_row_selection(pos);
                                     }
                                 } else if action == "equalizer" {
@@ -3961,7 +3929,7 @@ impl App {
                                 } else if action == "jump to end" {
                                     if !self.needs_list("Jump to End") {
                                         let max = self.library_list_len().saturating_sub(1);
-                                        self.set_list_pos(max);
+                                        self.select_row(max);
                                     }
                                 } else if action == "edit metadata" {
                                     if !self.needs_list("Edit Metadata") {
@@ -4309,7 +4277,7 @@ impl App {
                     let genre = self.metadata.fields[4].clone();
                     let year = self.metadata.fields[5].parse::<i32>().ok();
                     let track_number = self.metadata.fields[6].parse::<i32>().ok();
-                    let fetch_gen = self.next_cover_gen();
+                    let fetch_gen = cover_gen();
                     self.metadata.cover_fetch.claim(track_id, fetch_gen);
                     let client = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
@@ -4326,16 +4294,18 @@ impl App {
                         // Persist edited metadata first so the cover lookup
                         // uses the updated artist/album/title.
                         let _ = client.library().update_metadata(track_id, patch).await;
-                        if let Ok(Some(b64)) = client.art().cover(track_id).await
-                            && let Ok(bytes) =
-                                base64::engine::general_purpose::STANDARD.decode(&b64)
-                        {
-                            let _ = ipc_tx.send(IpcResult::MetadataCoverArt(
-                                Some(bytes),
-                                track_id,
-                                fetch_gen,
-                            ));
-                        }
+                        // Answer on a miss as every other cover reply does: the
+                        // slot stays claimed otherwise, and a claimed slot is
+                        // one this row can never ask for again.
+                        let bytes = client
+                            .art()
+                            .cover(track_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(b64);
+                        let _ =
+                            ipc_tx.send(IpcResult::MetadataCoverArt(bytes, track_id, fetch_gen));
                     }));
                     self.metadata.cover_dirty = true;
                     self.notify_titled(

@@ -695,9 +695,6 @@ pub struct App {
     pub artist_cover: Option<Vec<u8>>,
     pub artist_cover_stateful: Option<StatefulProtocol>,
     pub(crate) artist_slot: FetchSlot<String>,
-    // Monotonic generation counter for all cover fetches — disambiguates
-    // stale responses and `id == 0` reuse across different tracks.
-    pub(crate) next_cover_gen: u64,
     pub lyrics: LyricsView,
     /// Zen-mode flag: fullscreen now-playing / visualizer surfaces.
     pub zen: bool,
@@ -1164,12 +1161,6 @@ impl App {
         blend_colors(washed, ratatui::style::Color::Rgb(255, 255, 255), LIFT)
     }
 
-    pub(crate) fn next_cover_gen(&mut self) -> u64 {
-        let g = self.next_cover_gen;
-        self.next_cover_gen = self.next_cover_gen.wrapping_add(1).max(1);
-        g
-    }
-
     /// The track on air for a live stream, as `(title, artist)`, or `None` for
     /// anything else so callers fall back to the ordinary track metadata.
     ///
@@ -1556,7 +1547,6 @@ impl App {
             artist_cover: None,
             artist_cover_stateful: None,
             artist_slot: FetchSlot::default(),
-            next_cover_gen: 1,
             lyrics: LyricsView {
                 current: None,
                 scroll: 0,
@@ -1667,7 +1657,6 @@ impl App {
         }
     }
 
-    /// Filtered tracks for the current library view, respecting search query, browse_detail, and category.
     /// Selection index for the currently active library list (per-category,
     /// see the `scroll_offset` field).
     pub fn list_pos(&self) -> usize {
@@ -1678,6 +1667,25 @@ impl App {
     pub fn set_list_pos(&mut self, v: usize) {
         let slot = self.view_slot();
         self.scroll_offset[slot] = v;
+    }
+
+    /// Move the cursor to `v` and refresh everything that follows it.
+    ///
+    /// One entry point because "the highlighted row changed" has seven
+    /// consequences, and each of the six key paths and the mouse path used to
+    /// name its own subset of them: the card described the previous row until the
+    /// *next* keypress, a click landed the cursor without the card following it,
+    /// and the cover the row was scrolled to arrived after the request for the
+    /// row one below had already been sent.
+    pub fn select_row(&mut self, v: usize) {
+        self.set_list_pos(v);
+        self.update_track_popup();
+        self.prefetch_playlist_lyrics();
+        self.fetch_row_cover();
+        self.fetch_list_cover();
+        // Matches the downward pass: the rows above the cursor are the ones the
+        // upward warm skips, so without this a scroll up shows cold covers.
+        self.preload_row_covers();
     }
 
     /// Step the filter of whatever view is on screen: the Library grouping, or
@@ -1748,8 +1756,11 @@ impl App {
             self.browse_detail = None;
             self.browse_title = None;
         }
-        self.dismiss_track_popup();
-        self.set_list_pos(0);
+        // Rebuilt rather than dismissed: the card describes the row under the
+        // cursor, and the cursor has just been put at the top of a *different*
+        // list. Leaving it dismissed until the next keypress made `[` and `]`
+        // blank the left pane outright.
+        self.select_row(0);
         self.data_dirty = true;
         self.last_action_name = Some((
             format!("Library: {}", self.library_filter.label()),
@@ -1781,7 +1792,7 @@ impl App {
             self.browse_detail = None;
             self.browse_title = None;
         }
-        self.set_list_pos(0);
+        self.select_row(0);
         self.fetch_playlist_group();
         self.data_dirty = true;
         self.last_action_name = Some((
@@ -2002,7 +2013,10 @@ impl App {
             MouseZone::ListItem(i) => {
                 let double = self.mouse_map.is_double_click(zone);
                 self.library_pane_focus = false;
-                self.set_list_pos(i);
+                // Through the same entry point the cursor keys use, so the card
+                // describes the row that was clicked rather than the row that
+                // happened to be highlighted before the click.
+                self.select_row(i);
                 if double {
                     let key = event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
                     self.handle_key(key).await;
@@ -2065,6 +2079,15 @@ impl App {
     /// Close the top picker, clearing per-picker state that Esc must reset
     /// (same cleanup for arrow-key closes, ).
     fn close_picker(&mut self) {
+        // The radio peek is the one picker state that is not the picker's: it
+        // borrows the transport, and every way out of the picker owes that
+        // transport its freedom. Checked here rather than in the per-picker match
+        // because the borrow outlives the picker — the ~30 `close_top` calls
+        // elsewhere close radio without reaching this cleanup, which is how a
+        // peeked station kept playing with nothing on screen to say so.
+        if self.pickers.top().is_some_and(|o| o.id == PickerId::Radio) {
+            self.peek_end();
+        }
         if let Some(top) = self.pickers.top() {
             match top.id {
                 PickerId::SleepTimer => self.sleep_timer.remaining = None,
@@ -2094,12 +2117,7 @@ impl App {
                 PickerId::Queue => {
                     self.clear_preview();
                 }
-                PickerId::Radio => {
-                    // A peek borrowed the transport to sound the highlighted
-                    // station; closing the picker is the user saying they are
-                    // done choosing, so the transport goes back.
-                    self.peek_end();
-                }
+                PickerId::Radio => {}
                 PickerId::PlaylistTrackSelect => {
                     self.pending_playlist_id = None;
                     self.selected_track_ids.clear();

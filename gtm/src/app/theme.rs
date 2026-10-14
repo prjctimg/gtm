@@ -4,17 +4,17 @@ use crate::reactive::{ReactivePalette, from_hex};
 use crate::ui::pre_gain_label;
 
 impl App {
-    /// Open the `gtm setup` walkthrough, either the service chooser or the
-    /// matching setup picker directly. Called from `gtm setup SERVICE`.
-    /// Advance the About window's decorative visualization.
+    /// Advance the About window's visualizer.
+    ///
+    /// Repaints when something is playing — the waveform it draws moves on its
+    /// own — and when the preset rotates. Idle, neither happens, so an open About
+    /// window stops asking for frames it has nothing new to put in them.
     pub fn tick_about_viz(&mut self, now: std::time::Instant) {
-        let width = 64usize;
-        if self.about_viz.bars.len() != width {
-            self.about_viz.bars = vec![0.0; width];
+        let live =
+            self.state.status == PlaybackStatus::Playing && !self.state.wave_samples.is_empty();
+        if live || self.about_viz.tick(now) {
+            self.data_dirty = true;
         }
-        self.about_viz.tick(now);
-        // Cosmetic only, but the frame loop still needs to repaint.
-        self.data_dirty = true;
     }
 
     /// Snapshot of the user-facing preferences resolved from current indices.

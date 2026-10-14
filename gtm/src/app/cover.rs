@@ -1,8 +1,71 @@
 use crate::app::*;
 use crate::ui::step_viewport;
 use ratatui::layout::Rect;
+use ratatui_image::protocol::StatefulProtocol;
+
+/// Decoded cover bytes from a base64 reply, or `None` for a miss or a body the
+/// image crate cannot read.
+pub(crate) fn b64(s: String) -> Option<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD.decode(&s).ok()
+}
+
+/// Ask the daemon for one cover, claim `slot` for it, and answer `reply` on both
+/// a hit and a miss.
+///
+/// Every cover surface claimed a slot, spawned a task, decoded the reply and
+/// built its own message; eight copies of that shape is eight chances to forget
+/// the miss. A silent miss leaves the slot claimed, and a claimed slot is one the
+/// surface reads as in-flight forever — so a track whose art the daemon had not
+/// cached yet stayed blank for the rest of the session however much you scrolled.
+pub(crate) fn cover_get<T, G, R>(
+    client: &DaemonClient,
+    ipc_tx: &mpsc::UnboundedSender<IpcResult>,
+    slot: &mut FetchSlot<T>,
+    key: T,
+    reply: R,
+    get: G,
+) -> u64
+where
+    T: Clone + PartialEq + Send + 'static,
+    G: FnOnce(DaemonClient) -> futures::future::BoxFuture<'static, Option<Vec<u8>>>
+        + Send
+        + 'static,
+    R: FnOnce(Option<Vec<u8>>, T, u64) -> IpcResult + Send + 'static,
+{
+    let version = cover_gen();
+    slot.claim(key.clone(), version);
+    let client = client.clone();
+    let ipc_tx = ipc_tx.clone();
+    tokio::spawn(async move {
+        let bytes = get(client).await;
+        let _ = ipc_tx.send(reply(bytes, key, version));
+    });
+    version
+}
+
+/// The next cover-fetch generation, shared by every surface that stamps one.
+///
+/// A process-wide counter rather than a field on `App`: the only thing it has to
+/// guarantee is that no two replies carry the same generation, so holding it in
+/// one place means a surface that rolls its own cannot collide with a slot it
+/// does not own. Disambiguates stale replies and `id == 0` reuse alike.
+pub(crate) fn cover_gen() -> u64 {
+    static GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 impl App {
+    /// The image protocol for `bytes`, decoded once.
+    ///
+    /// Every cover on screen is drawn through one of these: `Render::cover`
+    /// wants a protocol rather than bytes, and decoding an image per frame is
+    /// what makes a preview flicker rather than hold still. One decoder for all
+    /// of them, so a cover can never be missing because its own surface spelled
+    /// the decode differently from the other eight.
+    pub(crate) fn protocol(&self, bytes: Option<&[u8]>) -> Option<StatefulProtocol> {
+        let img = image::load_from_memory(bytes?).ok()?;
+        Some(self.np_cover.picker.as_ref()?.new_resize_protocol(img))
+    }
     /// Fetch the artwork for the track on air.
     ///
     /// One entry point because three things want these bytes — a track change,
@@ -27,7 +90,7 @@ impl App {
         // two fields are set here for every caller, entering Zen included.
         self.np_cover.track_id = Some(tid);
         self.np_cover.track_path = Some(track.path.clone());
-        let fetch_gen = self.next_cover_gen();
+        let fetch_gen = cover_gen();
         self.np_cover.pending_gen = Some(fetch_gen);
         // One request, the same one every other surface makes: by library id
         // *and* exact path. The daemon prefers a resolved `cover_path` and
@@ -47,11 +110,9 @@ impl App {
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
             let mut bytes = match client.art().cover_for(tid, art_path).await {
-                Ok(b64) => {
-                    b64.and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
-                }
+                Ok(enc) => enc.and_then(b64),
                 Err(_) => match client.art().cover(tid).await {
-                    Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
+                    Ok(Some(enc)) => b64(enc),
                     _ => None,
                 },
             };
@@ -63,10 +124,7 @@ impl App {
             // Always answer, including "no art": the reply handler only clears
             // `pending_gen` on a reply, so a silent miss would leave the slot
             // claimed for the rest of the session.
-            let msg = bytes.map_or(IpcResult::CoverArt(None, Some(tid), fetch_gen), |bytes| {
-                IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen)
-            });
-            let _ = ipc_tx.send(msg);
+            let _ = ipc_tx.send(IpcResult::CoverArt(bytes, Some(tid), fetch_gen));
         });
     }
 
@@ -163,15 +221,17 @@ impl App {
             }
             TrackInfoKind::Album | TrackInfoKind::Artist => {
                 let pos = self.list_pos();
-                self.group_representative(pos).map(|t| {
-                    // A group whose first track is remote (a Spotify album row)
-                    // has no library id to look the art up by; it is named by
-                    // the cover url just like a remote track row.
-                    if !std::path::Path::new(&t.path).is_absolute() {
-                        remote_url = t.cover_url.clone();
-                    }
-                    (t.id, t.path.clone())
-                })
+                let (hit, url) = self.group_representative(pos).map_or((None, None), |t| {
+                    // A group whose representative is remote (a Spotify album
+                    // row) has no library id to look the art up by; it is named
+                    // by the cover url just like a remote track row.
+                    let url = (!std::path::Path::new(&t.path).is_absolute())
+                        .then(|| t.cover_url.clone())
+                        .flatten();
+                    (Some((t.id, t.path.clone())), url)
+                });
+                remote_url = url;
+                hit
             }
             // Playlist and Spotify rows never resolve a local cover; the block
             // still describes the selected row. A chart row resolves its own
@@ -291,31 +351,27 @@ impl App {
             self.popup_cover_stateful = None;
             return;
         }
-        let fetch_gen = self.next_cover_gen();
-        self.popup_slot.claim(tid, fetch_gen);
         self.track_popup_cover = None;
         self.popup_cover_stateful = None;
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        let art_path = path.clone();
-        tokio::spawn(async move {
-            // By id *and* path. The daemon resolves a library row by id first
-            // and only then falls back to the queue, so asking by id alone
-            // missed every row whose art is known from the queue entry — which
-            // is every row the resolver labelled without a local file behind it.
-            let bytes = match client.art().cover_for(tid, Some(art_path)).await {
-                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
-                _ => None,
-            };
-            // Answer on a miss too: a silent failure leaves `popup_slot`
-            // claimed, and the handler treats a claimed slot as "in flight", so
-            // the row could never be re-fetched for the rest of the session.
-            let msg = match bytes {
-                Some(bytes) => IpcResult::PopupCoverArt(Some(bytes), tid, fetch_gen),
-                None => IpcResult::PopupCoverArt(None, tid, fetch_gen),
-            };
-            let _ = ipc_tx.send(msg);
-        });
+        cover_get(
+            &self.client,
+            &self.ipc_tx,
+            &mut self.popup_slot,
+            tid,
+            IpcResult::PopupCoverArt,
+            move |c| {
+                let (tid, path) = (tid, path.clone());
+                Box::pin(async move {
+                    // By id *and* path. The daemon resolves a library row by id
+                    // first and only then falls back to the queue, so asking by
+                    // id alone missed every row whose art is known from the queue
+                    // entry — which is every row the resolver labelled without a
+                    // local file behind it.
+                    let enc = c.art().cover_for(tid, Some(path)).await.ok().flatten()?;
+                    b64(enc)
+                })
+            },
+        );
     }
 
     /// Dismiss the track popup.
@@ -333,8 +389,15 @@ impl App {
     /// the station in text instead.
     fn popup_cover_url(&self) -> Option<String> {
         let pos = self.list_pos();
+        let own = |i: usize| {
+            self.charts
+                .charts
+                .get(i)
+                .and_then(|c| c.cover_url.clone())
+                .or_else(|| self.charts.cover_of(i))
+        };
         match self.track_info_kind() {
-            TrackInfoKind::Chart => self.charts.charts.get(pos)?.cover_url.clone(),
+            TrackInfoKind::Chart => own(pos),
             TrackInfoKind::ChartTrack => self.charts.chart_tracks.get(pos)?.cover_url.clone(),
             _ => None,
         }
@@ -369,19 +432,24 @@ impl App {
             self.cover_art_dirty = true;
             return;
         }
-        let fetch_gen = self.next_cover_gen();
-        self.spotify_popup_slot.claim(url.clone(), fetch_gen);
+        // One in flight per url, like every other cover: without this a cursor
+        // move re-claimed the slot and threw the previous request's answer away,
+        // and a chart row — the only one named by a CDN url rather than a local
+        // id — re-fetched faster than a cold image GET could answer, so its
+        // cover never landed at all.
+        if self.spotify_popup_slot.pending(&url) {
+            return;
+        }
         self.track_popup_cover = None;
         self.popup_cover_stateful = None;
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            // A miss answers with `None` rather than staying silent: an
-            // unanswered fetch leaves the slot claimed and every later cover
-            // for this row dropped.
-            let bytes = client.image_cover(&url).await.ok().flatten();
-            let _ = ipc_tx.send(IpcResult::SpotifyPopupCover(bytes, url, fetch_gen));
-        });
+        cover_get(
+            &self.client,
+            &self.ipc_tx,
+            &mut self.spotify_popup_slot,
+            url.clone(),
+            IpcResult::SpotifyPopupCover,
+            |c| Box::pin(async move { c.image_cover(&url).await.ok().flatten() }),
+        );
     }
 
     /// Warm the artwork for the chart rows on screen and just off it, at
@@ -432,115 +500,90 @@ impl App {
     /// Fetch cover art for the highlighted SearchLibrary picker row so the
     /// preview window can render the actual album art as ASCII.
     pub fn update_picker_preview(&mut self) {
-        let Some(top) = self.pickers.top() else {
-            // Robust: invalidate pending fetch_gen so close/reopen does not retain stale key
+        // Robust: invalidate pending fetch_gen so close/reopen does not retain stale key
+        let tid = self
+            .pickers
+            .top()
+            .filter(|top| top.id == PickerId::SearchLibrary)
+            .and_then(|top| {
+                let picks = self.search_library_picks();
+                let sel = top.selected.min(picks.len().saturating_sub(1));
+                match picks.get(sel)? {
+                    LibraryPick::Track(i) => self.tracks_cache.get(*i).map(|t| t.id),
+                    _ => None,
+                }
+            });
+        let Some(tid) = tid else {
             self.picker_preview_cover = None;
             self.picker_preview_stateful = None;
             self.picker_slot.clear();
             return;
         };
-        if top.id != PickerId::SearchLibrary {
-            self.picker_preview_cover = None;
-            self.picker_preview_stateful = None;
-            self.picker_slot.clear();
-            return;
-        }
-        let picks = self.search_library_picks();
-        if picks.is_empty() {
-            self.picker_preview_cover = None;
-            self.picker_preview_stateful = None;
-            self.picker_slot.clear();
-            return;
-        }
-        let sel = top.selected.min(picks.len() - 1);
-        let LibraryPick::Track(i) = &picks[sel] else {
-            self.picker_preview_cover = None;
-            self.picker_preview_stateful = None;
-            self.picker_slot.clear();
-            return;
-        };
-        let tid = self.tracks_cache[*i].id;
         // Generation-guarded dedup: id reuse (id==0) cannot block new fetches.
         // Only skip when both id and generation match current pending.
         if self.picker_slot.pending(&tid) {
             return;
         }
-        let fetch_gen = self.next_cover_gen();
-        self.picker_slot.claim(tid, fetch_gen);
         self.picker_preview_cover = None;
         self.picker_preview_stateful = None;
         if no_image_protocol() {
             return;
         }
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            // Answer on a miss so `picker_slot` is released; see the popup
-            // fetch above for why a silent failure is not self-clearing.
-            let bytes = match client.art().cover(tid).await {
-                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
-                _ => None,
-            };
-            let msg = match bytes {
-                Some(bytes) => IpcResult::PickerPreviewCover(Some(bytes), tid, fetch_gen),
-                None => IpcResult::PickerPreviewCover(None, tid, fetch_gen),
-            };
-            let _ = ipc_tx.send(msg);
-        });
+        cover_get(
+            &self.client,
+            &self.ipc_tx,
+            &mut self.picker_slot,
+            tid,
+            IpcResult::PickerPreviewCover,
+            move |c| Box::pin(async move { c.art().cover(tid).await.ok().flatten().and_then(b64) }),
+        );
     }
 
     pub fn update_artist_cover(&mut self) {
-        let Some(top) = self.pickers.top() else {
+        let name = self
+            .pickers
+            .top()
+            .filter(|top| top.id == PickerId::SearchLibrary)
+            .and_then(|top| {
+                let picks = self.search_library_picks();
+                let sel = top.selected.min(picks.len().saturating_sub(1));
+                match picks.get(sel)? {
+                    LibraryPick::Artist(name) => Some(name.clone()),
+                    _ => None,
+                }
+            });
+        let Some(name) = name else {
             self.artist_cover = None;
             self.artist_cover_stateful = None;
             self.artist_slot.clear();
             return;
         };
-        if top.id != PickerId::SearchLibrary {
-            self.artist_cover = None;
-            self.artist_cover_stateful = None;
-            self.artist_slot.clear();
+        if self.artist_slot.pending(&name) {
             return;
         }
-        let picks = self.search_library_picks();
-        if picks.is_empty() {
-            self.artist_cover = None;
-            self.artist_cover_stateful = None;
-            self.artist_slot.clear();
-            return;
-        }
-        let sel = top.selected.min(picks.len() - 1);
-        let LibraryPick::Artist(name) = &picks[sel] else {
-            self.artist_cover = None;
-            self.artist_cover_stateful = None;
-            self.artist_slot.clear();
-            return;
-        };
-        if self.artist_slot.pending(name) {
-            return;
-        }
-        let fetch_gen = self.next_cover_gen();
-        self.artist_slot.claim(name.clone(), fetch_gen);
         self.artist_cover = None;
         self.artist_cover_stateful = None;
         if no_image_protocol() {
             return;
         }
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        let artist = name.clone();
-        tokio::spawn(async move {
-            // Answer on a miss so `artist_slot` is released.
-            let bytes = match client.art().artist_cover(artist.clone()).await {
-                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
-                _ => None,
-            };
-            let msg = match bytes {
-                Some(bytes) => IpcResult::ArtistCoverArt(Some(bytes), artist, fetch_gen),
-                None => IpcResult::ArtistCoverArt(None, artist, fetch_gen),
-            };
-            let _ = ipc_tx.send(msg);
-        });
+        cover_get(
+            &self.client,
+            &self.ipc_tx,
+            &mut self.artist_slot,
+            name.clone(),
+            IpcResult::ArtistCoverArt,
+            move |c| {
+                let artist = name.clone();
+                Box::pin(async move {
+                    c.art()
+                        .artist_cover(artist)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(b64)
+                })
+            },
+        );
     }
 
     /// Whether the cover grid can be shown now, saying why not if it cannot.
@@ -786,26 +829,31 @@ impl App {
     }
 
     pub(crate) fn cover_sync(&mut self) {
-        match (&self.np_cover.image, &self.np_cover.picker) {
-            (Some(bytes), Some(picker)) => match image::load_from_memory(bytes) {
-                Ok(img) => self.np_cover.stateful = Some(picker.new_resize_protocol(img)),
-                Err(_) => self.np_cover.stateful = None,
-            },
-            _ => self.np_cover.stateful = None,
-        }
+        self.np_cover.stateful = self.protocol(self.np_cover.image.as_deref());
     }
 
     pub(crate) fn popup_cover_sync(&mut self) {
-        match (&self.track_popup_cover, &self.np_cover.picker) {
-            (Some(bytes), Some(picker)) => {
-                if let Ok(img) = image::load_from_memory(bytes) {
-                    self.popup_cover_stateful = Some(picker.new_resize_protocol(img));
-                } else {
-                    self.popup_cover_stateful = None;
+        self.popup_cover_stateful = self.protocol(self.track_popup_cover.as_deref());
+    }
+
+    /// The PCM of whatever is playing, resampled to `w` columns.
+    ///
+    /// The ring is interleaved L/R, so a column reads every other sample and a
+    /// column wider than the ring repeats its last frame rather than running off
+    /// the end of the buffer — the bug that made a wide window show half a
+    /// waveform and then flat silence.
+    pub fn wave_columns(&self, w: u16) -> Vec<f32> {
+        let ring = &self.state.wave_samples;
+        let n = ring.len();
+        (0..w as usize)
+            .map(|x| {
+                if n < 2 {
+                    return 0.0;
                 }
-            }
-            _ => self.popup_cover_stateful = None,
-        }
+                let i = ((x as f64 * n as f64 / w.max(1) as f64) as usize / 2 * 2).min(n - 2);
+                ring[i]
+            })
+            .collect()
     }
 
     /// Fetch cover art for the queue picker's preview strip, once per row.
@@ -850,76 +898,37 @@ impl App {
         if self.queue.preview_slot.pending(&key) {
             return;
         }
-        let fetch_gen = self.next_cover_gen();
-        self.queue.preview_slot.claim(key.clone(), fetch_gen);
-        self.queue.preview_cover = None;
-        self.queue.preview_cover_stateful = None;
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            // Report failure as `None` too, so the pending-gen guard is
-            // released and a later save/queue change can retry the lookup.
-            let cover = if let Ok(Some(b64)) = client.art().cover_for(tid, Some(key.clone())).await
-            {
-                base64::engine::general_purpose::STANDARD.decode(&b64).ok()
-            } else {
-                None
-            };
-            let _ = ipc_tx.send(IpcResult::QueuePreviewCover(cover, key, fetch_gen));
-        });
+        cover_get(
+            &self.client,
+            &self.ipc_tx,
+            &mut self.queue.preview_slot,
+            key.clone(),
+            IpcResult::QueuePreviewCover,
+            move |c| {
+                let key = key.clone();
+                Box::pin(async move {
+                    let enc = c.art().cover_for(tid, Some(key)).await.ok().flatten()?;
+                    b64(enc)
+                })
+            },
+        );
     }
 
     pub(crate) fn sync_preview_cover(&mut self) {
-        match (&self.queue.preview_cover, &self.np_cover.picker) {
-            (Some(bytes), Some(picker)) => {
-                if let Ok(img) = image::load_from_memory(bytes) {
-                    self.queue.preview_cover_stateful = Some(picker.new_resize_protocol(img));
-                } else {
-                    self.queue.preview_cover_stateful = None;
-                }
-            }
-            _ => self.queue.preview_cover_stateful = None,
-        }
+        self.queue.preview_cover_stateful = self.protocol(self.queue.preview_cover.as_deref());
     }
 
     pub(crate) fn picker_preview_sync(&mut self) {
-        match (&self.picker_preview_cover, &self.np_cover.picker) {
-            (Some(bytes), Some(picker)) => {
-                if let Ok(img) = image::load_from_memory(bytes) {
-                    self.picker_preview_stateful = Some(picker.new_resize_protocol(img));
-                } else {
-                    self.picker_preview_stateful = None;
-                }
-            }
-            _ => self.picker_preview_stateful = None,
-        }
+        self.picker_preview_stateful = self.protocol(self.picker_preview_cover.as_deref());
     }
 
     /// (Re)build the stateful cover protocol for the Edit Metadata preview.
     pub(crate) fn metadata_cover_sync(&mut self) {
-        match (&self.metadata.cover, &self.np_cover.picker) {
-            (Some(bytes), Some(picker)) => {
-                if let Ok(img) = image::load_from_memory(bytes) {
-                    self.metadata.cover_stateful = Some(picker.new_resize_protocol(img));
-                } else {
-                    self.metadata.cover_stateful = None;
-                }
-            }
-            _ => self.metadata.cover_stateful = None,
-        }
+        self.metadata.cover_stateful = self.protocol(self.metadata.cover.as_deref());
     }
 
     pub(crate) fn artist_cover_sync(&mut self) {
-        match (&self.artist_cover, &self.np_cover.picker) {
-            (Some(bytes), Some(picker)) => {
-                if let Ok(img) = image::load_from_memory(bytes) {
-                    self.artist_cover_stateful = Some(picker.new_resize_protocol(img));
-                } else {
-                    self.artist_cover_stateful = None;
-                }
-            }
-            _ => self.artist_cover_stateful = None,
-        }
+        self.artist_cover_stateful = self.protocol(self.artist_cover.as_deref());
     }
 
     /// Fetch the cover art for the track currently being edited and stream it
@@ -933,27 +942,19 @@ impl App {
         if no_image_protocol() {
             return;
         }
-        let fetch_gen = self.next_cover_gen();
-        self.metadata.cover_fetch.claim(
-            self.metadata.edit_track_ids.first().copied().unwrap_or(0),
-            fetch_gen,
-        );
         // Clear stale cover while new fetch is in flight; handler will repopulate.
         self.metadata.cover = None;
         self.metadata.cover_stateful = None;
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover(track_id).await
-                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
-            {
-                let _ = ipc_tx.send(IpcResult::MetadataCoverArt(
-                    Some(bytes),
-                    track_id,
-                    fetch_gen,
-                ));
-            }
-        });
+        cover_get(
+            &self.client,
+            &self.ipc_tx,
+            &mut self.metadata.cover_fetch,
+            track_id,
+            IpcResult::MetadataCoverArt,
+            move |c| {
+                Box::pin(async move { c.art().cover(track_id).await.ok().flatten().and_then(b64) })
+            },
+        );
     }
 
     /// Ask the daemon for current cover cache usage so Settings can show it.

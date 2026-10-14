@@ -177,6 +177,11 @@ impl PickerManager {
     pub fn close_top(&mut self) {
         self.stack.pop();
     }
+
+    /// Whether a picker of `id` is on the stack.
+    pub fn has(&self, id: PickerId) -> bool {
+        self.stack.iter().any(|o| o.id == id)
+    }
 }
 
 impl Default for PickerManager {

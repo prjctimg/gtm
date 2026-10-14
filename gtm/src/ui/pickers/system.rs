@@ -42,16 +42,23 @@ impl Pickers {
             Line::from(""),
         ];
 
-        // Decorative visualization under the text, cycling presets every 5s.
+        // The visualization under the text, cycling presets every 5s. Drawn from the
+        // playback's own PCM rather than a synthetic waveform: an About window
+        // that animates identically whether or not anything is playing is
+        // decoration pretending to be a readout. Silent means no visualizer at
+        // all, so the window says what it can — version, licence — instead of
+        // showing a scope of nothing.
+        let live =
+            app.state.status == PlaybackStatus::Playing && !app.state.wave_samples.is_empty();
         let presets = VisualizerPreset::all();
-        if !presets.is_empty() {
+        if live && !presets.is_empty() {
             let preset = presets[app.about_viz.preset % presets.len()];
-            let width = inner.width.saturating_sub(2) as usize;
+            let width = inner.width.saturating_sub(2);
             if width > 0 && inner.height as usize > lines.len() + 4 {
                 lines.extend(Self::visualizer_preview_lines(
                     preset,
-                    &app.about_viz.bars,
-                    width as u16,
+                    &app.wave_columns(width),
+                    width,
                     app,
                 ));
             }
