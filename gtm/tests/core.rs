@@ -2858,6 +2858,7 @@ fn list_rows_have_no_bracketed_stream_suffix() {
 fn the_now_playing_cover_has_one_protocol() {
     let app = include_str!("../src/app/mod.rs");
     let cover = include_str!("../src/app/cover.rs");
+    let spotify = include_str!("../src/providers/spotify/app.rs");
     let chrome = include_str!("../src/ui/chrome.rs");
 
     assert!(
@@ -2865,9 +2866,51 @@ fn the_now_playing_cover_has_one_protocol() {
         "a per-pane protocol is back for a surface drawing the now-playing bytes"
     );
     assert!(
-        cover
-            .contains("Ok(img) => self.np_cover.stateful = Some(picker.new_resize_protocol(img)),"),
+        cover.contains(
+            "pub(crate) fn protocol(&self, bytes: Option<&[u8]>) -> Option<StatefulProtocol> {"
+        ),
         "the protocol is no longer built in one place from the decoded bytes"
+    );
+    // And every surface goes through it: a second decoder is how the same bytes
+    // end up rendered by two half-solved state machines.
+    assert!(
+        cover.contains("self.protocol(self.np_cover.image.as_deref())"),
+        "the now-playing cover builds its own protocol rather than the shared one"
+    );
+    for sync in [
+        "popup_cover_stateful = self.protocol(self.track_popup_cover.as_deref())",
+        "queue.preview_cover_stateful = self.protocol(self.queue.preview_cover.as_deref())",
+        "picker_preview_stateful = self.protocol(self.picker_preview_cover.as_deref())",
+        "metadata.cover_stateful = self.protocol(self.metadata.cover.as_deref())",
+        "artist_cover_stateful = self.protocol(self.artist_cover.as_deref())",
+    ] {
+        assert!(
+            cover.contains(sync),
+            "cover sync bypassed the decoder: {sync}"
+        );
+    }
+    // The Spotify surfaces draw the same bytes and live in another file, so
+    // they are pinned here too rather than trusted to follow.
+    for sync in [
+        "preview_cover_stateful = self.protocol(self.spotify.preview_cover.as_deref())",
+        "row_cover_stateful = self.protocol(self.spotify.row_cover.as_deref())",
+        "list_cover_stateful = self.protocol(self.spotify.list_cover.as_deref())",
+    ] {
+        assert!(
+            spotify.contains(sync),
+            "spotify cover sync bypassed the decoder: {sync}"
+        );
+    }
+    // The one decoder, and nothing else building a protocol from bytes.
+    assert_eq!(
+        cover.matches("new_resize_protocol").count(),
+        1,
+        "a second place builds a protocol from decoded bytes"
+    );
+    assert_eq!(
+        spotify.matches("new_resize_protocol").count(),
+        0,
+        "the spotify surfaces build their own protocols"
     );
     // Zen's Now Playing surface and the library band both read that state; a
     // second `Render::cover` on `np_cover` is fine, a second protocol is not.
@@ -3939,13 +3982,34 @@ fn charts_and_radio_rows_all_describe_themselves() {
 
     // A chart's own artwork, and a chart row's, go through the URL fetch; a
     // station resolves to none and its card is text.
-    assert!(
-        cover.contains("TrackInfoKind::Chart => self.charts.charts.get(pos)?.cover_url.clone(),")
-    );
+    //
+    // The chart *list* reads its own url, then the one remembered from the
+    // tracks that chart loaded: iTunes publishes no artwork for a ranking, so
+    // without the fallback every chart row is a blank card.
+    assert!(squish(cover).contains(&squish("TrackInfoKind::Chart => own(pos),")));
+    assert!(squish(cover).contains(&squish(
+        ".and_then(|c| c.cover_url.clone()) .or_else(|| self.charts.cover_of(i))"
+    )));
     assert!(cover.contains(
         "TrackInfoKind::ChartTrack => self.charts.chart_tracks.get(pos)?.cover_url.clone(),"
     ));
     assert!(cover.contains("pub(crate) fn fetch_url_cover(&mut self, url: Option<String>) {"));
+    // A URL-keyed fetch has to dedup like every other one, or a cursor move
+    // re-claims the slot and discards the reply it was waiting for.
+    assert!(
+        cover.contains("if self.spotify_popup_slot.pending(&url) {"),
+        "the URL fetch lost its in-flight guard"
+    );
+    // The sleeve is filed when the chart's tracks land, which is the only moment
+    // a ranking has an image to show.
+    assert!(
+        state.contains("pub fn remember_cover(&mut self) {"),
+        "a chart's top-entry sleeve is never filed, so its row stays blank"
+    );
+    assert!(
+        run.contains("self.charts.remember_cover();"),
+        "loading a chart's tracks no longer files its artwork"
+    );
 
     // The rows of a loaded chart are warmed around the cursor, not just the one
     // under it: the card shows a single row's art, so without this every step

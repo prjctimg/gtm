@@ -323,42 +323,63 @@ mod tests {
         })
         .unwrap();
         let buf = term.backend().buffer();
-        // Column 0 starts the first letter and the last column of the box ends
-        // the third; a name stacked in three bands would leave the last two
-        // thirds of every row blank.
         let ink = |x: u16, y: u16| buf[(x, y)].symbol() != " ";
-        let painted = (0..gh)
-            .map(|y| (0..w).filter(|&x| ink(x, y)).count() as u16)
-            .sum::<u16>();
-        assert!(
-            painted > w / 4,
-            "the name painted {painted} cells in an {w}x{gh} box: too few for three glyphs"
-        );
-        // The last letter's band of columns is painted, which is the part a
-        // one-line-per-letter layout left blank.
-        assert!(
-            (w - 7..w).all(|x| (0..gh).any(|y| ink(x, y))),
-            "the last letter's columns are blank: the name is not set side by side"
-        );
+        // Each letter owns 8 columns, and each must have ink in them. A name set
+        // as three lines puts each letter in its own row band instead, so the
+        // second and third bands would be blank — which is how `gtm` rendered
+        // as a lone `g`. Ink per band, not per column: an 8x8 glyph has blank
+        // columns of its own (`m` ends on its second-from-last), so demanding
+        // all eight would be asserting something about the font.
+        let gw = glyph_box(size).0;
+        for letter in 0..WORDMARK.chars().count() {
+            let at = letter as u16 * gw;
+            let painted = (at..at + gw)
+                .flat_map(|x| (0..gh).map(move |y| (x, y)))
+                .filter(|&(x, y)| ink(x, y))
+                .count();
+            assert!(
+                painted > 0,
+                "letter {letter} painted no cells in columns {}..{}: \
+                 the name is not set side by side",
+                at,
+                at + gw
+            );
+        }
     }
 
-    /// The pane is sized from what it has to hold, and shrinks rather than clip.
+    /// The name is fitted to the pane, and only the floor may still overflow.
+    ///
+    /// `fit` walks the sizes and takes the largest that fits, falling back to the
+    /// smallest when none does — a pane too narrow for even that clips rather
+    /// than drawing nothing, which is the documented trade.
     #[test]
-    fn fit_never_returns_nothing_that_clips() {
-        for w in [8u16, 12, 24, 40, 200] {
+    fn fit_takes_the_largest_size_that_fits() {
+        for w in [24u16, 40, 200] {
             for h in [2u16, 4, 8, 20] {
                 let size = fit(w, h);
-                let (gw, gh) = glyph_box(size);
+                let (_, gh) = glyph_box(size);
                 assert!(
                     u32::from(mark_width(size)) <= u32::from(w),
                     "{size:?} needs {} columns in {w}",
                     mark_width(size)
                 );
-                // Only the smallest size may still clip, and it is 8 columns of
-                // one-row glyphs: below that there is no name to draw.
                 assert!(gh <= h.max(1), "{size:?} needs {gh} rows in {h}");
-                let _ = gw;
+                // And nothing larger would have fit either, which is what makes
+                // this the *largest* rather than merely a size that fits.
+                for bigger in [PixelSize::Full, PixelSize::HalfHeight, PixelSize::HalfWidth] {
+                    if bigger == size {
+                        break;
+                    }
+                    let (_, bh) = glyph_box(bigger);
+                    assert!(
+                        u32::from(mark_width(bigger)) > u32::from(w) || bh > h,
+                        "{bigger:?} also fits {w}x{h}, so {size:?} was not the largest"
+                    );
+                }
             }
         }
+        // Below the narrowest name there is no size to fall back to, and the
+        // floor clips rather than vanishing.
+        assert_eq!(fit(8, 8), PixelSize::Octant);
     }
 }
