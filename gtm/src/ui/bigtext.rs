@@ -433,12 +433,14 @@ mod tests {
             "a character never reached the window"
         );
 
-        // And it wraps: past the end the head returns on the left, so the last
-        // character is followed by the first rather than by nothing.
-        let tail = slice(&spans, all.len() - 1, w);
-        let head = slice(&spans, 0, w);
-        assert_eq!(tail.last().unwrap().content.as_ref(), "j");
-        assert_eq!(head.first().unwrap().content.as_ref(), "a");
+        // And it wraps: scrolled to the last character, the head returns on the
+        // left rather than the row stopping. This is the whole behaviour — a
+        // truncated row would end here, at `j` followed by five blanks.
+        let tail: String = slice(&spans, all.len() - 1, w)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(tail, "jabcde", "the row did not wrap back to the head");
     }
 
     /// Styles survive the scroll, or the accent on the glyphs is lost.
@@ -453,9 +455,17 @@ mod tests {
         let row = slice(&spans, 1, 4);
         let text: String = row.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "bcde");
-        assert_eq!(row[0].style, accent);
-        assert_eq!(row[3].style, accent);
-        assert_ne!(row[1].style, row[2].style, "the middle kept its own style");
+        // Three spans, not four: `slice` merges neighbours that share a style,
+        // which is what keeps a sixty-column row from being sixty spans a
+        // frame. So `c` and `d` arrive as one plain span between two accent
+        // ones, and the accent survives at both ends of the window.
+        assert_eq!(row.len(), 3, "merging did not run: {text}");
+        assert_eq!(row[0].style, accent, "the first cell lost its accent");
+        assert_eq!(row[2].style, accent, "the last cell lost its accent");
+        assert_ne!(
+            row[0].style, row[1].style,
+            "the middle kept the accent it should not have"
+        );
     }
 
     /// The name is fitted to the pane, and only the floor may still overflow.
