@@ -156,33 +156,6 @@ pub(crate) fn default_daydream_secs() -> u64 {
 /// live while still collapsing a fast typist's burst into one request.
 pub(crate) const SEARCH_DEBOUNCE_MS: u64 = 250;
 
-/// How long each About-window visualization preset stays up.
-pub const ABOUT_VIZ_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// The About window's visualizer state.
-///
-/// The waveform is not held here: it is the playback's own PCM, read from the
-/// shared state on each draw. What this owns is which preset is showing, so the
-/// window has something to rotate even between tracks.
-#[derive(Default)]
-pub struct AboutViz {
-    pub preset: usize,
-    pub next_preset: Option<std::time::Instant>,
-}
-
-impl AboutViz {
-    /// Rotate the preset, and report whether it changed so the caller repaints.
-    pub(crate) fn tick(&mut self, now: std::time::Instant) -> bool {
-        let next = *self.next_preset.get_or_insert(now + ABOUT_VIZ_PERIOD);
-        if now < next {
-            return false;
-        }
-        self.preset = self.preset.wrapping_add(1);
-        self.next_preset = Some(now + ABOUT_VIZ_PERIOD);
-        true
-    }
-}
-
 pub(crate) fn default_theme_name() -> String {
     "Chadrula".into()
 }

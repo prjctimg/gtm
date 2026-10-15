@@ -4379,6 +4379,14 @@ impl App {
                             top.query.clear();
                             self.playlist_creating = true;
                         }
+                        // `s` opens the repository the pane names, and only `s`
+                        // — the hint says one key, so every other key is left
+                        // alone and the picker stays up behind the browser,
+                        // which is what makes it read as a link rather than a
+                        // command that happened to open a tab.
+                        PickerId::About if c == 's' => {
+                            open_url(crate::ui::bigtext::REPO, &self.ipc_tx);
+                        }
                         _ => {}
                     }
                 }

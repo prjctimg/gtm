@@ -1628,9 +1628,6 @@ impl App {
             // Spotify web-search debounce: auto-search 500ms after the last
             // keystroke, mirroring the YT search behaviour above.
             let now = std::time::Instant::now();
-            if self.pickers.top().is_some_and(|t| t.id == PickerId::About) {
-                self.tick_about_viz(now);
-            }
             if let Some(deadline) = self.spotify.search_debounce
                 && now >= deadline
             {

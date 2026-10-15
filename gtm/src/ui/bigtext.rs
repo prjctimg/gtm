@@ -17,7 +17,11 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use tui_big_text::{BigText, PixelSize};
+use tui_big_text::BigText;
+
+/// Re-exported so the About window can ask for a size without naming the crate
+/// the widget comes from.
+pub(crate) use tui_big_text::PixelSize;
 
 use crate::theme::{AppTheme, blend_colors};
 use crate::ui::*;
@@ -30,18 +34,45 @@ const WORDMARK: &str = "gtm";
 const TITLE: &str = "The missing terminal audio player.";
 
 /// Where the name points.
-const SITE: &str = "gtmd.dev";
+pub(crate) const SITE: &str = "gtmd.dev";
 
-/// The call to action, and where it goes. A welcome that only describes what the
-/// program is leaves the reader with nothing to do about it.
-const CTA: &str = "★  Star gtm on GitHub";
+/// What the hint row says, and the key it names. The call to action is the hint
+/// rather than a line of its own: it is one key, and a welcome that spends a
+/// whole row on "star us" next to a row saying "press any key" is two paragraphs
+/// saying one thing.
+const HINT: &str = "Press s to star on GitHub";
 
-/// Where [`CTA`] leads. `s` on the welcome pane opens it.
+/// The same hint as a picker hint, so About's bottom strip and the welcome's
+/// line say one thing in one place rather than drifting apart.
+pub(crate) const HINT_HELP: &str = "s: star on GitHub";
+
+/// The mark at the end of the hint: GitHub's, when the font has it.
+///
+/// Two glyphs because the pane draws for both fonts. A private-use codepoint on
+/// a terminal without the nerd font is a tofu box, and a welcome that ends in a
+/// tofu box is worse than one that ends in an arrow. `↗` reads as "opens
+/// something" in either font, which is the only thing the mark is doing.
+fn mark(icon_style: &str) -> &'static str {
+    if icon_style == "mdi" && crate::ui::use_nerd_fonts() {
+        "\u{f0409}" // nf-md-github
+    } else {
+        "↗"
+    }
+}
+
+/// Where the hint leads. `s` on the welcome pane and in About opens it.
 pub(crate) const REPO: &str = "https://github.com/prjctimg/gtm";
 
 /// Blank rows between the wordmark and the text beneath it, and between that
 /// text and the provider row.
 const GUTTER: u16 = 1;
+
+/// Ticks of the scroll clock per cell of marquee travel.
+///
+/// The clock ticks once every third frame, so this puts the row at one cell
+/// every sixth frame: fast enough to read as motion, slow enough that a provider
+/// name is legible for the two seconds or so it takes to cross.
+const MARCH: usize = 2;
 
 /// Cells one glyph occupies at `size`, as (width, height).
 ///
@@ -116,8 +147,21 @@ fn wordmark(app: &AppTheme, phase: f64) -> Line<'static> {
     Line::from(spans)
 }
 
+/// How tall `WORDMARK` is at `size`, in cells.
+///
+/// Exposed next to [`logo`] because the two travel together: a caller reserving
+/// rows for the mark and a caller sizing the mark are asking the same question,
+/// and a second answer to it would be a second place for them to disagree.
+pub(crate) fn mark_height(size: PixelSize) -> u16 {
+    glyph_box(size).1
+}
+
 /// The wordmark centred in `area`, at the hueshift `phase`.
-fn logo(f: &mut ratatui::Frame, area: Rect, app: &App, size: PixelSize) {
+///
+/// Public so About draws the same mark as the welcome rather than a second
+/// interpretation of it: one `Line` of glyphs at whatever size the caller has
+/// room for, centred, hueshifting with the theme's own phase.
+pub(crate) fn logo(f: &mut ratatui::Frame, area: Rect, app: &App, size: PixelSize) {
     let (_, gh) = glyph_box(size);
     let w = mark_width(size);
     let slot = Rect {
@@ -160,37 +204,47 @@ fn caption(f: &mut ratatui::Frame, area: Rect, text: &str, style: Style) {
 /// flattened both into one colour to buy a helper that already existed.
 fn providers(app: &App, frame: usize, w: u16) -> Line<'static> {
     let all = crate::ui::providers(&app.icon_style);
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(all.len() * 2);
-    for (i, (glyph, name)) in all.iter().enumerate() {
+    let (glyph, name) = (
+        Style::default().fg(app.theme.accent),
+        Style::default().fg(app.theme.fg_dim),
+    );
+    // One cell between a glyph and its name — there was none, so the row read
+    // "♪Spotify" — and a dot on two spaces each side between items, which is
+    // wide enough to see a boundary at a glance and narrow enough that the row
+    // still fits the pane it scrolls across.
+    let gap = "  ·  ";
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(all.len() * 3);
+    for (i, (glyph_c, name_c)) in all.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::raw("   "));
+            spans.push(Span::styled(gap.to_string(), glyph));
         }
-        spans.push(Span::styled(
-            (*glyph).to_string(),
-            Style::default().fg(app.theme.accent),
-        ));
-        spans.push(Span::styled(
-            (*name).to_string(),
-            Style::default().fg(app.theme.fg_dim),
-        ));
+        spans.push(Span::styled((*glyph_c).to_string(), glyph));
+        spans.push(Span::styled(format!(" {name_c}"), name));
     }
     let total = Line::from(spans.clone()).width() as u16;
     if total <= w {
         return Line::from(spans);
     }
-    // One column per step, for `total + w` steps so the whole row passes through
-    // the window once — the tail leaving on the right as the head arrives on the
-    // left, which is the jumbotron — then held at the start long enough to be
-    // read before it runs again. Holding at the end instead would park the last
-    // provider on screen alone and leave the first one unread.
-    let cycle = total as usize + w as usize + w as usize;
-    let pos = (frame / SCROLL_SPEED) % cycle;
-    let skip = if pos < total as usize + w as usize {
-        pos % total as usize
-    } else {
-        0
-    };
-    Line::from(slice(&spans, skip, w as usize))
+    // Constant motion, one cell at a time, wrapping forever. It used to hold at
+    // the start for a window's width before restarting, which read as a stall
+    // followed by a jump — the jank. A jumbotron that pauses is not revolving;
+    // the motion is the whole thing.
+    //
+    // One cell every `MARCH` ticks rather than every tick: `frame` already ticks
+    // once every third rendered frame, so one per tick would carry the row past
+    // a name before it could be read, which trades the old stall for a blur. A
+    // single cell per step — never several — is what makes it read as sliding
+    // rather than as a jump.
+    Line::from(slice(&spans, march(frame, total as usize), w as usize))
+}
+
+/// Where in a row of `total` cells the marquee is at tick `frame`.
+///
+/// Split out from the renderer so the motion can be tested on its own: the bug
+/// this replaced was not in the drawing but in the arithmetic deciding where to
+/// draw, and arithmetic is cheap to assert on.
+fn march(frame: usize, total: usize) -> usize {
+    (frame / MARCH) % total
 }
 
 /// The `w` cells of `spans` starting `skip` cells in, wrapping at the end.
@@ -238,15 +292,15 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
     // Border and horizontal padding either side, so the width below is what the
     // content itself is measured against.
     const CHROME_W: u16 = 4;
-    // The pane is sized from the name and the longest line beneath it. The
-    // provider row is deliberately not one of them: it scrolls, so a list wider
-    // than the pane is not a reason to widen the pane, and letting it do that is
-    // what made this welcome full-bleed on a wide terminal and a sliver on a
-    // narrow one.
+    // The pane is sized from the name and the longest line beneath it, plus a
+    // floor. The provider row is deliberately not one of them: it scrolls, so a
+    // list wider than the pane is not a reason to widen the pane, and letting it
+    // do that is what made this welcome full-bleed on a wide terminal and a
+    // sliver on a narrow one.
     let inner_w = mark_width(PixelSize::Full)
         .max(TITLE.chars().count() as u16)
-        .max(CTA.chars().count() as u16 + 6)
-        .max(38);
+        .max(HINT.chars().count() as u16 + 4)
+        .max(52);
     let w = inner_w
         .saturating_add(CHROME_W)
         .min(area.width.saturating_sub(2));
@@ -255,12 +309,12 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     let inner_w = w.saturating_sub(CHROME_W);
     // The tallest the name may be on a pane with room for the text under it.
-    let size = fit(inner_w, area.height.saturating_sub(14));
+    let size = fit(inner_w, area.height.saturating_sub(12));
     let (_, mark_h) = glyph_box(size);
-    // Name, three gutters, five text rows, the border and the vertical padding.
+    // Name, two gutters, four text rows, the border and the vertical padding.
     let h = mark_h
-        .saturating_add(GUTTER * 3)
-        .saturating_add(5 + 4)
+        .saturating_add(GUTTER * 2)
+        .saturating_add(4 + 4)
         .min(area.height.saturating_sub(2));
     let pane = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
@@ -270,6 +324,9 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
     };
 
     f.render_widget(Clear, pane);
+    // Same top-right Esc chip every picker carries, so the pane is dismissible
+    // by the same key and says so the same way rather than being a modal the
+    // user has to guess at.
     let block = Block::default()
         .title(Line::from(Span::styled(
             " Welcome ",
@@ -277,6 +334,13 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
         )))
+        .title(
+            Line::from(Span::styled(
+                "  Esc  ",
+                Style::default().fg(app.theme.fg_dim),
+            ))
+            .right_aligned(),
+        )
         .padding(Padding {
             left: 1,
             right: 1,
@@ -291,8 +355,8 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = block.inner(pane);
     f.render_widget(block, pane);
 
-    // Name, gutters, the lines that say what this is, the call to action, the
-    // hint, and the provider row pinned to the last row the panel covers.
+    // Name, gutters, the lines that say what this is, the hint carrying the call
+    // to action, and the provider row pinned to the last row the panel covers.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -301,7 +365,6 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(GUTTER),
-            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -310,34 +373,34 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
     logo(f, rows[0], app, size);
     caption(f, rows[2], TITLE, Style::default().fg(app.theme.fg));
     caption(f, rows[3], SITE, Style::default().fg(app.theme.accent));
-    caption(
-        f,
-        rows[5],
-        CTA,
-        Style::default()
-            .fg(app.theme.accent)
-            .add_modifier(Modifier::BOLD),
-    );
-    // The key that opens it, on the same row as the site rather than as a
-    // seventh line: the welcome has one action and it should not cost a line of
-    // its own to say which key.
     // In the slack, so it sits between the identity block and the provider row
     // rather than crowding either of them, and disappears with the slack when
     // the pane is too short to hold it.
-    if rows[6].height > 0 {
-        caption(
-            f,
-            rows[6],
-            "press any key to continue",
-            Style::default()
-                .fg(app.theme.fg_dim)
-                .add_modifier(Modifier::DIM),
+    if rows[5].height > 0 {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    HINT.to_string(),
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                // The mark rides at the end of the sentence rather than on a row
+                // of its own: it is the logo for the link the sentence names, so
+                // it reads as part of it.
+                Span::styled(
+                    format!("  {}", mark(&app.icon_style)),
+                    Style::default().fg(app.theme.fg_dim),
+                ),
+            ]))
+            .alignment(Alignment::Center),
+            rows[5],
         );
     }
     f.render_widget(
-        Paragraph::new(providers(app, app.footer_title_scroll, rows[7].width))
+        Paragraph::new(providers(app, app.footer_title_scroll, rows[6].width))
             .alignment(Alignment::Center),
-        rows[7],
+        rows[6],
     );
 }
 
@@ -405,13 +468,15 @@ mod tests {
         }
     }
 
-    /// The provider row wraps rather than dropping its tail.
+    /// The provider row keeps every cell, and never stops.
     ///
-    /// The bug it guards was silent truncation — the list was cut to whatever
-    /// fitted, so a narrow pane quietly pitched five of seven sources, which is
-    /// not a shorter pitch but a different one.
+    /// Two bugs in one property, because they are the same row: it used to be cut
+    /// to whatever fitted, so a narrow pane quietly pitched five of seven
+    /// sources; and it used to hold still for a window's width before restarting,
+    /// which read as a stall followed by a jump. A jumbotron that pauses is not
+    /// revolving.
     #[test]
-    fn the_provider_row_wraps_instead_of_dropping() {
+    fn the_provider_row_wraps_without_stalling() {
         let all: Vec<char> = "abcdefghij".chars().collect();
         let spans = vec![Span::raw(all.iter().collect::<String>())];
         let w = 6;
@@ -441,6 +506,65 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(tail, "jabcde", "the row did not wrap back to the head");
+
+        // And it never holds. The offset has to move on every tick it changes,
+        // and change on every `MARCH` — the old code sat still for a whole
+        // window's width of ticks and then jumped, which is what read as jank.
+        // A hold is a tick that leaves the offset alone.
+        let total = 37;
+        for f in 0..(total * 4 * MARCH) {
+            let at = march(f, total);
+            if f % MARCH == 0 && f > 0 {
+                let prev = march(f - 1, total);
+                assert_eq!(
+                    at,
+                    (prev + 1) % total,
+                    "tick {f}: the row jumped {prev} -> {at} instead of one cell"
+                );
+            }
+            assert!(
+                at < total,
+                "tick {f}: offset {at} ran off the end of a {total}-cell row"
+            );
+        }
+        // And it comes back around to where it started rather than stopping at
+        // the end of the row, which is the other half of "revolving".
+        assert_eq!(march(total * MARCH * 7, total), 0);
+    }
+
+    /// Items in the provider row are separated well enough to see a boundary.
+    ///
+    /// At the old three spaces, a name ran straight into the next item's glyph
+    /// and the row read as one run-on word rather than as a list — the spacing
+    /// was what made it legible as a list rather than as a smear.
+    #[test]
+    fn provider_items_are_visibly_separated() {
+        let pairs = [("A", "Name"), ("B", "Other")];
+        let (glyph, name) = (
+            Style::default().fg(Color::Rgb(1, 2, 3)),
+            Style::default().fg(Color::Rgb(4, 5, 6)),
+        );
+        let gap = "  ·  ";
+        let mut spans = Vec::new();
+        for (i, (g, n)) in pairs.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(gap.to_string(), glyph));
+            }
+            spans.push(Span::styled((*g).to_string(), glyph));
+            spans.push(Span::styled(format!(" {n}"), name));
+        }
+        let row: String = slice(&spans, 0, 40)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(row.contains(gap), "no separator between items: {row}");
+        // A name is followed by a gap before the next glyph, and never by one
+        // directly — that adjacency is what made the row run on.
+        assert!(
+            !row.contains("NameB"),
+            "a name butted straight into the next glyph: {row}"
+        );
+        assert!(row.contains("Name  ·  B"), "spacing changed shape: {row}");
     }
 
     /// Styles survive the scroll, or the accent on the glyphs is lost.

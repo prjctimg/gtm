@@ -512,9 +512,6 @@ pub struct App {
     pub discord_id: Option<String>,
     /// Last reported cover cache disk usage in bytes.
     pub cover_cache_bytes: u64,
-    /// About window: decorative visualization state (preset rotates, waveform
-    /// is synthetic so it animates even when nothing is playing).
-    pub about_viz: AboutViz,
     /// Whether to automatically fetch lyrics on track change
     pub auto_fetch_lyrics: bool,
     /// Icon style for command palette: "mdi" (Material Design Icons) or "emoji"
@@ -1483,7 +1480,6 @@ impl App {
             cover_cache_mb: prefs.cover_cache_mb,
             discord_id: prefs.discord_id.clone(),
             cover_cache_bytes: 0,
-            about_viz: AboutViz::default(),
             auto_fetch_lyrics: prefs.auto_fetch_lyrics,
             icon_style: prefs.icon_style.clone(),
             pending_delete: None,

@@ -836,26 +836,6 @@ impl App {
         self.popup_cover_stateful = self.protocol(self.track_popup_cover.as_deref());
     }
 
-    /// The PCM of whatever is playing, resampled to `w` columns.
-    ///
-    /// The ring is interleaved L/R, so a column reads every other sample and a
-    /// column wider than the ring repeats its last frame rather than running off
-    /// the end of the buffer — the bug that made a wide window show half a
-    /// waveform and then flat silence.
-    pub fn wave_columns(&self, w: u16) -> Vec<f32> {
-        let ring = &self.state.wave_samples;
-        let n = ring.len();
-        (0..w as usize)
-            .map(|x| {
-                if n < 2 {
-                    return 0.0;
-                }
-                let i = ((x as f64 * n as f64 / w.max(1) as f64) as usize / 2 * 2).min(n - 2);
-                ring[i]
-            })
-            .collect()
-    }
-
     /// Fetch the highlighted chart row's cover for the left pane's info slot.
     ///
     /// The Spotify drill-down's shape exactly — latched on the row so a cursor

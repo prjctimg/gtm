@@ -4,19 +4,6 @@ use crate::reactive::{ReactivePalette, from_hex};
 use crate::ui::pre_gain_label;
 
 impl App {
-    /// Advance the About window's visualizer.
-    ///
-    /// Repaints when something is playing — the waveform it draws moves on its
-    /// own — and when the preset rotates. Idle, neither happens, so an open About
-    /// window stops asking for frames it has nothing new to put in them.
-    pub fn tick_about_viz(&mut self, now: std::time::Instant) {
-        let live =
-            self.state.status == PlaybackStatus::Playing && !self.state.wave_samples.is_empty();
-        if live || self.about_viz.tick(now) {
-            self.data_dirty = true;
-        }
-    }
-
     /// Snapshot of the user-facing preferences resolved from current indices.
     /// Stored by name (not index) so adding/removing built-in themes or
     /// footer presets doesn't shift what was saved.

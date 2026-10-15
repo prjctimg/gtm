@@ -9,7 +9,7 @@ use crate::ui::*;
 
 impl Pickers {
     pub(crate) fn render_about(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " About ", None);
+        let block = Self::picker_panel(app, " About ", Some(crate::ui::bigtext::HINT_HELP));
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -19,53 +19,56 @@ impl Pickers {
         // surface that so users can tell a nightly build from a release.
         let nightly = version.contains("+nightly");
 
-        let mut lines = vec![
+        // The same oversized mark as the welcome. It replaced the visualizer,
+        // which was decoration that either moved with nothing playing or
+        // vanished when nothing was: eight rows of name is always the name.
+        // Half-height when the pane is too short for the full one, so the text
+        // under the mark is never the thing that gets pushed off the bottom to
+        // make room for the logo.
+        const FULL: crate::ui::bigtext::PixelSize = crate::ui::bigtext::PixelSize::Full;
+        const HALF: crate::ui::bigtext::PixelSize = crate::ui::bigtext::PixelSize::HalfHeight;
+        let text_rows: u16 = 6;
+        let size = if inner.height >= 8 + 1 + text_rows {
+            FULL
+        } else {
+            HALF
+        };
+        let mark_h = crate::ui::bigtext::mark_height(size);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(mark_h),
+                Constraint::Length(1),
+                Constraint::Length(text_rows),
+            ])
+            .split(inner);
+        crate::ui::bigtext::logo(f, rows[0], app, size);
+
+        // Everything textual under the mark as one block, so the gaps are lines
+        // of the block rather than rows of an outer layout that most of happen to
+        // be blank.
+        let dim = Style::default().fg(app.theme.fg_dim);
+        let accent = Style::default()
+            .fg(app.theme.accent)
+            .add_modifier(Modifier::BOLD);
+        let lines = vec![
+            // Under the mark rather than welded to it: the name says what this
+            // is, the numbers say which one.
             Line::from(Span::styled(
                 format!(
-                    "gtm {version} ({:.7}{})",
+                    "{version} ({:.7}{})",
                     commit,
                     if nightly { " nightly" } else { "" }
                 ),
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD),
+                accent,
             )),
             Line::from(""),
-            Line::from(Span::styled(
-                "Copyright (C) 2026, prjctimg",
-                Style::default().fg(app.theme.fg_dim),
-            )),
-            Line::from(Span::styled(
-                "License GPL-3.0",
-                Style::default().fg(app.theme.fg_dim),
-            )),
+            Line::from(Span::styled("Copyright (C) 2026, prjctimg", dim)),
+            Line::from(Span::styled("License GPL-3.0", dim)),
             Line::from(""),
+            Line::from(Span::styled(crate::ui::bigtext::SITE, accent)),
         ];
-
-        // The visualization under the text, cycling presets every 5s. Drawn from the
-        // playback's own PCM rather than a synthetic waveform: an About window
-        // that animates identically whether or not anything is playing is
-        // decoration pretending to be a readout. Silent means no visualizer at
-        // all, so the window says what it can — version, licence — instead of
-        // showing a scope of nothing.
-        let live =
-            app.state.status == PlaybackStatus::Playing && !app.state.wave_samples.is_empty();
-        let presets = VisualizerPreset::all();
-        if live && !presets.is_empty() {
-            let preset = presets[app.about_viz.preset % presets.len()];
-            let width = inner.width.saturating_sub(2);
-            if width > 0 && inner.height as usize > lines.len() + 4 {
-                lines.extend(Self::visualizer_preview_lines(
-                    preset,
-                    &app.wave_columns(width),
-                    width,
-                    app,
-                ));
-            }
-        }
-
-        let p = Paragraph::new(lines).alignment(Alignment::Center);
-        f.render_widget(p, inner);
+        f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rows[2]);
     }
 
     pub(crate) fn render_help(f: &mut ratatui::Frame, area: Rect, app: &mut App) {

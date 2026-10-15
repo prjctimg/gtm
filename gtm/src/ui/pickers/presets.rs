@@ -60,8 +60,13 @@ impl Pickers {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
+        // One blank row above the preview. Without it the preset list's last row and
+        // the preview's heading abut, and the preview reads as a continuation of
+        // the list rather than as a separate panel describing the highlighted
+        // row — which is what it is, and what it is for.
+        const PREVIEW_GAP: u16 = 1;
         let preview_height: u16 = 5;
-        let list_h = inner.height.saturating_sub(preview_height);
+        let list_h = inner.height.saturating_sub(preview_height + PREVIEW_GAP);
         let list_area = Rect {
             x: inner.x,
             y: inner.y,
@@ -70,9 +75,9 @@ impl Pickers {
         };
         let preview_area = Rect {
             x: inner.x,
-            y: inner.y + list_h,
+            y: inner.y + list_h + PREVIEW_GAP,
             width: inner.width,
-            height: inner.height.saturating_sub(list_h),
+            height: inner.height.saturating_sub(list_h + PREVIEW_GAP),
         };
 
         let visible = list_h as usize;

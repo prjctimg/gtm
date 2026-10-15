@@ -4685,6 +4685,49 @@ fn zen_lyrics_re_derive_their_foreground() {
     );
 }
 
+/// About names the program the way the welcome does.
+///
+/// The mark is the one thing shared between the two panes, so it is drawn by the
+/// same call rather than by a second interpretation of it: a version string
+/// welded to the letters, as this used to be, is a different thing from the
+/// oversized wordmark the first launch shows.
+#[test]
+fn about_shares_the_welcome_wordmark() {
+    let about = include_str!("../src/ui/pickers/system.rs");
+    let bigtext = include_str!("../src/ui/bigtext.rs");
+
+    assert!(
+        about.contains("crate::ui::bigtext::logo(f, rows[0], app, size)"),
+        "About no longer draws the shared wordmark"
+    );
+    // The version stands on its own row under it rather than sharing the name's:
+    // the mark supplies the `gtm`, so spelling it out again prints it twice.
+    assert!(
+        !about.contains("\"gtm {version}"),
+        "the version is welded to the name again instead of sitting under it"
+    );
+    assert!(
+        about.contains("crate::ui::bigtext::SITE"),
+        "About lost the site line the welcome carries"
+    );
+    // `s` reaches the repository from both panes, and the hint that says so is
+    // written once so the two cannot drift apart.
+    assert!(
+        about.contains("crate::ui::bigtext::HINT_HELP"),
+        "About's hint is its own string again"
+    );
+    let keys = include_str!("../src/app/keys.rs");
+    assert!(
+        keys.contains("PickerId::About if c == 's' => {")
+            && keys.contains("open_url(crate::ui::bigtext::REPO, &self.ipc_tx)"),
+        "s no longer opens the repository from About"
+    );
+    assert!(
+        bigtext.contains("pub(crate) const HINT_HELP: &str ="),
+        "the shared hint string is gone"
+    );
+}
+
 /// The radio picker is a fixed box with scrolling titles, like Spotify's.
 ///
 /// It used to size itself to the longest station name in every sub-list, up to
