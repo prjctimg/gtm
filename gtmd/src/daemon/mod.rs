@@ -235,6 +235,36 @@ impl Cmd {
         start_pos: f64,
         auto_advanced: bool,
     ) -> Result<DaemonRes, CoreError> {
+        Self::play_with(inner, path, start_pos, auto_advanced, false).await
+    }
+
+    /// Load `path` without sounding it.
+    ///
+    /// Restoring the saved track on startup: the track, its metadata and its
+    /// position are put back so the UI has something to show and pressing play
+    /// resumes where the user left off — but the mixer is never started and
+    /// `PlaybackStarted` is never broadcast, because nobody asked for music.
+    ///
+    /// This used to be `play` followed by `pause`, which meant the daemon opened
+    /// the audio device, started decoding and told every client a track had
+    /// started before the `pause` landed. On a restored track that is seconds of
+    /// the previous track's audio at whatever the machine's volume happened to
+    /// be, on every start, with no key pressed.
+    pub async fn restore(
+        inner: &DaemonInner,
+        path: &str,
+        start_pos: f64,
+    ) -> Result<DaemonRes, CoreError> {
+        Self::play_with(inner, path, start_pos, false, true).await
+    }
+
+    async fn play_with(
+        inner: &DaemonInner,
+        path: &str,
+        start_pos: f64,
+        auto_advanced: bool,
+        silent: bool,
+    ) -> Result<DaemonRes, CoreError> {
         // Bump first so any in-flight auto-advance/crossfade task sees a
         // session change and backs out before it touches state.
         inner.play_session.fetch_add(1, Ordering::Release);
@@ -248,9 +278,24 @@ impl Cmd {
             inner.state.write().await.radio_history.clear();
         }
         if path.starts_with("spotify:") {
+            // Same reasoning as a live stream: connecting is the whole cost, and
+            // librespot connects and plays as one step. The saved row names the
+            // track, so the UI shows it and pressing play connects.
+            if silent {
+                return Self::restore_remote(inner, path, start_pos).await;
+            }
             return Cmd::play_stream(inner, path, start_pos, auto_advanced).await;
         }
         if parse_remote_path(path).is_some() {
+            // A restored live stream is not connected at all. Opening it means
+            // a network round trip *and* an endless stream reaching the output,
+            // for a station the user did not ask to hear — and `Finished` never
+            // fires for a live source, so nothing downstream would ever stop it.
+            // The track is named and positioned from the saved state; pressing
+            // play connects.
+            if silent {
+                return Self::restore_remote(inner, path, start_pos).await;
+            }
             return Cmd::play_remote(inner, path, start_pos, auto_advanced).await;
         }
         // Local file: halt any active librespot stream so it stops decoding.
@@ -277,8 +322,13 @@ impl Cmd {
 
         let dur = {
             let mut mixer = inner.mixer.lock().await;
+            // `load_active_decoded` leaves the player paused, so a silent load
+            // is just the load: the source is decoded and positioned and nothing
+            // reaches the output.
             mixer.load_active_decoded(source, start_pos)?;
-            mixer.play()?;
+            if !silent {
+                mixer.play()?;
+            }
             mixer.duration()
         };
 
@@ -330,7 +380,14 @@ impl Cmd {
         {
             state.queue.rotate_left(pos);
         }
-        state.play(track.clone())?;
+        // `restore` rather than `play` when nothing was asked for: it leaves the track
+        // loaded and positioned without a window in which the daemon reported a
+        // track as started.
+        if silent {
+            state.restore(track.clone(), start_pos)?;
+        } else {
+            state.play(track.clone())?;
+        }
         state.time_pos = start_pos;
         state.duration = dur;
         // Drop the write guard before the Last.fm block below, which reads
@@ -342,10 +399,63 @@ impl Cmd {
         // Broadcast the new track as soon as the mixer is playing, before the
         // Last.fm now-playing handshake below (which can hang for up to 10s),
         // so the TUI's Now Playing pane and cover art update immediately.
-        Daemon::push_started(inner, &track, auto_advanced, start_pos, dur);
+        if !silent {
+            Daemon::push_started(inner, &track, auto_advanced, start_pos, dur);
+        }
 
         // Update Last.fm now playing
         Self::announce_now_playing(inner).await;
+        Ok(DaemonRes::Ok)
+    }
+
+    /// Name a restored network source without connecting to it.
+    ///
+    /// A live station or a `spotify:` row, either of which costs a connection and
+    /// then sounds: one for an endless stream, one because librespot connects and
+    /// plays as a single step. Neither is something to do to someone who has not
+    /// asked for anything — and the daemon outlives the client, so a restored
+    /// station that connected would keep playing with nothing on screen to stop
+    /// it.
+    ///
+    /// The saved row carries everything the UI needs — title, artist, duration and
+    /// the position — so the source is shown where it was left, and pressing play
+    /// connects and resumes. Nothing is decoded and nothing reaches the output.
+    async fn restore_remote(
+        inner: &DaemonInner,
+        path: &str,
+        start_pos: f64,
+    ) -> Result<DaemonRes, CoreError> {
+        let track = {
+            let state = inner.state.read().await;
+            state
+                .queue
+                .iter()
+                .find(|t| t.path == path)
+                .cloned()
+                .or_else(|| {
+                    state
+                        .current_track
+                        .as_ref()
+                        .filter(|t| t.path == path)
+                        .cloned()
+                })
+        };
+        let Some(track) = track else {
+            return Ok(DaemonRes::Error {
+                message: format!("{path} is no longer in the queue"),
+            });
+        };
+        {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.stop()?;
+        }
+        let mut state = inner.state.write().await;
+        if state.status != PlaybackStatus::Stopped {
+            state.stop()?;
+        }
+        state.restore(track, start_pos)?;
+        drop(state);
+        Daemon::save_state(inner);
         Ok(DaemonRes::Ok)
     }
 
@@ -2691,20 +2801,19 @@ impl Daemon {
             // playback; the queue is persisted on disk and survives restarts.
         });
 
-        // Resume exactly as the user left it: if the saved state carried a
-        // `current_track`, start playback (or restore paused) at the saved
-        // position. A failed resume (e.g. missing file) clears the ghost
-        // entry so the TUI doesn't show a stale track.
+        // Restore exactly as the user left it, without sounding it: if the saved
+        // state carried a `current_track`, load it at the saved position so the
+        // UI has something to show and pressing play resumes there. Nothing
+        // plays — the daemon outlives the client, so starting playback here means
+        // the machine makes noise at whoever is in the room whenever they next
+        // run gtm, and nobody asked for that. A failed restore (e.g. missing
+        // file) clears the ghost entry so the TUI doesn't show a stale track.
         let resume_inner = Arc::clone(&self.inner);
-        let mut resume_linked = resume_inner.spotify_linked.subscribe();
         tokio::spawn(async move {
-            let (path, start_pos, was_playing) = {
+            let (path, start_pos) = {
                 let state = resume_inner.state.read().await;
                 match &state.current_track {
-                    Some(t) => {
-                        let playing = state.status == PlaybackStatus::Playing;
-                        (t.path.clone(), state.time_pos, playing)
-                    }
+                    Some(t) => (t.path.clone(), state.time_pos),
                     None => return,
                 }
             };
@@ -2715,11 +2824,13 @@ impl Daemon {
             // that needs the link at all, and only for as long as linking can
             // take -- a token file read, so seconds, not the 300 s the background
             // playlist sync may spend.
-            if path.starts_with("spotify:") && !*resume_linked.borrow() {
-                let _ =
-                    tokio::time::timeout(Duration::from_secs(20), resume_linked.changed()).await;
+            if path.starts_with("spotify:") {
+                let mut linked = resume_inner.spotify_linked.subscribe();
+                if !*linked.borrow() {
+                    let _ = tokio::time::timeout(Duration::from_secs(20), linked.changed()).await;
+                }
             }
-            let res = Cmd::play(&resume_inner, &path, start_pos, false).await;
+            let res = Cmd::restore(&resume_inner, &path, start_pos).await;
             // Both shapes are a failed resume. `Cmd::play` reports most of its
             // refusals as `Ok(DaemonRes::Error)` rather than `Err`, so matching
             // only the latter left the state cleared on half the failures and
@@ -2746,15 +2857,13 @@ impl Daemon {
                 Daemon::push_queue_state(&resume_inner).await;
                 Self::save_state(&resume_inner);
             } else {
-                // `Cmd::play` rotated the queue to put the resumed track under
+                // The restore rotated the queue to put the loaded track under
                 // the cursor and never broadcasts that from any caller, so a
-                // client that attaches after the resume sees a pre-rotation
-                // queue until its own poll.
+                // client that attaches after it sees a pre-rotation queue until
+                // its own poll. No `pause` to reapply: the load was never
+                // started, so there is nothing to silence.
                 Daemon::push_queue_state(&resume_inner).await;
                 Self::save_state(&resume_inner);
-                if !was_playing {
-                    let _ = Cmd::pause(&resume_inner).await;
-                }
             }
         });
 

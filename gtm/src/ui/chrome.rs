@@ -368,13 +368,8 @@ impl Render {
         // Centered progress bar with elapsed / total underneath; hidden for
         // live streams (mirrors the now-playing pane).
         let prog = vchunks[3];
-        let dur = if app.state.duration > 0.0 {
-            app.state.duration as u64
-        } else {
-            track.as_ref().map_or(0, |t| t.duration as u64)
-        };
-        let live = track.as_ref().is_some_and(|t| is_live_stream(&t.path));
-        if dur > 0 && !live {
+        let dur = app.track_dur() as u64;
+        if app.has_progress() {
             let pos = app.display_position as u64;
             let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
             let bar_w = (prog.width as usize).min(64).saturating_sub(2).max(4);
@@ -970,13 +965,11 @@ impl Render {
                 // "Radio" there, which is noise next to the artist.
                 let has_album = !is_live && wants_album_line(&display_artist, &track.album);
 
-                // Progress: 1 row (available when dur > 0 AND not a live stream)
-                let dur = if app.state.duration > 0.0 {
-                    app.state.duration as u64
-                } else {
-                    track.duration as u64
-                };
-                let has_progress = dur > 0 && !is_live_stream(&track.path);
+                // Progress: one row, gated on there being a length to measure against. The
+                // gate and the ratio both read `track_dur`, so the row cannot
+                // appear against one length and be drawn against another.
+                let dur = app.track_dur() as u64;
+                let has_progress = app.has_progress();
 
                 // Show cover + details side-by-side whenever there is enough
                 // horizontal room. On small-height terminals the cover is
@@ -1225,9 +1218,17 @@ impl Render {
         // The Spotify drill-down shows its own highlighted track here rather
         // than inline with the list rows, so the list panes stay pure text.
         let want_row_card = app.in_spotify_playlist() && app.spotify.row_cover.is_some();
-        // A chart row renders through the same track card, so it is governed by
-        // `want_track_card` and needs no condition of its own.
-        let has_card = (want_track_card || want_playlist_card || want_row_card) && !is_small_height;
+        // A chart row has its own slot and its own card, the way the Spotify
+        // drill-down does — see `fetch_chart_cover`. It used to render through
+        // `want_track_card`, which meant its artwork was drawn from the popup
+        // card's state by the popup card's renderer while the left pane reserved
+        // no room for it, so the sleeve that had already been fetched and cached
+        // showed in neither.
+        let want_chart_card = app.library_category == LIB_CHARTS
+            && app.charts.row_cover.is_some()
+            && !is_small_height;
+        let has_card = (want_track_card || want_playlist_card || want_row_card || want_chart_card)
+            && !is_small_height;
         // Clearance between the list and the card: the padding row plus the
         // gap that keeps the artwork from reading as a clipped list row.
         let card_gap = if has_card {
@@ -2211,7 +2212,13 @@ impl Render {
         // Only while the lyrics hold focus: otherwise the list renders into
         // `results_area`, which is `Length(0)` whenever the left pane has
         // focus, and the two views cannot swap.
-        if (want_playlist_card || want_row_card)
+        if want_chart_card
+            && left_info_area.height > 0
+            && (info_sep_area.height > 0 || left_info_area.height > 0)
+            && !lyrics_in_lib
+        {
+            Render::chart_card(f, left_info_area, app);
+        } else if (want_playlist_card || want_row_card)
             && left_info_area.height > 0
             && (info_sep_area.height > 0 || left_info_area.height > 0)
             && !lyrics_in_lib
@@ -2732,6 +2739,97 @@ impl Render {
     ///
     /// The cover is never drawn inline with the list rows — the list panes stay
     /// pure text, and the row budget keeps its whole height.
+    /// The highlighted chart row's cover, name and album in the left pane.
+    ///
+    /// The Spotify drill-down's card with the fields a chart row actually has: a
+    /// chart track names a title, an artist and an album, and a chart list names a
+    /// title, an owner and a description. Drawn from `charts.row_cover` rather than
+    /// the popup card's state, which is the whole point — see `fetch_chart_cover`.
+    pub(crate) fn chart_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let pos = app.list_pos();
+        let detail = match app.track_info_kind() {
+            TrackInfoKind::Chart => app.charts.charts.get(pos).map(|c| {
+                (
+                    c.title.clone(),
+                    c.owner.clone().unwrap_or_else(|| "Chart".to_string()),
+                    c.description.clone().unwrap_or_default(),
+                )
+            }),
+            TrackInfoKind::ChartTrack => app.charts.chart_tracks.get(pos).map(|t| {
+                (
+                    t.title.clone(),
+                    if t.artists.is_empty() {
+                        "Unknown".to_string()
+                    } else {
+                        t.artists.clone()
+                    },
+                    t.album.clone().unwrap_or_default(),
+                )
+            }),
+            _ => None,
+        };
+        // Left the charts view between the fetch and the paint: nothing to
+        // describe, and a cover over no title is a picture of nowhere.
+        let Some((title, artist, album)) = detail else {
+            return;
+        };
+        let rows = if album.is_empty() { 2 } else { 3 };
+        let cover_h = COVER_H.min(area.height.saturating_sub(rows));
+        let cover_w = (cover_h * 2).min(area.width.saturating_sub(2));
+        let mut y = area.y;
+        if cover_h > 0 && cover_w > 0 {
+            Render::cover(
+                f,
+                Rect {
+                    x: area.x + area.width.saturating_sub(cover_w) / 2,
+                    y,
+                    width: cover_w,
+                    height: cover_h,
+                },
+                app.charts.row_cover_stateful.as_mut(),
+                app.charts.row_cover.as_deref(),
+                app.theme.fg_dim,
+                None,
+            );
+            y += cover_h;
+        }
+        let clip = |t: &str| t.chars().take(area.width as usize).collect::<String>();
+        for (text, style) in [
+            (clip(&title), Style::default().fg(app.theme.fg_bright)),
+            (clip(&artist), Style::default().fg(app.theme.fg_dim)),
+        ] {
+            if y >= area.y + area.height {
+                break;
+            }
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(text, style))).alignment(Alignment::Center),
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+            y += 1;
+        }
+        if album.is_empty() || y >= area.y + area.height {
+            return;
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                clip(&album),
+                Style::default().fg(app.theme.fg_dim),
+            )))
+            .alignment(Alignment::Center),
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+
     pub(crate) fn spot_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         if app.in_spotify_playlist() {
             return Self::spot_row(f, area, app);

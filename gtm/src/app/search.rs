@@ -278,6 +278,7 @@ impl App {
         // the previous one's playlist art behind.
         self.clear_row_cover();
         self.clear_list_cover();
+        self.clear_chart_cover();
         // The grid's window belongs to the list it was computed for: same
         // scroll offset into albums is a different set of cells in artists, and
         // a drill-down has no grid at all. The covers themselves are kept —

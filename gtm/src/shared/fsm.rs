@@ -29,6 +29,31 @@ use crate::shared::track::TrackInfo;
 use crate::shared::tripwire::{self, FailPoint};
 
 impl DaemonState {
+    /// Transition to Paused with `track` loaded, without ever having played.
+    ///
+    /// Allowed from: Stopped, Paused.
+    ///
+    /// A separate transition rather than `play` followed by `pause`, because
+    /// "paused at a position" and "never started" are not the same thing to a
+    /// caller: this one leaves no window in which the transport was running, so
+    /// nothing had to be silenced afterwards. Restoring a saved track on daemon
+    /// startup is exactly that — the user asked for the track to be *there*, not
+    /// for the machine to start making noise at them.
+    pub fn restore(&mut self, track: TrackInfo, time_pos: f64) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        if self.status != PlaybackStatus::Stopped && self.status != PlaybackStatus::Paused {
+            return Err(CoreError::Daemon(format!(
+                "restore() from invalid state: {:?}",
+                self.status
+            )));
+        }
+        self.status = PlaybackStatus::Paused;
+        self.current_track = Some(track);
+        self.time_pos = time_pos;
+        self.commit();
+        Ok(())
+    }
+
     /// Transition to Playing with the given track.
     /// Allowed from: Stopped, Paused.
     pub fn play(&mut self, track: TrackInfo) -> Result<()> {

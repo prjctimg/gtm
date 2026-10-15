@@ -369,8 +369,13 @@ impl App {
         self.is_ready = true;
 
         // Seed the track-info popup so the first row's details are visible
-        // immediately when the middle pane starts focused.
+        // immediately when the middle pane starts focused, and warm the left
+        // pane's own card covers alongside it — the two draw from different
+        // state, so seeding one leaves the other blank until a cursor move.
         self.update_track_popup();
+        self.fetch_row_cover();
+        self.fetch_list_cover();
+        self.fetch_chart_cover();
 
         // Animate the initial frame so the library list and Now Playing pane
         // evolve into view on startup.
@@ -416,13 +421,6 @@ impl App {
                     // Any PlaybackStarted consumes the manual-advance flag.
                     self.manual_track_advance = false;
                     self.manual_advance_until = None;
-                    // Something started that the peek did not start, so the peek
-                    // no longer owns the transport. Left outstanding it would
-                    // stop this — or rewind to whatever it displaced — on the
-                    // next close of the radio picker, minutes away.
-                    if !self.sounding_peek() {
-                        self.peek_drop();
-                    }
                 }
                 // Advancing off the end of the queue stops playback instead of
                 // starting it, and so does a play the daemon refused -- and the
@@ -1000,6 +998,11 @@ impl App {
                         // cursor move, and at the row the user actually landed
                         // on after opening the chart it showed nothing at all.
                         self.update_track_popup();
+                        // The rows have only just arrived, so this is the first
+                        // moment their artwork is named. Warm it here rather than
+                        // leaving the sleeve of the row the user just opened to
+                        // wait for them to move the cursor.
+                        self.fetch_chart_cover();
                     }
                     IpcResult::ChartsSources(sources) => {
                         if let Some(src) = self.charts.selected_source
@@ -1326,6 +1329,29 @@ impl App {
                         {
                             self.artist_cover = cover;
                             self.artist_cover_sync();
+                        }
+                    }
+                    IpcResult::ChartRowCover(cover, url, fetch_gen) => {
+                        // Same guards as the Spotify row cover: the reply has to
+                        // match the url still being awaited and the generation
+                        // the cursor is on, or a slow reply paints the wrong row.
+                        if !no_image_protocol()
+                            && self.charts.row_fetch.id.as_deref() == Some(&url)
+                            && self.charts.row_fetch.matches(fetch_gen)
+                        {
+                            tracing::debug!(
+                                "chart cover {} bytes for {}",
+                                cover.as_ref().map_or(0, Vec::len),
+                                url
+                            );
+                            self.charts.row_cover = cover;
+                            // Released unconditionally: a claimed slot reads as
+                            // "in flight" to the next fetch attempt.
+                            self.charts.row_fetch.clear();
+                            self.chart_cover_sync();
+                            self.cover_art_dirty = true;
+                        } else {
+                            tracing::debug!("dropped a stale chart cover for {url}");
                         }
                     }
                     IpcResult::SpotifyListCover(cover, url, fetch_gen) => {
@@ -1695,6 +1721,17 @@ impl App {
                 self.prev_cover_id = self.np_cover.track_id;
                 changed = true;
             }
+            // The duration decides whether the progress indicator exists and how
+            // long it is, so a change to it is a change to the now-playing pane.
+            // The daemon reports the real length once the file is decoded, which
+            // is after `PlaybackStarted` and often with the position already
+            // moving — and without this the bar waited for the next periodic
+            // repaint to learn its own length, so it drew against the metadata
+            // guess and then corrected itself a beat later.
+            if self.state.duration != self.prev_duration || full_sync {
+                self.prev_duration = self.state.duration;
+                changed = true;
+            }
             if changed {
                 self.mark_all_dirty();
             } else if volume_changed {
@@ -1704,15 +1741,7 @@ impl App {
             // Duration the bar and the elapsed readout are measured against: the
             // event-reported duration when there is one, the track's own
             // otherwise.
-            let bar_dur = if self.state.duration > 0.0 {
-                self.state.duration
-            } else {
-                self.state
-                    .current_track
-                    .as_ref()
-                    .map(|t| t.duration)
-                    .unwrap_or(0.0)
-            };
+            let bar_dur = self.track_dur();
             let mut raw_pos = self.client.estimated_position().await;
             // A manual Next/Prev is in flight. The daemon is inside `step_next`
             // and `Cmd::play` -- a yt-dlp resolve, a Spotify connect, seconds
@@ -1931,10 +1960,6 @@ impl App {
                 terminal.clear()?;
             }
         }
-        // The last chance to hand back a borrowed transport: the daemon outlives
-        // this process, so a peek still outstanding at exit keeps its station
-        // playing with no picker on screen to close and nothing left to undo it.
-        self.peek_end();
         Ok(())
     }
 

@@ -7,6 +7,13 @@
 
 use crate::ui::*;
 
+/// Rows the radio picker's preview strip takes.
+///
+/// A station's name is one line; what it does not say is the other five. Four
+/// rows leaves room for the details and the blank that separates them from the
+/// list above.
+const PREVIEW_H: u16 = 5;
+
 impl Pickers {
     pub(crate) fn render_radio(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let picks = app.radio_picks();
@@ -58,6 +65,11 @@ impl Pickers {
         }
 
         let visible = inner.height.saturating_sub(prepend.len() as u16).max(1) as usize;
+        // Rows the preview strip takes off the bottom. Reserved before the
+        // viewport is stepped, so the strip is a fixed height rather than one
+        // that grows with the panel.
+        let preview_h: u16 = if total > 0 && !pending { PREVIEW_H } else { 0 };
+        let visible = visible.saturating_sub(preview_h as usize).max(1);
         let (s, e) = if total > 0 {
             if let Some(top) = app.pickers.top_mut() {
                 let (a, b) = step_viewport(top.viewport_offset, sel, visible, total);
@@ -176,7 +188,113 @@ impl Pickers {
             };
             app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
         }
-        f.render_widget(Paragraph::new(lines), inner);
+        f.render_widget(
+            Paragraph::new(lines),
+            Rect {
+                height: inner.height.saturating_sub(preview_h),
+                ..inner
+            },
+        );
+
+        if preview_h > 0 {
+            Self::radio_preview(f, inner, app, sel);
+        }
+    }
+
+    /// The highlighted station's details, under the list.
+    ///
+    /// This is what the picker shows a resting row now. It used to *sound* the
+    /// station instead, by borrowing the transport: which rewrote now-playing on
+    /// the way in, displaced whatever the user had paused, and owed both back on
+    /// every way out of the picker — of which there were about thirty, most of
+    /// them closing the picker without reaching the cleanup. Nothing is borrowed
+    /// now, so there is nothing to restore and no way to leave a station playing
+    /// behind a picker the user thought they had closed.
+    ///
+    /// The layout is the queue picker's, deliberately: a strip with the same
+    /// border and fill, so the two pickers read as one app.
+    fn radio_preview(f: &mut ratatui::Frame, inner: Rect, app: &mut App, sel: usize) {
+        let section_bg = if app.transparent_pickers {
+            Color::Reset
+        } else {
+            app.float_bg()
+        };
+        let area = Rect {
+            x: inner.x,
+            y: inner.bottom().saturating_sub(PREVIEW_H),
+            width: inner.width,
+            height: PREVIEW_H,
+        };
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .title(" Station ")
+            .border_style(Style::default().fg(app.theme.accent))
+            .style(Style::default().bg(section_bg));
+        f.render_widget(block, area);
+        let body = Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: area.height.saturating_sub(1),
+        };
+        let Some(station) = app.radio_station_at(sel) else {
+            return;
+        };
+        // Truncated with an ellipsis rather than cut at a cell, so a long value reads
+        // as "there is more of this" instead of as a complete short one. The
+        // name gets the same treatment from the list above it.
+        let clip = |t: &str, w: usize| -> String {
+            if t.chars().count() <= w {
+                return t.to_string();
+            }
+            format!(
+                "{}…",
+                t.chars().take(w.saturating_sub(1)).collect::<String>()
+            )
+        };
+        let mut lines = vec![Line::from(Span::styled(
+            format!("  {}", clip(&station.name, body.width as usize)),
+            Style::default()
+                .fg(app.theme.fg_bright)
+                .add_modifier(Modifier::BOLD),
+        ))];
+        let details: Vec<(&str, String)> = vec![
+            ("country", station.country.clone()),
+            ("language", station.language.clone()),
+            ("codec", station.codec.clone()),
+            (
+                "bitrate",
+                station
+                    .bitrate_kbps
+                    .map(|k| format!("{k} kbps"))
+                    .unwrap_or_default(),
+            ),
+            ("votes", station.votes.to_string()),
+            ("tags", station.tags.clone()),
+        ];
+        // The label column is two spaces plus a nine-wide field, so the value
+        // gets whatever is left of the panel.
+        let value_w = body.width.saturating_sub(13) as usize;
+        for (label, value) in details {
+            let value = value.trim();
+            if value.is_empty() {
+                continue;
+            }
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {:>9} ", label),
+                    Style::default().fg(app.theme.fg_dim),
+                ),
+                Span::styled(
+                    format!(" {}", clip(value, value_w)),
+                    Style::default().fg(app.theme.fg),
+                ),
+            ]));
+            if lines.len() as u16 >= body.height {
+                break;
+            }
+        }
+        f.render_widget(Paragraph::new(lines), body);
     }
 
     pub(crate) fn radio_row(s: &RadioStation) -> String {

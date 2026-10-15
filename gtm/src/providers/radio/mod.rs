@@ -53,6 +53,29 @@ impl RadioStation {
     }
 }
 
+/// A station with nothing filled in but its name.
+///
+/// A saved station is not a directory row: it has a name and a stream URL and
+/// nothing else, because the fields Radio Browser publishes are its own. Building
+/// one of these and setting what is known keeps the detail reader to one shape,
+/// rather than a second branch that has to remember which fields exist.
+pub(crate) fn empty_station() -> RadioStation {
+    RadioStation {
+        id: String::new(),
+        name: String::new(),
+        homepage: String::new(),
+        url: String::new(),
+        url_resolved: String::new(),
+        country: String::new(),
+        language: String::new(),
+        tags: String::new(),
+        codec: String::new(),
+        bitrate_kbps: None,
+        votes: 0,
+        favicon: String::new(),
+    }
+}
+
 /// One entry of a station's published tracklist.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RadioTrack {

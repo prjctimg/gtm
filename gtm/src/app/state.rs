@@ -331,6 +331,19 @@ pub struct ChartsView {
     /// have one, and the track list already resolved it, so the sleeve is
     /// remembered under the chart that owns it rather than fetched twice.
     pub covers: std::collections::HashMap<String, String>,
+    /// Cover of the highlighted row, shown in the left pane's info slot.
+    ///
+    /// Its own slot rather than the popup card's, and its own render path, for
+    /// the same reason the Spotify drill-down has one: the left-pane card and the
+    /// popup card are drawn by different code from different state, and a chart
+    /// row whose art only ever reached one of them showed artwork in half the
+    /// layouts and a blank box in the others.
+    pub row_cover: Option<Vec<u8>>,
+    pub row_cover_stateful: Option<StatefulProtocol>,
+    pub row_fetch: FetchSlot<String>,
+    /// The row whose cover is on screen, so a cursor move inside one album does
+    /// not re-fetch what is already there.
+    pub row_cover_index: Option<usize>,
 }
 
 impl ChartsView {

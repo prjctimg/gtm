@@ -911,6 +911,48 @@ fn trans_stop_play() {
     assert_eq!(s.time_pos, 0.0);
 }
 
+/// Restoring a saved track must never pass through Playing.
+///
+/// The daemon used to `play` the saved track and `pause` it afterwards, which
+/// meant the audio device opened, `PlaybackStarted` was broadcast and the
+/// transport ran before anything silenced it — on every start, with no key
+/// pressed. `restore` is a separate transition so there is no such window: the
+/// track is named and positioned, and the status says Paused from the moment it
+/// exists. What the daemon calls to silence it afterwards is the thing that has
+/// to stop being possible, so the test is on the state, not on the call order.
+#[test]
+fn restore_never_reports_playing() {
+    let mut s = sample_state();
+    let track = sample_track();
+
+    // Stopped -> Paused with the track loaded.
+    s.restore(track.clone(), 42.0).unwrap();
+    assert_eq!(s.status, PlaybackStatus::Paused);
+    assert_eq!(s.current_track.as_ref().unwrap().id, 1);
+    assert_eq!(s.time_pos, 42.0);
+
+    // And it is resumable: play from a restored track still works, which is the
+    // whole point of leaving it loaded rather than dropped.
+    s.play(track.clone()).unwrap();
+    assert_eq!(s.status, PlaybackStatus::Playing);
+    assert_eq!(s.time_pos, 42.0, "the position survived the restore");
+
+    // Restoring from Paused is the same shape — a daemon restarting twice, or a
+    // restore landing on top of a track already loaded.
+    let mut s = sample_state();
+    s.play(track.clone()).unwrap();
+    s.pause().unwrap();
+    s.restore(track.clone(), 7.0).unwrap();
+    assert_eq!(s.status, PlaybackStatus::Paused);
+    assert_eq!(s.time_pos, 7.0);
+
+    // From Playing it is refused, exactly as `play` and `pause` are: a restore is
+    // a load, not an interruption of something already sounding.
+    let mut s = sample_state();
+    s.play(track.clone()).unwrap();
+    assert!(s.restore(track, 0.0).is_err());
+}
+
 #[test]
 fn state_transition_seek() {
     let mut s = sample_state();

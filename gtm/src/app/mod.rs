@@ -407,14 +407,6 @@ pub struct App {
     pub(crate) preview_hover: Option<String>,
     pub(crate) preview_since: Option<std::time::Instant>,
     pub(crate) preview_fired: bool,
-    /// The row a peek is sounding from, and the track it displaced.
-    ///
-    /// A peek borrows the transport, so closing the picker owes the transport
-    /// back: what was playing, where it stopped, and whether it was paused.
-    /// The last of those is what keeps a peek from resuming a track the user
-    /// deliberately paused. Empty when no peek is outstanding.
-    pub(crate) peek_station: Option<String>,
-    pub(crate) peek_restore: Option<PeekRestore>,
     /// The hint the top picker rendered last frame, already filtered of the
     /// obvious bindings.
     ///
@@ -612,6 +604,8 @@ pub struct App {
     pub(crate) prev_status: PlaybackStatus,
     pub(crate) prev_volume: u8,
     pub(crate) prev_cover_id: Option<i64>,
+    /// Last reconciled duration, so a `DurationChanged` repaints the bar.
+    pub(crate) prev_duration: f64,
     /// Set when something has invalidated the reconciliation itself: a
     /// reconnect, a state resnapshot, a resize. The next frame refreshes every
     /// widget rather than trusting that the per-field trackers still agree with
@@ -738,6 +732,12 @@ pub(crate) enum IpcResult {
     SpotifyRowCover(Option<Vec<u8>>, String, u64),
     /// Cover art for the highlighted playlist, as (bytes, image url, generation).
     SpotifyListCover(Option<Vec<u8>>, String, u64),
+    /// Cover art for the highlighted chart row, as (bytes, image url, generation).
+    ///
+    /// Separate from the popup card's reply rather than sharing one: the left
+    /// pane's card and the popup card are two surfaces drawing two slots, and a
+    /// shared variant meant whichever replied last cleared the other's image.
+    ChartRowCover(Option<Vec<u8>>, String, u64),
     /// Album cover bytes for the highlighted Spotify drill-down row, keyed by
     /// its image URL (guarded via `spotify_popup_slot`).
     SpotifyPopupCover(Option<Vec<u8>>, String, u64),
@@ -973,6 +973,33 @@ pub(crate) fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResu
     });
 }
 
+/// Open a URL on a keypress from the welcome pane.
+///
+/// Separate from [`try_open_browser`] because the fallbacks differ: the OAuth
+/// one points at the authorize URL rendered inside its own picker, which is
+/// worthless here. This one puts the URL on the clipboard and says so, so a
+/// machine with no browser opener still gets the link — a call to action that
+/// silently does nothing is worse than no call to action.
+pub(crate) fn open_url(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
+    let url = url.to_string();
+    let ipc_tx = ipc_tx.clone();
+    tokio::spawn(async move {
+        if open_browser(&url).await {
+            return;
+        }
+        let copied = copy_to_clipboard(&url);
+        let _ = ipc_tx.send(IpcResult::Notification(
+            "gtm".to_string(),
+            match copied {
+                Ok(()) => format!("Copied {url} — no browser opener available"),
+                Err(_) => format!("No browser opener available. The link is {url}"),
+            },
+            NotificationKind::Info,
+            NotifType::Prefs,
+        ));
+    });
+}
+
 fn sync_and_wait(
     c: DaemonClient,
     kind: SyncKind,
@@ -1161,6 +1188,40 @@ impl App {
         blend_colors(washed, ratatui::style::Color::Rgb(255, 255, 255), LIFT)
     }
 
+    /// How long the track on air runs, in seconds.
+    ///
+    /// The daemon-reported duration when there is one, the track's own metadata
+    /// otherwise. One accessor because four callers each carried their own copy
+    /// of this fallback and the copies disagreed: the progress gate used one and
+    /// the bar's ratio used another, so a track whose reported duration arrived
+    /// late drew a bar measured against a different length than the gate had
+    /// approved — and on the frames where the reported value was still zero the
+    /// gate hid the bar outright, which is the indicator disappearing part-way
+    /// through a track that is plainly playing.
+    pub fn track_dur(&self) -> f64 {
+        let reported = self.state.duration;
+        if reported > 0.0 {
+            return reported;
+        }
+        self.state
+            .current_track
+            .as_ref()
+            .map_or(0.0, |t| t.duration)
+    }
+
+    /// Whether the track on air has a progress indicator at all.
+    ///
+    /// A live stream has no length, so there is nothing to measure against and
+    /// the bar would sit pinned at zero for the whole session.
+    pub fn has_progress(&self) -> bool {
+        self.track_dur() > 0.0
+            && !self
+                .state
+                .current_track
+                .as_ref()
+                .is_some_and(|t| is_live_stream(&t.path))
+    }
+
     /// The track on air for a live stream, as `(title, artist)`, or `None` for
     /// anything else so callers fall back to the ordinary track metadata.
     ///
@@ -1326,8 +1387,6 @@ impl App {
             preview_hover: None,
             preview_since: None,
             preview_fired: false,
-            peek_station: None,
-            peek_restore: None,
             hint_shown: None,
             onboard,
             logo_mark: std::time::Instant::now(),
@@ -1495,6 +1554,7 @@ impl App {
             prev_status: PlaybackStatus::Stopped,
             prev_volume: 100,
             prev_cover_id: None,
+            prev_duration: 0.0,
             cover_art_dirty: false,
             data_dirty: false,
             footer_cache: FooterCache::default(),
@@ -1683,6 +1743,7 @@ impl App {
         self.prefetch_playlist_lyrics();
         self.fetch_row_cover();
         self.fetch_list_cover();
+        self.fetch_chart_cover();
         // Matches the downward pass: the rows above the cursor are the ones the
         // upward warm skips, so without this a scroll up shows cold covers.
         self.preload_row_covers();
@@ -2079,15 +2140,6 @@ impl App {
     /// Close the top picker, clearing per-picker state that Esc must reset
     /// (same cleanup for arrow-key closes, ).
     fn close_picker(&mut self) {
-        // The radio peek is the one picker state that is not the picker's: it
-        // borrows the transport, and every way out of the picker owes that
-        // transport its freedom. Checked here rather than in the per-picker match
-        // because the borrow outlives the picker — the ~30 `close_top` calls
-        // elsewhere close radio without reaching this cleanup, which is how a
-        // peeked station kept playing with nothing on screen to say so.
-        if self.pickers.top().is_some_and(|o| o.id == PickerId::Radio) {
-            self.peek_end();
-        }
         if let Some(top) = self.pickers.top() {
             match top.id {
                 PickerId::SleepTimer => self.sleep_timer.remaining = None,
@@ -2317,7 +2369,6 @@ pub mod search;
 pub mod settings_keys;
 pub mod state;
 pub mod theme;
-pub(crate) use preview::PeekRestore;
 
 // Per-provider actions live under `providers`; re-exported here so the glob
 // import every sibling module relies on keeps resolving them.

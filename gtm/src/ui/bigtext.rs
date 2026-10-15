@@ -27,10 +27,17 @@ const WORDMARK: &str = "gtm";
 
 /// What the program is, set beside the name. Read rather than recognised, which
 /// is why it is body text and not more glyphs.
-const TITLE: &str = "terminal audio player";
+const TITLE: &str = "The missing terminal audio player.";
 
 /// Where the name points.
 const SITE: &str = "gtmd.dev";
+
+/// The call to action, and where it goes. A welcome that only describes what the
+/// program is leaves the reader with nothing to do about it.
+const CTA: &str = "★  Star gtm on GitHub";
+
+/// Where [`CTA`] leads. `s` on the welcome pane opens it.
+pub(crate) const REPO: &str = "https://github.com/prjctimg/gtm";
 
 /// Blank rows between the wordmark and the text beneath it, and between that
 /// text and the provider row.
@@ -139,56 +146,84 @@ fn caption(f: &mut ratatui::Frame, area: Rect, text: &str, style: Style) {
     );
 }
 
-/// The supported providers as one row, narrowed to `w` cells.
+/// The supported providers as one jumbotron row.
 ///
-/// Glyphs first, then the names alone, then fewer names: a clipped row reads as
-/// a rendering fault, and this is the one line whose width the terminal decides
-/// rather than the layout.
-fn providers(app: &App, w: u16) -> Line<'static> {
+/// The whole list, always — glyphs, names and all. When the pane is narrower than
+/// the list, the row scrolls instead of being cut: the tail runs off the right
+/// edge and comes back in on the left, so every provider is read. Dropping the
+/// overflow was the alternative and it was the wrong one here: the list is the
+/// pitch, and a pane quietly showing five of seven sources is not a shorter
+/// pitch, it is a different one.
+///
+/// Scrolled over the spans rather than over a joined string, because the glyphs
+/// are accent-coloured and the names are not — a plain `String` would have
+/// flattened both into one colour to buy a helper that already existed.
+fn providers(app: &App, frame: usize, w: u16) -> Line<'static> {
     let all = crate::ui::providers(&app.icon_style);
-    let (glyph, name) = (
-        Style::default().fg(app.theme.accent),
-        Style::default().fg(app.theme.fg_dim),
-    );
-    let row = |parts: &[Vec<Span<'static>>], gap: &str| {
-        Line::from(
-            parts
-                .iter()
-                .enumerate()
-                .flat_map(|(i, p)| {
-                    let sep = if i > 0 {
-                        Some(Span::raw(gap.to_string()))
-                    } else {
-                        None
-                    };
-                    sep.into_iter().chain(p.iter().cloned())
-                })
-                .collect::<Vec<_>>(),
-        )
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(all.len() * 2);
+    for (i, (glyph, name)) in all.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("   "));
+        }
+        spans.push(Span::styled(
+            (*glyph).to_string(),
+            Style::default().fg(app.theme.accent),
+        ));
+        spans.push(Span::styled(
+            (*name).to_string(),
+            Style::default().fg(app.theme.fg_dim),
+        ));
+    }
+    let total = Line::from(spans.clone()).width() as u16;
+    if total <= w {
+        return Line::from(spans);
+    }
+    // One column per step, for `total + w` steps so the whole row passes through
+    // the window once — the tail leaving on the right as the head arrives on the
+    // left, which is the jumbotron — then held at the start long enough to be
+    // read before it runs again. Holding at the end instead would park the last
+    // provider on screen alone and leave the first one unread.
+    let cycle = total as usize + w as usize + w as usize;
+    let pos = (frame / SCROLL_SPEED) % cycle;
+    let skip = if pos < total as usize + w as usize {
+        pos % total as usize
+    } else {
+        0
     };
-    let full: Vec<Vec<Span<'static>>> = all
+    Line::from(slice(&spans, skip, w as usize))
+}
+
+/// The `w` cells of `spans` starting `skip` cells in, wrapping at the end.
+///
+/// The wrap is what makes it a jumbotron rather than a truncated line: the tail
+/// returns on the left instead of stopping.
+fn slice(spans: &[Span<'static>], skip: usize, w: usize) -> Vec<Span<'static>> {
+    let chars: Vec<(char, Style)> = spans
         .iter()
-        .map(|(g, n)| vec![Span::styled(*g, glyph), Span::styled(*n, name)])
-        .collect();
-    let line = row(&full, "   ");
-    if line.width() as u16 <= w {
-        return line;
-    }
-    let plain: Vec<Vec<Span<'static>>> = all
-        .iter()
-        .map(|(_, n)| vec![Span::styled(*n, name)])
-        .collect();
-    let line = row(&plain, " ");
-    if line.width() as u16 <= w {
-        return line;
-    }
-    (0..plain.len())
-        .rev()
-        .find_map(|i| {
-            let l = row(&plain[..=i], " ");
-            (l.width() as u16 <= w).then_some(l)
+        .flat_map(|s| {
+            let style = s.style;
+            s.content.chars().map(move |c| (c, style))
         })
-        .unwrap_or_default()
+        .collect();
+    let n = chars.len();
+    let out: Vec<Span<'static>> = (0..w)
+        .map(|i| {
+            let (c, style) = chars[(skip + i) % n];
+            Span::styled(c.to_string(), style)
+        })
+        .collect();
+    // Adjacent cells of one span are re-joined so the row is a handful of spans
+    // rather than `w` of them, which matters at sixty frames a second.
+    let mut merged: Vec<Span<'static>> = Vec::new();
+    for span in out {
+        match merged.last_mut() {
+            Some(last) if last.style == span.style => {
+                last.content.to_mut().push_str(&span.content);
+            }
+            _ => merged.push(span),
+        }
+    }
+    merged
 }
 
 /// The first-run onboarding view: a floating pane over the library, drawn with
@@ -203,19 +238,29 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
     // Border and horizontal padding either side, so the width below is what the
     // content itself is measured against.
     const CHROME_W: u16 = 4;
-    let w = providers(app, area.width.saturating_sub(CHROME_W + 4)).width() as u16;
-    let w = w.saturating_add(CHROME_W).min(area.width.saturating_sub(2));
+    // The pane is sized from the name and the longest line beneath it. The
+    // provider row is deliberately not one of them: it scrolls, so a list wider
+    // than the pane is not a reason to widen the pane, and letting it do that is
+    // what made this welcome full-bleed on a wide terminal and a sliver on a
+    // narrow one.
+    let inner_w = mark_width(PixelSize::Full)
+        .max(TITLE.chars().count() as u16)
+        .max(CTA.chars().count() as u16 + 6)
+        .max(38);
+    let w = inner_w
+        .saturating_add(CHROME_W)
+        .min(area.width.saturating_sub(2));
     if w < CHROME_W + mark_width(PixelSize::Octant) {
         return;
     }
     let inner_w = w.saturating_sub(CHROME_W);
     // The tallest the name may be on a pane with room for the text under it.
-    let size = fit(inner_w, area.height.saturating_sub(10));
+    let size = fit(inner_w, area.height.saturating_sub(14));
     let (_, mark_h) = glyph_box(size);
+    // Name, three gutters, five text rows, the border and the vertical padding.
     let h = mark_h
         .saturating_add(GUTTER * 3)
-        // Border, vertical padding and the four text rows.
-        .saturating_add(6)
+        .saturating_add(5 + 4)
         .min(area.height.saturating_sub(2));
     let pane = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
@@ -246,8 +291,8 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = block.inner(pane);
     f.render_widget(block, pane);
 
-    // Name, a gutter, the two lines that say what this is, a gutter, the hint,
-    // and the provider row pinned to the last row the panel covers.
+    // Name, gutters, the lines that say what this is, the call to action, the
+    // hint, and the provider row pinned to the last row the panel covers.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -256,6 +301,7 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(GUTTER),
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -264,13 +310,24 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
     logo(f, rows[0], app, size);
     caption(f, rows[2], TITLE, Style::default().fg(app.theme.fg));
     caption(f, rows[3], SITE, Style::default().fg(app.theme.accent));
+    caption(
+        f,
+        rows[5],
+        CTA,
+        Style::default()
+            .fg(app.theme.accent)
+            .add_modifier(Modifier::BOLD),
+    );
+    // The key that opens it, on the same row as the site rather than as a
+    // seventh line: the welcome has one action and it should not cost a line of
+    // its own to say which key.
     // In the slack, so it sits between the identity block and the provider row
     // rather than crowding either of them, and disappears with the slack when
     // the pane is too short to hold it.
-    if rows[5].height > 0 {
+    if rows[6].height > 0 {
         caption(
             f,
-            rows[5],
+            rows[6],
             "press any key to continue",
             Style::default()
                 .fg(app.theme.fg_dim)
@@ -278,8 +335,9 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
         );
     }
     f.render_widget(
-        Paragraph::new(providers(app, inner.width)).alignment(Alignment::Center),
-        rows[6],
+        Paragraph::new(providers(app, app.footer_title_scroll, rows[7].width))
+            .alignment(Alignment::Center),
+        rows[7],
     );
 }
 
@@ -345,6 +403,59 @@ mod tests {
                 at + gw
             );
         }
+    }
+
+    /// The provider row wraps rather than dropping its tail.
+    ///
+    /// The bug it guards was silent truncation — the list was cut to whatever
+    /// fitted, so a narrow pane quietly pitched five of seven sources, which is
+    /// not a shorter pitch but a different one.
+    #[test]
+    fn the_provider_row_wraps_instead_of_dropping() {
+        let all: Vec<char> = "abcdefghij".chars().collect();
+        let spans = vec![Span::raw(all.iter().collect::<String>())];
+        let w = 6;
+
+        // Nothing is lost: every character reaches the window, and the window is
+        // always exactly full — a jumbotron, not a shrinking line.
+        let mut seen = std::collections::HashSet::new();
+        for skip in 0..all.len() {
+            let row: String = slice(&spans, skip, w)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert_eq!(row.chars().count(), w, "skip {skip}: window not full");
+            seen.extend(row.chars());
+        }
+        assert_eq!(
+            seen.len(),
+            all.len(),
+            "a character never reached the window"
+        );
+
+        // And it wraps: past the end the head returns on the left, so the last
+        // character is followed by the first rather than by nothing.
+        let tail = slice(&spans, all.len() - 1, w);
+        let head = slice(&spans, 0, w);
+        assert_eq!(tail.last().unwrap().content.as_ref(), "j");
+        assert_eq!(head.first().unwrap().content.as_ref(), "a");
+    }
+
+    /// Styles survive the scroll, or the accent on the glyphs is lost.
+    #[test]
+    fn the_provider_row_keeps_its_colours() {
+        let accent = Style::default().fg(Color::Rgb(1, 2, 3));
+        let spans = vec![
+            Span::styled("ab", accent),
+            Span::raw("cd"),
+            Span::styled("ef", accent),
+        ];
+        let row = slice(&spans, 1, 4);
+        let text: String = row.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "bcde");
+        assert_eq!(row[0].style, accent);
+        assert_eq!(row[3].style, accent);
+        assert_ne!(row[1].style, row[2].style, "the middle kept its own style");
     }
 
     /// The name is fitted to the pane, and only the floor may still overflow.

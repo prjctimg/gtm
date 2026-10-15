@@ -1,4 +1,5 @@
 use crate::app::*;
+use crate::providers::radio::empty_station;
 
 impl App {
     pub fn search_radio(&mut self, query: String) {
@@ -286,6 +287,39 @@ impl App {
         }
     }
 
+    /// The station the radio picker's row `i` names, as the details the preview
+    /// strip shows.
+    ///
+    /// `None` for a header or a drill-down row. A saved station carries only a
+    /// name and a URL — the directory publishes the rest, but a station the user
+    /// added by hand never went through it — so its details are genuinely empty
+    /// and the strip shows what there is rather than blank labelled rows.
+    pub fn radio_station_at(&self, i: usize) -> Option<RadioStation> {
+        match self.radio_picks().get(i)? {
+            RadioPick::Custom(idx) => {
+                let saved = self.radio.custom.get(*idx)?;
+                Some(RadioStation {
+                    id: saved
+                        .uuid
+                        .clone()
+                        .unwrap_or_else(|| format!("custom:{}", idx + 1)),
+                    name: saved.name.clone(),
+                    url: saved.url.clone(),
+                    ..empty_station()
+                })
+            }
+            RadioPick::Station(idx) => {
+                let stations: &[RadioStation] = match self.radio.section {
+                    RadioSection::Stations => &self.radio.browse_stations,
+                    RadioSection::Results => &self.radio.search,
+                    RadioSection::Root => &self.radio.top,
+                };
+                stations.get(*idx).cloned()
+            }
+            _ => None,
+        }
+    }
+
     /// The `radio://` station id the current track is playing, if it is one.
     fn live_station(&self) -> Option<&str> {
         self.state
@@ -335,10 +369,6 @@ impl App {
                         None => format!("custom:{}", i + 1),
                     };
                     let c = self.client.clone();
-                    // The peek is over, not ended: the station sounding now is
-                    // this one by the user's own choice, so handing the
-                    // transport back would stop the music they just asked for.
-                    self.peek_drop();
                     self.pickers.close_top();
                     tokio::spawn(async move {
                         let _ = c.radio().play(&id, &station.name).await;
@@ -353,7 +383,6 @@ impl App {
                 };
                 if let Some(station) = stations.get(i).cloned() {
                     let c = self.client.clone();
-                    self.peek_drop();
                     self.pickers.close_top();
                     tokio::spawn(async move {
                         let _ = c.radio().play(&station.id, &station.name).await;

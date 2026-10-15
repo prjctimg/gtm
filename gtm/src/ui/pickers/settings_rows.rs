@@ -96,9 +96,7 @@ pub(crate) fn row_help(category: usize, option: usize) -> &'static str {
         (0, 2) => " Press Enter to open the crossfade picker.",
         (0, 5) => " Press Enter to step the pre-gain by 1 dB.",
         (0, 6) => " Press Enter to cycle the cover art source.",
-        (0, 7) => {
-            " Wait this long on a radio or chart row before it starts a preview (off = never)."
-        }
+        (0, 7) => " Wait this long on a chart row before it starts a preview (off = never).",
         (1, 0) => " Press Enter to open the theme picker.",
         (1, 1) => " Press Enter to cycle theme mode (auto/dark/light).",
         (1, 6) => " Press Enter to toggle the reactive theme.",

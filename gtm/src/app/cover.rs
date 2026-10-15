@@ -856,6 +856,88 @@ impl App {
             .collect()
     }
 
+    /// Fetch the highlighted chart row's cover for the left pane's info slot.
+    ///
+    /// The Spotify drill-down's shape exactly — latched on the row so a cursor
+    /// move does not refetch, and on the URL through a [`FetchSlot`] so a reply
+    /// that arrives after the cursor moved on is dropped rather than painted
+    /// under the wrong row. Chart rows are not Spotify rows and the request is
+    /// not Spotify's: they carry an iTunes or Deezer CDN URL belonging to no
+    /// account, which is why this goes out as the provider-neutral image request.
+    pub fn fetch_chart_cover(&mut self) {
+        if no_image_protocol() || self.track_info_kind() == TrackInfoKind::ChartSource {
+            self.clear_chart_cover();
+            return;
+        }
+        let Some((index, url)) = self.chart_row_art() else {
+            self.clear_chart_cover();
+            return;
+        };
+        if self.charts.row_cover_index == Some(index) && self.charts.row_cover.is_some() {
+            return;
+        }
+        if self.charts.row_fetch.pending(&url) {
+            return;
+        }
+        self.charts.row_cover_index = Some(index);
+        self.charts.row_cover = None;
+        self.charts.row_cover_stateful = None;
+        cover_get(
+            &self.client,
+            &self.ipc_tx,
+            &mut self.charts.row_fetch,
+            url.clone(),
+            IpcResult::ChartRowCover,
+            move |c| Box::pin(async move { c.image_cover(&url).await.ok().flatten() }),
+        );
+    }
+
+    /// The highlighted chart row's index and the artwork url it names.
+    ///
+    /// One reader for both levels, because the card has to describe whichever
+    /// level is showing and the two name their art differently: a chart's own
+    /// sleeve comes from the provider or from the tracks it has loaded, and a
+    /// track's comes from the track.
+    fn chart_row_art(&self) -> Option<(usize, String)> {
+        let pos = self.list_pos();
+        match self.track_info_kind() {
+            TrackInfoKind::Chart => {
+                let chart = self.charts.charts.get(pos)?;
+                let url = chart
+                    .cover_url
+                    .clone()
+                    .or_else(|| self.charts.cover_of(pos))
+                    .filter(|u| !u.is_empty())?;
+                Some((pos, url))
+            }
+            TrackInfoKind::ChartTrack => {
+                let url = self
+                    .charts
+                    .chart_tracks
+                    .get(pos)?
+                    .cover_url
+                    .clone()
+                    .filter(|u| !u.is_empty())?;
+                Some((pos, url))
+            }
+            _ => None,
+        }
+    }
+
+    /// Build the image protocol for the highlighted chart row's cover.
+    pub(crate) fn chart_cover_sync(&mut self) {
+        self.charts.row_cover_stateful = self.protocol(self.charts.row_cover.as_deref());
+    }
+
+    /// Drop the chart row's cover, so leaving the view does not leave a stale
+    /// image bound to a row that is no longer selected.
+    pub fn clear_chart_cover(&mut self) {
+        self.charts.row_cover = None;
+        self.charts.row_cover_stateful = None;
+        self.charts.row_fetch.clear();
+        self.charts.row_cover_index = None;
+    }
+
     /// Fetch cover art for the queue picker's preview strip, once per row.
     ///
     /// Keyed on the queue *row* the strip is describing, not on `queue.cursor`:

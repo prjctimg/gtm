@@ -680,19 +680,11 @@ impl Footer {
     }
 
     fn progress(app: &App) -> Option<String> {
-        let track = app.state.current_track.as_ref()?;
-        if is_live_stream(&track.path) {
+        if !app.has_progress() {
             return None;
         }
         let pos = app.display_position as u64;
-        let dur = if app.state.duration > 0.0 {
-            app.state.duration as u64
-        } else {
-            track.duration as u64
-        };
-        if dur == 0 {
-            return None;
-        }
+        let dur = app.track_dur() as u64;
         let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
         let time_str = format!("{} / {}", format_duration(pos), format_duration(dur));
         let bar_w = 12;

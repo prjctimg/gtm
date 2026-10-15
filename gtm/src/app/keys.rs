@@ -83,6 +83,14 @@ impl App {
         if self.onboard {
             self.onboard = false;
             self.mark_all_dirty();
+            // `s` follows the call to action the welcome is showing, and is
+            // claimed before the dispatch below so it opens the repository
+            // instead of doing whatever `s` means to the list behind it. It is
+            // not a new binding: once the welcome is gone `s` is free again.
+            if key.code == KeyCode::Char('s') && key.modifiers.is_empty() {
+                open_url(crate::ui::bigtext::REPO, &self.ipc_tx);
+                return true;
+            }
         }
         // Ctrl+Z: suspend to background (pass-through SIGTSTP)
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('z') {
