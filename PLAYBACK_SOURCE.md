@@ -74,7 +74,9 @@ stop and on track end, alongside `current_track`.
 
 ## Consumer
 
-`gtm.nvim` maps the value to a marker:
+The bundled TUI reads it: a dim glyph on the artist line of the now-playing
+panel and of the zen header, for every source except `local`. `gtm.nvim` maps
+the value to a marker:
 
 ```lua
 local SRC_ICON = { local = "♫", spotify = "◉", radio = "☁", podcast = "❋", chart = "▤" }
@@ -112,8 +114,13 @@ value forward from whatever happened to be playing.
 the mixer decodes start to finish, and `local` is the marker that means "this
 ends".
 
+`local` is deliberately unmarked in the bundled client. A glyph on every song
+is a permanent decoration saying nothing; the information a listener wants is
+that audio is arriving from somewhere the library does not account for. A
+client that disagrees is free to mark all five.
+
 ## Not done
 
-The bundled TUI does not read `source` yet. It has its own knowledge of where
-audio came from, and adding a marker there is a display decision rather than a
-protocol one — the field exists for third-party clients, `gtm.nvim` first.
+The client maps the source to a glyph and nothing more. It does not use the
+value for behaviour — no routing, no scrobble policy, no per-source EQ — so a
+source arriving from the daemon changes what is drawn and nothing else.

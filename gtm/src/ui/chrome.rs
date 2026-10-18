@@ -38,6 +38,32 @@ pub(crate) enum LyricSurface {
 /// Hits", a VA compilation, the label's own imprint. Neither tells the listener
 /// anything about the track they are looking at, and the row was spent on it
 /// anyway, pushing the progress bar down.
+/// The provenance marker for whatever is on air, or `None` for nothing.
+///
+/// Reads `state.source`, which the daemon set. It is never derived from the
+/// track's path here: the daemon owns that decision, and a client that
+/// second-guessed it would be exactly the duplication `PLAYBACK_SOURCE.md`
+/// exists to remove.
+///
+/// Local files get no marker. A marker on every song would be a permanent
+/// decoration saying nothing; the information is that audio is arriving from
+/// somewhere the library does not account for.
+///
+/// `None` for an unknown source rather than a fallback glyph, so a daemon that
+/// sends a value this build has not heard of shows nothing instead of
+/// something false.
+fn source_marker(app: &App) -> Option<Span<'static>> {
+    let source = app.state.source.as_str();
+    if source.is_empty() || source == crate::shared::SRC_LOCAL {
+        return None;
+    }
+    let glyph = crate::ui::icons::source_icon(source, &app.icon_style)?;
+    Some(Span::styled(
+        format!(" {glyph}"),
+        Style::default().fg(app.theme.fg_dim),
+    ))
+}
+
 pub(crate) fn wants_album_line(artist: &str, album: &str) -> bool {
     !album.trim().is_empty() && !artist.trim().is_empty()
 }
@@ -287,10 +313,16 @@ impl Render {
         if track.artist.is_empty() {
             return;
         }
-        let artist = Paragraph::new(Line::from(Span::styled(
-            track.artist.clone(),
-            Style::default().fg(app.theme.fg),
-        )))
+        let artist = Paragraph::new(Line::from({
+            let mut spans = vec![Span::styled(
+                track.artist.clone(),
+                Style::default().fg(app.theme.fg),
+            )];
+            // Same marker as the now-playing panel, so the answer to "where is
+            // this coming from" does not depend on which surface is open.
+            spans.extend(source_marker(app));
+            spans
+        }))
         .alignment(Alignment::Center);
         f.render_widget(
             artist,
@@ -1051,10 +1083,21 @@ impl Render {
                     // string to the full width, which keeps the block from
                     // flickering as the track changes.
                     let avail = info_chunks[0].width as usize;
-                    let artist_para = Paragraph::new(Line::from(vec![Span::styled(
-                        scroll_text(&display_artist, avail, app.np_title_scroll, true),
+                    // `scroll_text` pads a short label out to the full width, so
+                    // the marker has to be reserved from it or a padded artist
+                    // name pushes the marker past the end of the row.
+                    let marker = source_marker(app);
+                    let label_w = avail.saturating_sub(
+                        marker
+                            .as_ref()
+                            .map_or(0, |m| Line::from(m.content.as_ref()).width()),
+                    );
+                    let mut artist_spans = vec![Span::styled(
+                        scroll_text(&display_artist, label_w, app.np_title_scroll, true),
                         Style::default().fg(app.theme.fg_bright),
-                    )]));
+                    )];
+                    artist_spans.extend(marker);
+                    let artist_para = Paragraph::new(Line::from(artist_spans));
                     f.render_widget(artist_para, info_chunks[1]);
 
                     let mut info_row = 2;
@@ -1128,10 +1171,14 @@ impl Render {
                                 .fg(app.theme.secondary_accent)
                                 .add_modifier(Modifier::BOLD),
                         )]),
-                        Line::from(vec![Span::styled(
-                            display_artist,
-                            Style::default().fg(app.theme.fg_bright),
-                        )]),
+                        Line::from({
+                            let mut spans = vec![Span::styled(
+                                display_artist,
+                                Style::default().fg(app.theme.fg_bright),
+                            )];
+                            spans.extend(source_marker(app));
+                            spans
+                        }),
                     ];
                     Render::evolving(f, info_area, Paragraph::new(lines), "np", app, true);
                 } else {
