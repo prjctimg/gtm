@@ -181,6 +181,114 @@ impl PodcastManager {
     /// `feedUrl`, artwork and episode count. Results are cached by query so
     /// re-entering the picker with the same term costs nothing, and cached
     /// results are what `add_feed` falls back to for artwork.
+    /// Apple's ranked charts for a country and an optional genre.
+    ///
+    /// Two requests, because no single key-less endpoint answers this. The
+    /// charts give the ranking and the ids; a lookup turns those ids into the
+    /// feed URLs the charts themselves do not publish. Anything that fails to
+    /// resolve is dropped rather than shown, because a row with no feed cannot
+    /// be subscribed to and a subscribe button that does nothing is worse than
+    /// a shorter list.
+    pub async fn charts(
+        &mut self,
+        country: &str,
+        genre: &str,
+    ) -> Result<Vec<PodcastResult>, String> {
+        let country = country.trim().to_ascii_lowercase();
+        let country = if country.is_empty() { "us" } else { &country };
+        let genre = genre.trim().to_ascii_lowercase();
+        let key = format!("charts|{country}|{genre}");
+        if let Some(hit) = self.discovery_cache.get(&key) {
+            return Ok(hit.clone());
+        }
+        let client = reqwest::Client::new();
+        // Country level only. The genre-scoped forms look plausible and are not
+        // published: `/api/v2/us/podcasts/top/25/1489.json` answers 502 and
+        // `.../1489/podcasts.json` answers 404, for a genre id taken from a live
+        // response. A dead branch in a discovery path is worse than no genre
+        // filter, so `genre` is accepted and ignored rather than sent.
+        let _ = genre;
+        let segment = format!("{country}/podcasts/top/25/podcasts.json");
+        let chart: MarketingChart = client
+            .get(format!(
+                "https://rss.applemarketingtools.com/api/v2/{segment}"
+            ))
+            .timeout(FETCH_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| format!("podcast charts: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("podcast charts: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("podcast charts: {e}"))?;
+        if chart.feed.results.is_empty() {
+            return Err(format!("no charts for {country}/{genre}"));
+        }
+        let ids: Vec<&str> = chart.feed.results.iter().map(|r| r.id.as_str()).collect();
+        let lookup: ItunesLookup = client
+            .get(format!(
+                "https://itunes.apple.com/lookup?id={}&entity=podcast&limit=200",
+                urlencoding::encode(&ids.join(","))
+            ))
+            .timeout(FETCH_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| format!("podcast charts lookup: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("podcast charts lookup: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("podcast charts lookup: {e}"))?;
+        let by_id: std::collections::HashMap<&str, &ItunesPodcast> = lookup
+            .results
+            .iter()
+            .map(|r| (r.collection_id.as_str(), r))
+            .collect();
+        let mut results: Vec<PodcastResult> = Vec::new();
+        for entry in &chart.feed.results {
+            // The ranking comes from the chart, the details from the lookup:
+            // resolving in chart order rather than lookup order is what keeps
+            // it a chart and not a directory listing.
+            let Some(detail) = by_id.get(entry.id.as_str()) else {
+                continue;
+            };
+            let Some(url) = detail.feed_url.clone().filter(|u| !u.trim().is_empty()) else {
+                continue;
+            };
+            let image_url = detail
+                .artwork_url600
+                .clone()
+                .or_else(|| entry.artwork_url100.clone())
+                .map(|u| upgrade_art(&u));
+            results.push(PodcastResult {
+                title: entry.name.clone(),
+                author: if entry.artist_name.is_empty() {
+                    detail.artist_name.clone()
+                } else {
+                    entry.artist_name.clone()
+                },
+                url,
+                description: String::new(),
+                image_url,
+                episodes: detail.track_count.unwrap_or_default() as usize,
+                country: country.to_string(),
+            });
+        }
+        if results.is_empty() {
+            return Err(format!("no charts for {country}/{genre}"));
+        }
+        for r in &results {
+            self.discovery.retain(|d| d.url != r.url);
+            self.discovery.push(r.clone());
+        }
+        while self.discovery.len() > 200 {
+            self.discovery.remove(0);
+        }
+        self.discovery_cache.insert(key, results.clone());
+        Ok(results)
+    }
+
     pub async fn discover(
         &mut self,
         term: &str,
@@ -447,8 +555,48 @@ struct ItunesSearch {
     results: Vec<ItunesPodcast>,
 }
 
+/// Apple's public podcast *charts*, from the RSS marketing directory.
+///
+/// Key-less, ranked, and per-country and per-genre -- which the search API is
+/// not: it ranks by its own idea of relevance, so an empty term gives whatever
+/// it felt like listing rather than what people are actually listening to.
+#[derive(serde::Deserialize)]
+struct MarketingChart {
+    feed: MarketingFeed,
+}
+
+#[derive(serde::Deserialize)]
+struct MarketingFeed {
+    #[serde(default)]
+    results: Vec<MarketingEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct MarketingEntry {
+    id: String,
+    name: String,
+    #[serde(default, rename = "artistName")]
+    artist_name: String,
+    #[serde(default, rename = "artworkUrl100")]
+    artwork_url100: Option<String>,
+}
+
+/// The lookup shape, which is what actually carries the feed URL.
+///
+/// The charts endpoint publishes no `feedUrl` anywhere in its payload -- an
+/// entry is an id, a name, artwork, genres and a podcasts.apple.com page, none
+/// of which can be subscribed to. This turns those ids back into feeds, still
+/// with no key, so charts and search end up reading from the same directory.
+#[derive(serde::Deserialize)]
+struct ItunesLookup {
+    #[serde(default, rename = "results")]
+    results: Vec<ItunesPodcast>,
+}
+
 #[derive(serde::Deserialize)]
 struct ItunesPodcast {
+    #[serde(default, rename = "collectionId")]
+    collection_id: String,
     #[serde(rename = "collectionName")]
     collection_name: String,
     #[serde(default, rename = "artistName")]
@@ -942,6 +1090,111 @@ fn looks_audio(mime: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Real payloads from both halves of the two-step chart lookup.
+    ///
+    /// Trimmed. The pair is the point: the chart names the show and gives an
+    /// id, and carries no feed URL at all; the lookup is the only thing that
+    /// knows one. A parser written for just one of them answers half of
+    /// nothing.
+    const CHART: &str = r#"{"feed":{"title":"Top Shows","country":"gb",
+     "results":[
+      {"artistName":"Goalhanger","id":"1604045409","name":"The Rest Is History",
+       "kind":"podcasts","artworkUrl100":"https://is1-ssl.mzstatic.com/a/100.png",
+       "genres":[{"genreId":"1311","name":"History"}],
+       "url":"https://podcasts.apple.com/gb/podcast/x/id1604045409"},
+      {"artistName":"Goalhanger","id":"1604045410","name":"The Rest Is Politics",
+       "kind":"podcasts","artworkUrl100":"https://is1-ssl.mzstatic.com/b/100.png",
+       "genres":[{"genreId":"1324","name":"Politics"}],
+       "url":"https://podcasts.apple.com/gb/podcast/y/id1604045410"}]}}"#;
+
+    const LOOKUP: &str = r#"{"resultCount":2,"results":[
+      {"wrapperType":"collection","collectionId":"1604045409","collectionName":"The Rest Is History",
+       "artistName":"Goalhanger","feedUrl":"https://feeds.megaphone.fm/GLT4787413333",
+       "artworkUrl100":"https://is1-ssl.mzstatic.com/a/100.png",
+       "artworkUrl600":"https://is1-ssl.mzstatic.com/a/600.jpg","trackCount":412},
+      {"wrapperType":"collection","collectionId":"1604045410","collectionName":"The Rest Is Politics",
+       "artistName":"Goalhanger","feedUrl":"https://feeds.megaphone.fm/GLT9190936013",
+       "artworkUrl600":"https://is1-ssl.mzstatic.com/b/600.jpg","trackCount":388}]}"#;
+
+    /// The chart half on its own: ids, names, artwork and genres, and no feed.
+    #[test]
+    fn the_chart_endpoint_publishes_ids_and_no_feeds() {
+        let chart: MarketingChart = serde_json::from_str(CHART).expect("chart parses");
+        assert_eq!(chart.feed.results.len(), 2);
+        assert_eq!(chart.feed.results[0].id, "1604045409");
+        assert_eq!(chart.feed.results[0].name, "The Rest Is History");
+        // Spelled out because it is the reason this is a two-step lookup and not
+        // one call: nothing in the chart can be subscribed to.
+        assert!(
+            !CHART.contains("feedUrl"),
+            "the fixture no longer proves the point -- the chart started carrying feeds"
+        );
+    }
+
+    /// Both halves, joined the way `charts` joins them.
+    #[test]
+    fn charts_resolve_feeds_in_rank_order() {
+        let chart: MarketingChart = serde_json::from_str(CHART).expect("chart parses");
+        let lookup: ItunesLookup = serde_json::from_str(LOOKUP).expect("lookup parses");
+        let by_id: std::collections::HashMap<&str, &ItunesPodcast> = lookup
+            .results
+            .iter()
+            .map(|r| (r.collection_id.as_str(), r))
+            .collect();
+        let mut got: Vec<(String, String)> = Vec::new();
+        for entry in &chart.feed.results {
+            let Some(d) = by_id.get(entry.id.as_str()) else {
+                continue;
+            };
+            let Some(url) = d.feed_url.clone().filter(|u| !u.trim().is_empty()) else {
+                continue;
+            };
+            got.push((entry.name.clone(), url));
+        }
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "The Rest Is History".to_string(),
+                    "https://feeds.megaphone.fm/GLT4787413333".to_string()
+                ),
+                (
+                    "The Rest Is Politics".to_string(),
+                    "https://feeds.megaphone.fm/GLT9190936013".to_string()
+                ),
+            ],
+            "rank order or feed mapping is wrong"
+        );
+        assert_eq!(by_id["1604045409"].track_count, Some(412));
+    }
+
+    /// An id the lookup does not know is dropped, not shown.
+    ///
+    /// A row with no feed cannot be subscribed to, and a subscribe button that
+    /// does nothing is a worse answer than a shorter list.
+    #[test]
+    fn charts_drop_entries_the_lookup_cannot_resolve() {
+        let lookup: ItunesLookup = serde_json::from_str(LOOKUP).expect("lookup parses");
+        let by_id: std::collections::HashMap<&str, &ItunesPodcast> = lookup
+            .results
+            .iter()
+            .map(|r| (r.collection_id.as_str(), r))
+            .collect();
+        assert!(!by_id.contains_key("999999999"));
+        // And a show whose feedUrl is empty is equally unusable.
+        let empty = serde_json::from_str::<ItunesLookup>(
+            r#"{"results":[{"collectionId":"1","collectionName":"X","feedUrl":""}]}"#,
+        )
+        .expect("parses");
+        assert!(
+            empty.results[0]
+                .feed_url
+                .clone()
+                .filter(|u| !u.trim().is_empty())
+                .is_none()
+        );
+    }
+
     use super::*;
 
     fn feed(body: &str) -> ParsedFeed {

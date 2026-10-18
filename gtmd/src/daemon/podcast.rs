@@ -42,6 +42,22 @@ impl Podcast {
         Ok(DaemonRes::PodcastSearchRes { results })
     }
 
+    /// Apple's ranked charts, resolved to subscribable feeds.
+    pub async fn charts(
+        inner: &DaemonInner,
+        country: &str,
+        genre: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let results = inner
+            .podcast
+            .lock()
+            .await
+            .charts(country, genre)
+            .await
+            .map_err(CoreError::Daemon)?;
+        Ok(DaemonRes::PodcastSearchRes { results })
+    }
+
     pub async fn episodes(inner: &DaemonInner, feed_id: &str) -> Result<DaemonRes, CoreError> {
         let podcast = inner.podcast.lock().await;
         match podcast.episodes(feed_id) {

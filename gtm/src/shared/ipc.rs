@@ -566,6 +566,16 @@ pub enum DaemonReq {
         term: String,
         country: String,
     },
+    /// Apple's ranked podcast charts for a country, resolved to feed URLs.
+    ///
+    /// Separate from `PodcastSearch` because the two directories answer
+    /// different questions: search ranks by its own idea of relevance, and an
+    /// empty term there gives whatever it felt like listing rather than what
+    /// people are actually listening to.
+    PodcastCharts {
+        country: String,
+        genre: String,
+    },
     PodcastEpisodes {
         feed_id: String,
     },
@@ -747,6 +757,7 @@ impl DaemonReq {
             DaemonReq::PodcastRemoveFeed { .. } => "podcast_remove_feed",
             DaemonReq::PodcastFeeds => "podcast_feeds",
             DaemonReq::PodcastSearch { .. } => "podcast_search",
+            DaemonReq::PodcastCharts { .. } => "podcast_charts",
             DaemonReq::PodcastEpisodes { .. } => "podcast_episodes",
             DaemonReq::PodcastRefresh { .. } => "podcast_refresh",
             DaemonReq::PodcastStatus => "podcast_status",
@@ -1426,6 +1437,20 @@ impl DaemonReq {
                 DaemonReq::PodcastSearch {
                     term: x.term,
                     country: x.country.unwrap_or_else(default_storefront),
+                }
+            }
+            "podcast_charts" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    #[serde(default)]
+                    country: Option<String>,
+                    #[serde(default)]
+                    genre: Option<String>,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::PodcastCharts {
+                    country: x.country.unwrap_or_else(default_storefront),
+                    genre: x.genre.unwrap_or_default(),
                 }
             }
             "podcast_episodes" => {

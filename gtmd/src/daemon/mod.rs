@@ -3643,6 +3643,9 @@ impl Daemon {
             DaemonReq::PodcastSearch { term, country } => {
                 Podcast::discover(inner, term, country).await
             }
+            DaemonReq::PodcastCharts { country, genre } => {
+                Podcast::charts(inner, country, genre).await
+            }
             DaemonReq::PodcastEpisodes { feed_id } => Podcast::episodes(inner, feed_id).await,
             DaemonReq::PodcastRefresh { feed_id } => {
                 Podcast::refresh(inner, feed_id.as_deref()).await

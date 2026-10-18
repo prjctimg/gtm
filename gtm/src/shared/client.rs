@@ -1361,6 +1361,26 @@ pub struct Podcast<'a> {
 }
 
 impl<'a> Podcast<'a> {
+    /// Apple's ranked podcast charts for a country.
+    ///
+    /// Distinct from `search`, which ranks by its own idea of relevance: an
+    /// empty term there returns whatever it felt like listing rather than what
+    /// people are listening to. Results carry feed URLs either way.
+    pub async fn charts(&self, country: &str, genre: &str) -> Result<Vec<PodcastResult>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::PodcastCharts {
+                country: country.into(),
+                genre: genre.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::PodcastSearchRes { results } => Ok(results),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
     pub async fn add_feed(&self, url: &str) -> Result<Vec<PodcastFeed>> {
         let res = self
             .client
