@@ -2,7 +2,8 @@
 
 Status: **implemented**. Superseded in part by [`REACTIVE_TOKENS.md`](REACTIVE_TOKENS.md),
 which extends this: extraction moved to gtmd as described here, and derivation
-moves with it, so a client maps roles instead of doing colour maths.
+moves with it, so a client maps roles instead of doing colour maths. Followed by
+[`PLAYBACK_SOURCE.md`](PLAYBACK_SOURCE.md), which adds where the audio came from.
 
 This is the authoritative spec for how the reactive theme works. It moves the
 palette out of the Neovim plugin and makes **gtmd the single source of truth**,
