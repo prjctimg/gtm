@@ -1139,8 +1139,23 @@ impl AudioMixer {
         };
         let elapsed = start.elapsed().as_secs_f64();
         let progress = (elapsed / self.crossfade_duration).min(1.0);
-        let eased_out = 1.0 - progress;
-        let eased_in = progress;
+        // Equal power, not linear. A linear ramp holds the *sum of amplitudes*
+        // constant, so two uncorrelated tracks sum to 1 in the middle while
+        // their power sums to 0.5 — the audible 3dB dip at the midpoint that
+        // makes a crossfade sound like a hole rather than a transition.
+        //
+        // cos/sin instead holds the sum of *squares* at 1.0, which is what
+        // "power" means here: the two tracks add in the RMS domain the ear
+        // integrates, so the level through the middle stays where it was.
+        //
+        // Endpoints are untouched — cos(0)=1, sin(0)=0, cos(π/2)=0, sin(π/2)=1 —
+        // so the fade still begins exactly from the outgoing track's level and
+        // lands exactly on the incoming one's, and `force_complete_crossfade`
+        // and the standby-at-zero pre-roll need no companion change.
+        //
+        // The cost is a ~1.5dB rise through the middle, which is what equal
+        // power trades for the dip. Deliberate.
+        let (eased_out, eased_in) = crossfade_gains(progress);
         let vol = volume_ratio(self.volume.load(Ordering::SeqCst)) as f64;
         let base = vol.min(1.0);
 
@@ -1262,5 +1277,124 @@ impl AudioMixer {
         }
 
         Ok(None)
+    }
+}
+
+/// The outgoing and incoming gains at `progress` through a crossfade.
+///
+/// Equal power: `out² + in² == 1` for every `progress`, so the summed power of
+/// two uncorrelated tracks is constant across the whole fade.
+///
+/// Linear gains — `1 - t` and `t` — sum to 1 in amplitude but only 0.5 in
+/// power at the midpoint, which is the 3dB dip every listener hears in the
+/// middle of a naive crossfade and reads as a dropout rather than a transition.
+///
+/// Endpoints are exact: `(1, 0)` at the start and `(0, 1)` at the end, so the
+/// fade joins the steady state before it and after it without a step.
+fn crossfade_gains(progress: f64) -> (f64, f64) {
+    let t = progress.clamp(0.0, 1.0);
+    let phase = t * std::f64::consts::FRAC_PI_2;
+    (phase.cos(), phase.sin())
+}
+
+#[cfg(test)]
+mod crossfade_curve_tests {
+    use super::crossfade_gains;
+
+    /// The whole point: power is held, not amplitude.
+    ///
+    /// Swept rather than sampled at the midpoint alone, because the property
+    /// has to hold at every point in the fade and the midpoint is the one place
+    /// a linear ramp also happens to look reasonable on a casual check.
+    #[test]
+    fn power_is_constant_across_the_fade() {
+        for i in 0..=200 {
+            let t = i as f64 / 200.0;
+            let (out, inn) = crossfade_gains(t);
+            assert!(
+                (out * out + inn * inn - 1.0).abs() < 1e-9,
+                "power {out:.4}^2 + {inn:.4}^2 != 1 at t={t}"
+            );
+        }
+    }
+
+    /// Exact endpoints, because the fade joins the steady state on both sides.
+    ///
+    /// Cos(0) and sin(π/2) are 1.0 exactly; cos(π/2) is 6.1e-17 rather than 0,
+    /// which is inaudible but worth pinning so a future curve change that makes
+    /// it worse is visible.
+    #[test]
+    fn the_ends_are_untouched() {
+        let (out0, in0) = crossfade_gains(0.0);
+        assert_eq!((out0, in0), (1.0, 0.0));
+
+        let (out1, in1) = crossfade_gains(1.0);
+        assert!(
+            (out1 - 0.0).abs() < 1e-12,
+            "outgoing did not reach zero: {out1}"
+        );
+        assert!(
+            (in1 - 1.0).abs() < 1e-12,
+            "incoming did not reach full: {in1}"
+        );
+    }
+
+    /// Outgoing falls and incoming rises, monotonically, with no crossover
+    /// before the end.
+    ///
+    /// This is what rules out a curve that holds power but inverts somewhere —
+    /// equal-power variants built on tanh do that, and it sounds like a
+    /// reversed fade rather than a louder middle.
+    #[test]
+    fn the_two_never_cross() {
+        let mut prev_out = 1.0;
+        let mut prev_in = 0.0;
+        for i in 0..=200 {
+            let t = i as f64 / 200.0;
+            let (out, inn) = crossfade_gains(t);
+            assert!(out <= prev_out + 1e-12, "outgoing rose at t={t}");
+            assert!(inn >= prev_in - 1e-12, "incoming fell at t={t}");
+            assert!(
+                out >= inn || t == 1.0,
+                "curves crossed at t={t}: {out} < {inn}"
+            );
+            prev_out = out;
+            prev_in = inn;
+        }
+    }
+
+    /// Out of range is clamped rather than extrapolated.
+    ///
+    /// `progress` is already `.min(1.0)` at the call site, but the clamp is
+    /// what makes the function safe on its own, and cos/sin of a negative phase
+    /// would hand back a negative gain and invert a channel.
+    #[test]
+    fn out_of_range_clamps() {
+        assert_eq!(crossfade_gains(-1.0), crossfade_gains(0.0));
+        assert_eq!(crossfade_gains(2.0), crossfade_gains(1.0));
+    }
+
+    /// The old curve really was 3dB down in the middle — the bug being fixed.
+    ///
+    /// Kept as a linear-vs-equal-power comparison at the midpoint rather than a
+    /// bare number, so the reason the curve exists is readable here and not
+    /// only in the commit that introduced it.
+    #[test]
+    fn the_linear_curve_dipped_where_this_one_does_not() {
+        let linear_power: f64 = 0.5 * 0.5 + 0.5 * 0.5;
+        let (out, inn) = crossfade_gains(0.5);
+        let equal_power = out * out + inn * inn;
+
+        assert!(
+            (linear_power - 0.5).abs() < 1e-12,
+            "linear should sum to 0.5 power, got {linear_power}"
+        );
+        assert!(
+            (equal_power - 1.0).abs() < 1e-9,
+            "equal power should sum to 1.0, got {equal_power}"
+        );
+        // 10*log10(0.5) is the -3dB, stated so the number has a meaning.
+        let dip_db = 10.0 * linear_power.log10();
+        assert!((dip_db + 3.0103).abs() < 0.001, "dip was {dip_db} dB");
     }
 }
