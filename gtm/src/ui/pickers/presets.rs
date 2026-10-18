@@ -168,7 +168,9 @@ impl Pickers {
         const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
         const BRAILLE: [char; 8] = ['⠁', '⠃', '⠇', '⡇', '⣇', '⣧', '⣷', '⣿'];
         let chars: &[char; 8] = match app.visualizer.preset {
-            VisualizerPreset::Braille | VisualizerPreset::Gradient => &BRAILLE,
+            // Gradient's dot grid is the closest match for the braille ramp
+            // that used to sit on this arm.
+            VisualizerPreset::Gradient => &BRAILLE,
             _ => &BLOCKS,
         };
         let mut spans = vec![Span::raw("  ")];
@@ -224,30 +226,7 @@ impl Pickers {
         };
 
         match preset {
-            VisualizerPreset::Braille => {
-                lines.extend(row(
-                    2,
-                    Box::new(|r, _, b| {
-                        let l = (b * 4.0) as u32;
-                        let ch = match r {
-                            0 => match l {
-                                4.. => '⣿',
-                                3.. => '⣷',
-                                2.. => '⣧',
-                                1.. => '⠇',
-                                _ => '⠀',
-                            },
-                            _ => match l {
-                                2.. => '⣿',
-                                1.. => '⡇',
-                                _ => '⠀',
-                            },
-                        };
-                        (ch, app.theme.accent)
-                    }),
-                ));
-            }
-            VisualizerPreset::Blocks | VisualizerPreset::Mirror => {
+            VisualizerPreset::Mirror => {
                 const GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
                 lines.extend(row(
                     2,
@@ -289,84 +268,7 @@ impl Pickers {
                     }),
                 ));
             }
-            VisualizerPreset::Spectrum => {
-                // The real renderer ramps through `amplitude_color`; a hardcoded
-                // colour here both ignored the theme and previewed a preset that
-                // does not look like itself.
-                lines.extend(row(
-                    2,
-                    Box::new(|r, _, b| {
-                        const UP: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-                        const DOWN: [char; 8] = ['█', '▇', '▆', '▅', '▄', '▃', '▂', '▁'];
-                        let i = ((b * 7.0).round() as usize).min(7);
-                        (
-                            if r == 0 { UP[i] } else { DOWN[i] },
-                            crate::visualizer::amplitude_color(b, &app.theme),
-                        )
-                    }),
-                ));
-            }
-            VisualizerPreset::BarsDot => {
-                lines.extend(row(
-                    2,
-                    Box::new(|r, _, b| {
-                        let l = (b * 7.0) as u32;
-                        let ch = if r == 0 {
-                            match l {
-                                6.. => '⣿',
-                                4.. => '⣷',
-                                2.. => '⣧',
-                                1.. => '⠇',
-                                _ => '⠀',
-                            }
-                        } else {
-                            match l {
-                                4.. => '⣿',
-                                2.. => '⡇',
-                                1.. => '⠁',
-                                _ => '⠀',
-                            }
-                        };
-                        (ch, app.theme.accent)
-                    }),
-                ));
-            }
-            VisualizerPreset::ClassicPeak => {
-                lines.extend(row(
-                    2,
-                    Box::new(|r, _, b| {
-                        if r == 0 {
-                            if b > 0.78 {
-                                ('⎺', app.theme.accent)
-                            } else {
-                                (' ', app.theme.bg)
-                            }
-                        } else if b > 0.35 {
-                            ('▏', app.theme.fg_bright)
-                        } else {
-                            (' ', app.theme.bg)
-                        }
-                    }),
-                ));
-            }
-            VisualizerPreset::Columns => {
-                lines.extend(row(
-                    2,
-                    Box::new(|r, _, b| {
-                        if r == 0 {
-                            if b > 0.55 {
-                                ('█', app.theme.warning)
-                            } else {
-                                (' ', app.theme.bg)
-                            }
-                        } else if b > 0.05 {
-                            ('█', app.theme.accent)
-                        } else {
-                            (' ', app.theme.bg)
-                        }
-                    }),
-                ));
-            }
+
             VisualizerPreset::Wave => {
                 // A dot sweep over the samples themselves, the dot row following
                 // the signal within each cell's four rows. A sine written here
@@ -433,26 +335,7 @@ impl Pickers {
                     lines.push(Line::from(spans));
                 }
             }
-            VisualizerPreset::Retro => {
-                lines.extend((0..3).map(|r| {
-                    Line::from(
-                        (0..w)
-                            .map(|x| {
-                                let dist = (x as f64 / w.max(1) as f64 - 0.5).abs() * 2.0;
-                                let (ch, color) = match r {
-                                    0 if dist < 0.62 => ('⠛', app.theme.accent),
-                                    0 => (' ', app.theme.bg),
-                                    1 => ('▔', app.theme.fg_dim),
-                                    _ if dist < 0.4 => ('⣀', app.theme.fg_dim),
-                                    _ if dist < 0.75 => ('⣀', app.theme.secondary_accent),
-                                    _ => ('⣀', app.theme.tertiary_accent),
-                                };
-                                Span::styled(ch.to_string(), Style::default().fg(color))
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                }));
-            }
+
             VisualizerPreset::Flame => {
                 lines.extend(row(
                     2,
