@@ -210,25 +210,62 @@ fn caption(f: &mut ratatui::Frame, area: Rect, text: &str, style: Style) {
 /// Scrolled over the spans rather than over a joined string, because the glyphs
 /// are accent-coloured and the names are not — a plain `String` would have
 /// flattened both into one colour to buy a helper that already existed.
+/// Cells every glyph occupies, so every item's name starts at the same column.
+///
+/// A missing glyph used to contribute zero cells, so `Local` -- and `Radio`
+/// and `Podcast` in emoji mode, where the icon table has nothing for them --
+/// read as the separator plus a space before the name, while every glyphed
+/// item read as one glyph plus a space. Four extra columns of gape before
+/// exactly the items the directory had no icon for, which is what made
+/// `Local` look detached from its neighbours rather than evenly set with them.
+///
+/// Fixed rather than "pad only when missing" because a glyph's own width is not
+/// something this code can know: a Private Use Area codepoint is East Asian
+/// Ambiguous and renders one cell or two depending on the terminal's locale, so
+/// a slot sized to whatever this build measures would drift on someone else's
+/// machine. Two cells is the widest any of these render, so the slot never clips
+/// one and never varies.
+const GLYPH_SLOT: usize = 2;
+
+/// The separator between items: a dot on two spaces each side.
+const PROVIDER_GAP: &str = "  \u{b7}  ";
+
+/// `slot + space + name` per item, with the separator between.
+///
+/// Split out of [`providers`] so the alignment it exists to guarantee can be
+/// asserted directly, over both icon styles, instead of being a property
+/// inferred from a screenshot.
+fn provider_spans(
+    all: &[(&'static str, &'static str)],
+    glyph: Style,
+    name: Style,
+) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(all.len() * 3);
+    for (i, (glyph_c, name_c)) in all.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(PROVIDER_GAP.to_string(), glyph));
+        }
+        // Measured with ratatui's own `Line::width` rather than a second width
+        // implementation, so the padding matches exactly what the renderer
+        // will lay out. A hand-rolled `chars().count()` disagrees with ratatui
+        // on every wide glyph and pads the wrong amount.
+        let mut slot = (*glyph_c).to_string();
+        while Line::from(slot.as_str()).width() < GLYPH_SLOT {
+            slot.push(' ');
+        }
+        spans.push(Span::styled(slot, glyph));
+        spans.push(Span::styled(format!(" {name_c}"), name));
+    }
+    spans
+}
+
 fn providers(app: &App, frame: usize, w: u16) -> Line<'static> {
     let all = crate::ui::providers(&app.icon_style);
     let (glyph, name) = (
         Style::default().fg(app.theme.accent),
         Style::default().fg(app.theme.fg_dim),
     );
-    // One cell between a glyph and its name — there was none, so the row read
-    // "♪Spotify" — and a dot on two spaces each side between items, which is
-    // wide enough to see a boundary at a glance and narrow enough that the row
-    // still fits the pane it scrolls across.
-    let gap = "  ·  ";
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(all.len() * 3);
-    for (i, (glyph_c, name_c)) in all.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(gap.to_string(), glyph));
-        }
-        spans.push(Span::styled((*glyph_c).to_string(), glyph));
-        spans.push(Span::styled(format!(" {name_c}"), name));
-    }
+    let spans = provider_spans(&all, glyph, name);
     let total = Line::from(spans.clone()).width() as u16;
     if total <= w {
         return Line::from(spans);
@@ -549,6 +586,85 @@ mod tests {
         // And it comes back around to where it started rather than stopping at
         // the end of the row, which is the other half of "revolving".
         assert_eq!(march(total * 7, total), 0);
+    }
+
+    /// Every item in the provider row is the same shape: a full-width glyph
+    /// slot, one space, the name.
+    ///
+    /// The bug this pins: a source the directory had no icon for contributed
+    /// zero cells, so its name started four columns left of everyone else's --
+    /// `Local`, plus `Radio` and `Podcast` in emoji mode. Both styles are
+    /// covered because the gap only appears where a glyph is missing, and only
+    /// the emoji table has missing glyphs.
+    ///
+    /// Asserted per span rather than by comparing item starts, because the
+    /// names are different lengths and a uniform stride is therefore not the
+    /// property. What has to hold is that every slot is the same width whatever
+    /// glyph, or no glyph, is in it.
+    #[test]
+    fn every_provider_item_is_the_same_shape() {
+        for style in ["mdi", "emoji"] {
+            let all = crate::ui::providers(style);
+            assert!(!all.is_empty(), "{style}: no providers");
+            let spans = provider_spans(&all, Style::default(), Style::default());
+            let sep = Line::from(PROVIDER_GAP).width();
+            let w = |i: usize| Line::from(spans[i].content.as_ref()).width();
+            for i in 0..all.len() {
+                let (slot, name_i, sep_i) = (i * 3, i * 3 + 1, i * 3 + 2);
+                assert_eq!(
+                    w(slot),
+                    GLYPH_SLOT,
+                    "{style}: item {i} glyph slot is {} wide, want {GLYPH_SLOT} ({:?})",
+                    w(slot),
+                    spans[slot].content.as_ref()
+                );
+                assert_eq!(
+                    spans[name_i].content.as_ref(),
+                    format!(" {}", all[i].1),
+                    "{style}: item {i} name span"
+                );
+                if i + 1 < all.len() {
+                    assert_eq!(w(sep_i), sep, "{style}: item {i} separator width");
+                }
+            }
+            // And the row is exactly the sum of its parts, so nothing hides
+            // outside the spans.
+            let sum: usize = spans
+                .iter()
+                .map(|s| Line::from(s.content.as_ref()).width())
+                .sum();
+            assert_eq!(Line::from(spans.clone()).width(), sum, "{style}");
+        }
+    }
+
+    /// A missing glyph still gets a full slot -- which is the whole fix, and
+    /// needs a fixture that actually has one.
+    #[test]
+    fn a_missing_glyph_still_gets_a_full_slot() {
+        let all = crate::ui::providers("emoji");
+        assert!(
+            all.iter().any(|(g, _)| g.is_empty()),
+            "the emoji table no longer has a missing glyph to pad"
+        );
+        let spans = provider_spans(&all, Style::default(), Style::default());
+        for (i, name) in all.iter().enumerate() {
+            if !name.0.is_empty() {
+                continue;
+            }
+            let slot = &spans[i * 3].content;
+            assert_eq!(
+                Line::from(slot.as_ref()).width(),
+                GLYPH_SLOT,
+                "{:?} got a {}-cell slot",
+                name.1,
+                Line::from(slot.as_ref()).width()
+            );
+            assert!(
+                slot.trim().is_empty(),
+                "{:?} slot is not blank: {slot:?}",
+                name.1
+            );
+        }
     }
 
     /// Items in the provider row are separated well enough to see a boundary.
