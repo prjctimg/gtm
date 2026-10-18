@@ -359,11 +359,6 @@ pub fn default_keybindings() -> Keybindings {
                 NORMAL
             ),
             b!(
-                KeyEvent::new(KeyCode::Char('P'), KeyModifiers::ALT),
-                KeyboardAction::OpenOverlay(PickerId::ProgressStyle),
-                NORMAL
-            ),
-            b!(
                 KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
                 KeyboardAction::OpenOverlay(PickerId::VisualizerPreset),
                 NORMAL
@@ -636,7 +631,6 @@ impl KeyboardAction {
             "open_eq" | "open_equalizer" | "equalizer" => {
                 KeyboardAction::OpenOverlay(PickerId::Equalizer)
             }
-            "open_progress_style" => KeyboardAction::OpenOverlay(PickerId::ProgressStyle),
             "open_visualizer_preset" => KeyboardAction::OpenOverlay(PickerId::VisualizerPreset),
             "open_about" | "about" => KeyboardAction::OpenOverlay(PickerId::About),
             "open_sleep_timer" | "sleep_timer" => KeyboardAction::OpenOverlay(PickerId::SleepTimer),
@@ -748,6 +742,27 @@ mod tests {
         );
     }
 
+    /// `Alt+p` reaches Podcasts, which for a long time it did not.
+    ///
+    /// The progress-style picker sat earlier in the default table under the same
+    /// chord, and `dispatch` returns the first match, so Podcasts was bound but
+    /// unreachable. That picker no longer exists, so this pins what the clash was
+    /// costing rather than the clash itself -- `defaults_have_no_clashing_keys`
+    /// covers the general case.
+    #[test]
+    fn alt_p_reaches_podcasts() {
+        assert!(
+            matches!(
+                default_keybindings().dispatch(
+                    KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
+                    KeyContext::Normal
+                ),
+                Some(KeyboardAction::OpenOverlay(PickerId::PodcastFeeds))
+            ),
+            "Alt+p is bound to something other than Podcasts"
+        );
+    }
+
     /// The allowlist must not rot into a blanket suppression. Each entry is
     /// still a real overlap, so if one stops being true the entry should be
     /// deleted rather than left justifying nothing.
@@ -761,27 +776,6 @@ mod tests {
                 "{a}/{b} is allowlisted but no longer overlaps — drop the entry"
             );
         }
-    }
-
-    /// `Alt+p` is Podcasts, and the Progress Bar category -- which is what used
-    /// to shadow it -- now has no key of its own and is reached with `Alt+L`
-    /// then Tab. The clash test is what keeps that arrangement honest.
-    #[test]
-    fn podcasts_and_progress_are_both_reachable() {
-        assert!(matches!(
-            dispatch(
-                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
-                KeyContext::Normal
-            ),
-            Some(KeyboardAction::OpenOverlay(PickerId::PodcastFeeds))
-        ));
-        assert!(matches!(
-            dispatch(
-                KeyEvent::new(KeyCode::Char('P'), KeyModifiers::ALT),
-                KeyContext::Normal
-            ),
-            Some(KeyboardAction::OpenOverlay(PickerId::ProgressStyle))
-        ));
     }
 
     fn dispatch(key: KeyEvent, ctx: KeyContext) -> Option<KeyboardAction> {

@@ -116,9 +116,6 @@ impl App {
             .min(self.footer_presets.len().saturating_sub(1));
         self.footer_preset = footer_preset;
 
-        // Progress style
-        self.progress_style = prefs.progress_style;
-
         // Visualizer preset
         self.visualizer.preset = prefs.visualizer_preset;
         self.daydream_secs = prefs.daydream_secs;

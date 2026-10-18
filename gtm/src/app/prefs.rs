@@ -81,8 +81,12 @@ pub struct Prefs {
     pub(crate) reactive_theme_intensity: f32,
     #[serde(default = "default_preset_name")]
     pub(crate) footer_preset_name: String,
-    #[serde(default)]
-    pub(crate) progress_style: ProgressStyle,
+    /// The progress bar style, kept only so a config that names one still
+    /// parses. There is one look now — a shader — so there is nothing to read
+    /// it into. `VisualizerPreset` does the same thing for the same reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code, reason = "read only so an old config parses; never used")]
+    pub(crate) progress_style: Option<String>,
     #[serde(default)]
     pub(crate) visualizer_preset: VisualizerPreset,
     /// Seconds of keyboard, paste or mouse inactivity before the visualizer
@@ -276,7 +280,7 @@ impl Default for Prefs {
             reactive_theme: true,
             reactive_theme_intensity: default_reactive_intensity(),
             footer_preset_name: default_preset_name(),
-            progress_style: ProgressStyle::default(),
+            progress_style: None,
             visualizer_preset: VisualizerPreset::default(),
             daydream_secs: DEFAULT_DAYDREAM_SECS,
             extensions: ExtensionsConfig::default(),

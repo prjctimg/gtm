@@ -107,7 +107,6 @@ To turn it off, empty the `Alt+X` field and press Enter, or remove
 | `Alt+S` | Cycle library sort order |
 | `Alt+O` | Play an HTTP(S) stream URL |
 | `Alt+p` | Podcast feeds |
-| `Alt+P` | Progress bar style |
 | `Alt+1` | Toggle mono |
 | `Alt+/` | Search the library |
 | `Alt+l` | Add the current track to a Spotify playlist |
@@ -418,11 +417,15 @@ daemon and prints the result. Use **\--json** for machine-readable output.
     `--reset` restores defaults, `--validate` reports parse errors.
 
     Enum values are case-sensitive and several have no serde rename:
-    `progress_style` takes `SeekHead` / `Classic` / `Dots` / `TrueGradient`
-    and `track_sort` takes `Recents` / `RecentlyAdded` / `Alphabetical` /
-    `Artist` / `Album`. An invalid value does not fail just that key — the
-    entire file is discarded and defaults are used, silently. Validate before
-    relying on a hand-edited file.
+    `track_sort` takes `Recents` / `RecentlyAdded` / `Alphabetical` / `Artist` /
+    `Album`. An invalid value does not fail just that key — the entire file is
+    discarded and defaults are used, silently. Validate before relying on a
+    hand-edited file.
+
+    `progress_style` and the removed `visualizer_preset` names are still
+    accepted and ignored rather than rejected. Both are read leniently so a
+    config naming a style this build no longer has loads with everything else
+    in it intact, instead of being discarded whole.
 
 **sleep-timer** *minutes*
 :   Set the sleep timer (minutes until playback fades out and stops).

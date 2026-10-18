@@ -23,7 +23,10 @@ impl App {
                 .get(self.footer_preset)
                 .map(|p| p.name.to_string())
                 .unwrap_or_else(default_preset_name),
-            progress_style: self.progress_style,
+            // The progress style is no longer a choice, so nothing is carried
+            // over from the running app; the field stays only to keep an old
+            // config parseable.
+            progress_style: None,
             visualizer_preset: self.visualizer.preset,
             daydream_secs: self.daydream_secs,
             extensions: self.extensions.clone(),

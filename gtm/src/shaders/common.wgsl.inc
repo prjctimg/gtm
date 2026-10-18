@@ -17,10 +17,12 @@ struct Uniforms {
     playing: f32,
     // Rise speed in rows per second, for the heat field.
     rise: f32,
+    // Track position as a fraction, for the progress bar. Occupies what used
+    // to be padding, so every offset after it is unchanged.
+    progress: f32,
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
-    _pad3: f32,
     // Pane size in device pixels.
     size: vec2<u32>,
     band_count: u32,

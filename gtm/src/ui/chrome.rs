@@ -407,11 +407,7 @@ impl Render {
             let bar_w = (prog.width as usize).min(64).saturating_sub(2).max(4);
             let bar = Render::progress_variant(ratio, bar_w, app);
             f.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    bar,
-                    Style::default().fg(app.theme.secondary_accent),
-                )))
-                .alignment(Alignment::Center),
+                Paragraph::new(bar).alignment(Alignment::Center),
                 Rect {
                     x: prog.x,
                     y: prog.y + 1,
@@ -1117,10 +1113,7 @@ impl Render {
                         let time_str =
                             format!(" {} / {}", format_duration(pos), format_duration(dur));
                         // Progress bar on first line
-                        let prog_para = Paragraph::new(Line::from(vec![Span::styled(
-                            progress_str,
-                            Style::default().fg(app.theme.secondary_accent),
-                        )]));
+                        let prog_para = Paragraph::new(progress_str);
                         f.render_widget(prog_para, *area);
                         // Elapsed time on second line
                         if let Some(area) = info_chunks.get(info_row + 1) {
@@ -2457,9 +2450,21 @@ impl Render {
         }
     }
 
-    pub fn progress_variant(ratio: f64, width: usize, app: &App) -> String {
-        let ratio = render_ratio(app.progress_style, ratio, app.progress_smoother.value());
-        render_progress(ratio, width, app.progress_style)
+    /// The progress bar, smoothed and drawn.
+    ///
+    /// `&mut App` because the GPU path keeps a device on the bar itself, created
+    /// on first use. Returning a [`Line`] rather than a `String` is forced by
+    /// that: a shader frame comes back as per-cell foreground and background
+    /// colours, which text cannot carry.
+    pub fn progress_variant(ratio: f64, width: usize, app: &mut App) -> Line<'static> {
+        // The smoother was already advanced once per frame with the real frame
+        // delta, so its value is the ratio to draw. Smoothing here as well would
+        // apply the time constant twice and the bar would lag the position by
+        // roughly double what it is meant to.
+        let _ = ratio;
+        let ratio = app.progress_smoother.value();
+        app.progress_bar
+            .draw(ratio, width, app.theme.secondary_accent, app.theme.fg_dim)
     }
 
     pub(crate) fn lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {

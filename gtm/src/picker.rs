@@ -32,7 +32,6 @@ pub enum PickerId {
     Crossfade,
     VisualizerPreset,
     FooterPreset,
-    ProgressStyle,
     Settings,
     Notifications,
     NotificationSettings,

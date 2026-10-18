@@ -22,9 +22,7 @@ pub(crate) use crate::footer::{
 };
 pub(crate) use crate::mouse::MouseZone;
 pub(crate) use crate::picker::{Picker, PickerId, PickerSource};
-pub(crate) use crate::progress::{
-    ProgressStyle, render_progress, render_progress_styled, render_ratio,
-};
+pub(crate) use crate::progress::{ProgressBar, ProgressSmoother};
 pub(crate) use crate::shared::daemon::ensure_daemon_running;
 pub(crate) use crate::shared::global::{EqPreset, PlaybackStatus};
 pub(crate) use crate::shared::ipc::HealthStatus;

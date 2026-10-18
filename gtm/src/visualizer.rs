@@ -1139,6 +1139,9 @@ impl AudioVisualizer {
             .collect();
         let t = frame.theme;
         Some(crate::shader::Draw {
+            // The visualizer never draws a progress bar; the bar has its own
+            // call into the same pipeline and carries the ratio there.
+            progress: 0.0,
             preset,
             playing: self.playing,
             dt: frame.dt as f32,

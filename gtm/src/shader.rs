@@ -27,11 +27,11 @@ const RISE: f32 = 90.0;
 
 /// Bands the uniform carries, packed four to a `vec4` because the uniform
 /// address space requires a 16-byte stride.
-const BANDS: usize = 64;
+pub const BANDS: usize = 64;
 
 /// Waveform samples, interleaved L/R, packed the same way. A multiple of four so
 /// the packing never has a ragged tail.
-const WAVE: usize = 64;
+pub const WAVE: usize = 64;
 
 /// Device pixels per cell. Two matches the `▀` rasteriser's two vertical samples
 /// per cell; more would be read back and thrown away.
@@ -62,16 +62,19 @@ pub enum Preset {
     Mirror,
     Wave,
     Stereo,
+    /// The track progress bar. Not a pane -- see `shaders/progress.wgsl`.
+    Progress,
 }
 
 impl Preset {
     /// Every GPU preset, for warming pipelines.
-    pub const ALL: [Preset; 5] = [
+    pub const ALL: [Preset; 6] = [
         Preset::Flame,
         Preset::Gradient,
         Preset::Mirror,
         Preset::Wave,
         Preset::Stereo,
+        Preset::Progress,
     ];
 
     pub fn name(self) -> &'static str {
@@ -81,6 +84,7 @@ impl Preset {
             Preset::Mirror => "mirror",
             Preset::Wave => "wave",
             Preset::Stereo => "stereo",
+            Preset::Progress => "progress",
         }
     }
 
@@ -113,6 +117,11 @@ impl Preset {
                 include_str!("shaders/stereo.wgsl")
             )
             .to_string(),
+            Preset::Progress => concat!(
+                include_str!("shaders/common.wgsl.inc"),
+                include_str!("shaders/progress.wgsl")
+            )
+            .to_string(),
         }
     }
 }
@@ -141,6 +150,9 @@ pub struct Draw {
     pub stereo: [f32; 4],
     /// Pane size in cells.
     pub cells: (u16, u16),
+    /// Track position as a fraction, for the progress bar. Unused by the pane
+    /// presets, which read `bands` and `wave` instead.
+    pub progress: f32,
     /// Theme ramp ends, 0–255, so the shader follows the reactive palette
     /// rather than a fixed gradient.
     pub cool: [u8; 3],
@@ -159,7 +171,10 @@ struct Uniforms {
     dt: f32,
     playing: f32,
     rise: f32,
-    pad: [f32; 4],
+    /// Track position as a fraction. Occupies what used to be padding, so the
+    /// struct's size and every offset after it are unchanged.
+    progress: f32,
+    pad: [f32; 3],
     size: [u32; 2],
     band_count: u32,
     band_width: u32,
@@ -188,7 +203,8 @@ impl Uniforms {
             dt: job.dt.max(0.0),
             playing: f32::from(u8::from(job.playing)),
             rise: RISE,
-            pad: [0.0; 4],
+            progress: job.progress.clamp(0.0, 1.0),
+            pad: [0.0; 3],
             size: [w, h],
             band_count: job.band_count,
             band_width: (w / job.band_count.max(1)).max(1),
