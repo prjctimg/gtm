@@ -331,6 +331,13 @@ pub struct ChartsView {
     /// have one, and the track list already resolved it, so the sleeve is
     /// remembered under the chart that owns it rather than fetched twice.
     pub covers: std::collections::HashMap<String, String>,
+    /// The chart whose sleeve is in flight.
+    ///
+    /// Separate from the cover slots because this one is asked for a row the
+    /// user has only highlighted rather than opened, and must never replace
+    /// anything on screen: the tracks request it sits beside overwrites the
+    /// whole right pane, so it cannot be issued speculatively.
+    pub sleeve_fetch: FetchSlot<String>,
     /// Cover of the highlighted row, shown in the left pane's info slot.
     ///
     /// Its own slot rather than the popup card's, and its own render path, for

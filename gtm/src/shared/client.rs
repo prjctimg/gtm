@@ -1309,6 +1309,32 @@ impl<'a> Charts<'a> {
     }
 
     /// Fetch tracks for a specific chart playlist.
+    /// The sleeve for one chart, without loading its tracklist.
+    ///
+    /// A chart playlist carries no artwork of its own, so the client asks for
+    /// the sleeve as the cursor moves rather than waiting for the user to open
+    /// the chart. `None` is an answer, not a failure: most charts do resolve one,
+    /// but a source that publishes nothing should leave the card blank rather
+    /// than surface an error per row.
+    pub async fn chart_sleeve(
+        &self,
+        source_id: String,
+        chart_id: String,
+    ) -> Result<Option<String>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::ChartsSleeve {
+                source_id,
+                chart_id,
+            })
+            .await?;
+        match res {
+            DaemonRes::ChartSleeve { cover, .. } => Ok(cover),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
     pub async fn tracks(
         &self,
         source_id: String,

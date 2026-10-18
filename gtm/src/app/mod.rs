@@ -814,6 +814,11 @@ pub(crate) enum IpcResult {
     /// the daemon's refresh tick has landed.
     RadioTracklist(crate::shared::radio::RadioTracklist),
     ChartsLoaded(Vec<crate::shared::chart::ChartPlaylist>),
+    /// A chart's sleeve, learned on the row the user is highlighting.
+    ChartSleeve {
+        chart_id: String,
+        cover: Option<String>,
+    },
     ChartTracksLoaded(Vec<crate::shared::chart::ChartTrack>),
     ChartsSources(Vec<crate::shared::chart::ChartSource>),
     /// Last.fm link status refreshed after a setup action completes.

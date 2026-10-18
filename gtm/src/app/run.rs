@@ -375,6 +375,7 @@ impl App {
         self.update_track_popup();
         self.fetch_row_cover();
         self.fetch_list_cover();
+        self.fetch_chart_sleeve();
         self.fetch_chart_cover();
 
         // Animate the initial frame so the library list and Now Playing pane
@@ -972,6 +973,32 @@ impl App {
                             self.state.radio_tracks = list;
                         }
                     }
+                    IpcResult::ChartSleeve { chart_id, cover } => {
+                        // Filed under the chart it belongs to, keyed by id so a
+                        // reply for a row the cursor has left still lands where
+                        // it is useful instead of being thrown away. The slot
+                        // is released either way: a claimed slot reads as "in
+                        // flight" and would stop a retry.
+                        self.charts.sleeve_fetch.clear();
+                        let learned = cover.filter(|u| !u.trim().is_empty());
+                        let known = learned.is_some();
+                        if let Some(url) = learned {
+                            self.charts.covers.insert(chart_id.clone(), url);
+                        }
+                        // The card describes the highlighted row, so only redraw
+                        // if that is the row this sleeve belongs to.
+                        if known
+                            && self
+                                .charts
+                                .charts
+                                .get(self.list_pos())
+                                .is_some_and(|c| c.id == chart_id)
+                        {
+                            self.fetch_chart_cover();
+                            self.update_track_popup();
+                            self.cover_art_dirty = true;
+                        }
+                    }
                     IpcResult::ChartsLoaded(charts) => {
                         // A stale selected source index (e.g. Spotify got
                         // unlinked between fetches) must never crash the
@@ -1237,6 +1264,15 @@ impl App {
                                 // had not cached yet stayed blank for the rest
                                 // of the session however much you scrolled.
                                 self.popup_slot.clear();
+                                // Nothing in the library for this row, but the row
+                                // itself names an image. That is the other half
+                                // of the blank card in "All Tracks": the URL was
+                                // known the whole time and only ever consulted for
+                                // rows with no local path at all.
+                                let url = self.popup_row_art_url();
+                                if url.is_some() {
+                                    self.fetch_url_cover(url);
+                                }
                             }
                         }
                     }

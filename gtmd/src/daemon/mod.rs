@@ -3602,6 +3602,10 @@ impl Daemon {
                 source_id,
                 chart_id,
             } => Charts::tracks(inner, source_id.clone(), chart_id.clone()).await,
+            DaemonReq::ChartsSleeve {
+                source_id,
+                chart_id,
+            } => Charts::sleeve(inner, source_id.clone(), chart_id.clone()).await,
             DaemonReq::LastfmSetConfig {
                 enabled,
                 api_key,

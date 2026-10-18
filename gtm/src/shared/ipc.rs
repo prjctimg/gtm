@@ -626,6 +626,16 @@ pub enum DaemonReq {
         source_id: String,
         chart_id: String,
     },
+    /// The sleeve for one chart, without loading or replacing its tracklist.
+    ///
+    /// Separate from `ChartsTracks` because that request overwrites whatever the
+    /// right pane is showing, so it cannot be issued speculatively for a row the
+    /// user has only highlighted. This one reads the chart's top entry and
+    /// returns just its artwork, which is safe to ask for on every cursor move.
+    ChartsSleeve {
+        source_id: String,
+        chart_id: String,
+    },
     GetStatus,
     /// Like `GetStatus` but omits the full `default_list` (the whole library)
     /// from the returned state. Used for the client's periodic background
@@ -743,6 +753,7 @@ impl DaemonReq {
             DaemonReq::ChartsSources => "charts_sources",
             DaemonReq::ChartsList { .. } => "charts_list",
             DaemonReq::ChartsTracks { .. } => "charts_tracks",
+            DaemonReq::ChartsSleeve { .. } => "charts_sleeve",
             DaemonReq::GetStatus => "get_status",
             DaemonReq::GetStatusLite => "get_status_lite",
             DaemonReq::CheckHealth => "check_health",
@@ -1847,6 +1858,10 @@ pub enum DaemonRes {
     ChartsTracksRes {
         tracks: Vec<ChartTrack>,
     },
+    ChartSleeve {
+        chart_id: String,
+        cover: Option<String>,
+    },
     ChartsLoaded {
         charts: Vec<ChartPlaylist>,
     },
@@ -1980,6 +1995,9 @@ impl DaemonRes {
             DaemonRes::PlaylistCreated { id } => Some(serde_json::json!({ "playlist_id": id })),
             DaemonRes::ChartsListRes { charts } => Some(serde_json::json!({ "charts": charts })),
             DaemonRes::ChartsTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
+            DaemonRes::ChartSleeve { chart_id, cover } => {
+                Some(serde_json::json!({ "chart_id": chart_id, "cover": cover }))
+            }
             DaemonRes::ChartsLoaded { charts } => Some(serde_json::json!({ "charts": charts })),
             DaemonRes::ChartTracksLoaded { tracks } => {
                 Some(serde_json::json!({ "tracks": tracks }))
@@ -2155,6 +2173,10 @@ impl DaemonRes {
             DaemonRes::PlaylistCreated { id } => field!("playlist_id", &id),
             DaemonRes::ChartsListRes { charts } => field!("charts", &charts),
             DaemonRes::ChartsTracksRes { tracks } => field!("tracks", &tracks),
+            DaemonRes::ChartSleeve { chart_id, cover } => {
+                field!("chart_id", &chart_id);
+                field!("cover", &cover);
+            }
             DaemonRes::ChartsLoaded { charts } => field!("charts", &charts),
             DaemonRes::ChartTracksLoaded { tracks } => field!("tracks", &tracks),
             DaemonRes::CoverArt { data } => field!("data", &data),
@@ -2459,6 +2481,13 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
+            "charts_sleeve" | "chart_sleeve" => DaemonRes::ChartSleeve {
+                chart_id: field(&data, "chart_id")
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                cover: data.get("cover").and_then(|v| v.as_str()).map(String::from),
+            },
             "podcast_episodes" => {
                 let feed_id = field_str(&data, "feed_id").to_string();
                 let feed_title = field_str(&data, "feed_title").to_string();

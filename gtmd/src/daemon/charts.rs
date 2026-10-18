@@ -43,6 +43,44 @@ impl Charts {
         }
     }
 
+    /// A chart's sleeve, from the artwork of whatever sits at the top of it.
+    ///
+    /// A chart is a playlist, and a playlist has no artwork of its own -- the
+    /// iTunes feed publishes none at all, so every chart row came back with a
+    /// blank card until the user opened it, loaded its tracks, and let the
+    /// client file the first track's sleeve under it. That left one chart
+    /// covered at a time out of the ~180 on offer, and the only way to learn a
+    /// sleeve was the drill-down that the blank was meant to advertise.
+    ///
+    /// This answers for one chart without loading its tracklist, so the client
+    /// can ask for it as the cursor moves.
+    pub async fn sleeve(
+        inner: &DaemonInner,
+        source_id: String,
+        chart_id: String,
+    ) -> Result<DaemonRes, CoreError> {
+        let fetched = {
+            let registry = inner.charts.lock().await;
+            registry.chart_tracks(&source_id, &chart_id).await
+        };
+        match fetched {
+            Ok(tracks) => {
+                // Only the head of the chart matters, so only the head is
+                // worth a Deezer round trip.
+                let head: Vec<ChartTrack> = tracks.into_iter().take(1).collect();
+                let cover = fill_covers(head)
+                    .await
+                    .into_iter()
+                    .next()
+                    .and_then(|t| t.cover_url);
+                Ok(DaemonRes::ChartSleeve { chart_id, cover })
+            }
+            Err(e) => Ok(DaemonRes::Error {
+                message: format!("charts sleeve failed: {e}"),
+            }),
+        }
+    }
+
     pub async fn tracks(
         inner: &DaemonInner,
         source_id: String,

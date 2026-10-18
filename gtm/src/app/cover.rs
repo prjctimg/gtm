@@ -388,19 +388,30 @@ impl App {
     /// that into a favicon means a directory lookup per row. The card describes
     /// the station in text instead.
     fn popup_cover_url(&self) -> Option<String> {
-        let pos = self.list_pos();
-        let own = |i: usize| {
-            self.charts
-                .charts
-                .get(i)
-                .and_then(|c| c.cover_url.clone())
-                .or_else(|| self.charts.cover_of(i))
-        };
-        match self.track_info_kind() {
-            TrackInfoKind::Chart => own(pos),
-            TrackInfoKind::ChartTrack => self.charts.chart_tracks.get(pos)?.cover_url.clone(),
-            _ => None,
+        self.chart_row_art().map(|(_, url)| url)
+    }
+
+    /// The highlighted library row's own published artwork, if it names any.
+    ///
+    /// Separate from [`Self::popup_cover_url`] because that one answers for the
+    /// row kinds whose art is *drawn* from a URL and this one for the row kinds
+    /// that keep a local file as well. A local track with no embedded art and no
+    /// cached cover is invisible to the art cache but is not blank: the row
+    /// carries the URL it was published with.
+    pub(crate) fn popup_row_art_url(&self) -> Option<String> {
+        if self.track_info_kind() != TrackInfoKind::Track {
+            return None;
         }
+        let pos = self.list_pos();
+        let url = if self.group_row() && self.browse_detail.is_none() {
+            self.group_representative(pos)
+                .and_then(|t| t.cover_url.clone())
+        } else {
+            self.filtered_tracks()
+                .get(pos)
+                .and_then(|t| t.cover_url.clone())
+        };
+        url.filter(|u| !u.trim().is_empty())
     }
 
     /// Fetch a popup cover named by URL, through the same slot Spotify
@@ -878,30 +889,74 @@ impl App {
     /// level is showing and the two name their art differently: a chart's own
     /// sleeve comes from the provider or from the tracks it has loaded, and a
     /// track's comes from the track.
+    ///
+    /// One reader for both the chart card and the popup card, because they were
+    /// two copies of the same lookup and a chart whose art one knew about and
+    /// the other did not drew a sleeve in the card and a hole in the popup.
     fn chart_row_art(&self) -> Option<(usize, String)> {
         let pos = self.list_pos();
+        let clean = |u: Option<String>| u.filter(|s| !s.trim().is_empty());
         match self.track_info_kind() {
             TrackInfoKind::Chart => {
                 let chart = self.charts.charts.get(pos)?;
-                let url = chart
-                    .cover_url
-                    .clone()
-                    .or_else(|| self.charts.cover_of(pos))
-                    .filter(|u| !u.is_empty())?;
+                let url = clean(chart.cover_url.clone()).or_else(|| self.charts.cover_of(pos))?;
                 Some((pos, url))
             }
             TrackInfoKind::ChartTrack => {
-                let url = self
-                    .charts
-                    .chart_tracks
-                    .get(pos)?
-                    .cover_url
-                    .clone()
-                    .filter(|u| !u.is_empty())?;
+                let url = clean(self.charts.chart_tracks.get(pos)?.cover_url.clone())?;
                 Some((pos, url))
             }
             _ => None,
         }
+    }
+
+    /// Ask the daemon for a chart's sleeve when the row has none of its own.
+    ///
+    /// A playlist has no artwork; the sleeve is the top track's. Learning it
+    /// used to require opening the chart, which is what the blank card was
+    /// supposed to be inviting -- so the list showed art for the one chart you
+    /// had opened and nothing for the other hundred and seventy nine.
+    ///
+    /// Cheap per row because the answer is cached by chart id and latched by
+    /// `chart_sleeve_fetch`, so holding the cursor still or scrolling back over
+    /// a visited chart costs nothing.
+    pub fn fetch_chart_sleeve(&mut self) {
+        if no_image_protocol() || self.library_category != LIB_CHARTS {
+            return;
+        }
+        let pos = self.list_pos();
+        if self.track_info_kind() != TrackInfoKind::Chart {
+            return;
+        }
+        let Some(chart) = self.charts.charts.get(pos).cloned() else {
+            return;
+        };
+        let id = chart.id.clone();
+        // Already known, already in flight, or the source published one.
+        if self.charts.covers.contains_key(&id) || self.charts.sleeve_fetch.pending(&id) {
+            return;
+        }
+        if let Some(url) = chart.cover_url.clone().filter(|u| !u.trim().is_empty()) {
+            self.charts.covers.insert(id, url);
+            return;
+        }
+        let client = self.client.clone();
+        let ipc = self.ipc_tx.clone();
+        self.charts.sleeve_fetch.claim(id.clone(), 0);
+        tokio::spawn(async move {
+            // A miss is an answer, not an error: a source that publishes no
+            // artwork for a chart should leave the row blank rather than raise
+            // a notification every time the cursor passes over it.
+            let cover = client
+                .charts()
+                .chart_sleeve(chart.source_id.clone(), id.clone())
+                .await
+                .unwrap_or(None);
+            let _ = ipc.send(IpcResult::ChartSleeve {
+                chart_id: id,
+                cover,
+            });
+        });
     }
 
     /// Build the image protocol for the highlighted chart row's cover.
