@@ -1063,9 +1063,15 @@ impl AudioMixer {
         incoming.set_volume(vol);
 
         self.is_a_active = !self.is_a_active;
-        if self.standby_duration > 0.0 {
-            *self.duration.lock().unwrap() = self.standby_duration;
-        }
+        // Unconditionally, as the normal path in `start_track` does. The guard
+        // that used to be here skipped the write whenever the incoming source
+        // had no duration -- which is every live stream -- and left the
+        // *outgoing* file's duration in place while the two lines below reset
+        // the position to zero. So a stream promoted by a crossfade reported
+        // position 0 against the previous song's length: a full progress bar,
+        // re-filling from the start, on a track with no end to reach. A
+        // stream's honest duration is 0, which is what this now writes.
+        *self.duration.lock().unwrap() = self.standby_duration;
         *self.start_time.lock().unwrap() = Some(Instant::now());
         *self.start_pos.lock().unwrap() = 0.0;
         self.crossfade_start = None;
@@ -1103,9 +1109,15 @@ impl AudioMixer {
             self.player_a.set_volume(vol);
         }
         self.is_a_active = !self.is_a_active;
-        if self.standby_duration > 0.0 {
-            *self.duration.lock().unwrap() = self.standby_duration;
-        }
+        // Unconditionally, as the normal path in `start_track` does. The guard
+        // that used to be here skipped the write whenever the incoming source
+        // had no duration -- which is every live stream -- and left the
+        // *outgoing* file's duration in place while the two lines below reset
+        // the position to zero. So a stream promoted by a crossfade reported
+        // position 0 against the previous song's length: a full progress bar,
+        // re-filling from the start, on a track with no end to reach. A
+        // stream's honest duration is 0, which is what this now writes.
+        *self.duration.lock().unwrap() = self.standby_duration;
         *self.start_time.lock().unwrap() = Some(Instant::now());
         *self.start_pos.lock().unwrap() = 0.0;
         self.playing.store(true, Ordering::SeqCst);
@@ -1148,9 +1160,15 @@ impl AudioMixer {
 
             self.is_a_active = !self.is_a_active;
             self.crossfade_start = None;
-            if self.standby_duration > 0.0 {
-                *self.duration.lock().unwrap() = self.standby_duration;
-            }
+            // Unconditionally, as the normal path in `start_track` does. The guard
+            // that used to be here skipped the write whenever the incoming source
+            // had no duration -- which is every live stream -- and left the
+            // *outgoing* file's duration in place while the two lines below reset
+            // the position to zero. So a stream promoted by a crossfade reported
+            // position 0 against the previous song's length: a full progress bar,
+            // re-filling from the start, on a track with no end to reach. A
+            // stream's honest duration is 0, which is what this now writes.
+            *self.duration.lock().unwrap() = self.standby_duration;
             *self.start_time.lock().unwrap() = Some(Instant::now());
             *self.start_pos.lock().unwrap() = 0.0;
             self.playing.store(true, Ordering::SeqCst);
