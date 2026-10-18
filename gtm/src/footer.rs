@@ -17,7 +17,7 @@ use chrono::Local;
 
 use crate::app::App;
 use crate::theme::{AppTheme, readable_fg};
-use crate::ui::{Render, provider_icon, use_nerd_fonts};
+use crate::ui::{provider_icon, use_nerd_fonts};
 
 /// Namespace for per-module footer rendering.
 pub struct Footer;
@@ -679,17 +679,26 @@ impl Footer {
         }
     }
 
+    /// Elapsed / total, and no bar.
+    ///
+    /// The bar used to be here, ahead of the times. It had to go rather than be
+    /// restyled: this segment is a `String` that the footer concatenates into a
+    /// single `Span`, and a progress bar drawn on the GPU comes back from its
+    /// readback as per-cell foreground/background spans. There is no way to
+    /// format a set of spans into a string. The times alone still say how far
+    /// through the track you are, and the two panes that do compose lines carry
+    /// the bar.
     fn progress(app: &App) -> Option<String> {
         if !app.has_progress() {
             return None;
         }
         let pos = app.display_position as u64;
         let dur = app.track_dur() as u64;
-        let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
-        let time_str = format!("{} / {}", format_duration(pos), format_duration(dur));
-        let bar_w = 12;
-        let progress = Render::progress_variant(ratio, bar_w, app);
-        Some(format!("{} {}", progress, time_str))
+        Some(format!(
+            "{} / {}",
+            format_duration(pos),
+            format_duration(dur)
+        ))
     }
 
     fn queue(app: &App) -> Option<String> {
