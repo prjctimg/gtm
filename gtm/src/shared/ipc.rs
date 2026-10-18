@@ -1801,6 +1801,16 @@ pub enum DaemonEvent {
         secondary: String,
         tertiary: String,
     },
+    /// The derived role set for both polarities, alongside `reactive_palette`.
+    ///
+    /// Additive: `reactive_palette` is unchanged and still broadcast, so the
+    /// bundled client and any existing third-party client keep working. A client
+    /// that has never heard of this tag never sees it.
+    ///
+    /// Both polarities in one frame because the pulse socket is a broadcast and
+    /// per-client polarity is not available without a protocol change.
+    #[serde(rename = "reactive_theme")]
+    ReactiveTheme(Box<crate::shared::theme::ReactiveTheme>),
     #[serde(rename = "heartbeat")]
     Heartbeat,
 }

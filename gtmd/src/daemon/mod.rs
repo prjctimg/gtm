@@ -15,6 +15,8 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
 use gtm::shared::paths::resolve_pid_file;
+use gtm::shared::reactive::{ReactivePalette, from_hex};
+use gtm::shared::theme::ReactiveTheme;
 
 use crate::config::AudioBackendKind;
 use base64::Engine;
@@ -3862,13 +3864,42 @@ impl Daemon {
                 if !still_current {
                     return;
                 }
-                let _ = events.send(DaemonEvent::ReactivePalette {
-                    primary: out.0,
-                    secondary: out.1,
-                    tertiary: out.2,
-                });
+                push_palette_pair(&events, out.0, out.1, out.2);
             });
         });
+    }
+}
+
+/// Broadcast the palette, and the role set derived from it.
+///
+/// One extraction, two events, back to back. The derivation is pure and costs
+/// nothing beside the extraction that has already happened; re-extracting for
+/// the second event would mean decoding the image twice on a path that runs on
+/// every track change.
+///
+/// The role set is skipped when the palette is empty, which is what extraction
+/// failure produces. A complete role set of black would be worse than none: a
+/// client would apply it and turn its surface dark having been told nothing went
+/// wrong.
+pub(crate) fn push_palette_pair(
+    events: &tokio::sync::broadcast::Sender<DaemonEvent>,
+    primary: String,
+    secondary: String,
+    tertiary: String,
+) {
+    let parse = |s: &str| from_hex(s).unwrap_or([0, 0, 0]);
+    let theme = ReactiveTheme::from_palette(&ReactivePalette {
+        primary: parse(&primary),
+        secondary: parse(&secondary),
+        tertiary: parse(&tertiary),
+    });
+    let _ = events.send(DaemonEvent::ReactivePalette {
+        primary,
+        secondary,
+        tertiary,
+    });
+    if let Some(theme) = theme {
+        let _ = events.send(DaemonEvent::ReactiveTheme(Box::new(theme)));
     }
 }
 

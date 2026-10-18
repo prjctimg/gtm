@@ -79,11 +79,7 @@ impl Cover {
                 let is_on_air = on_air(&current, track_id, path.as_deref());
                 drop(current);
                 if is_on_air {
-                    let _ = events.send(DaemonEvent::ReactivePalette {
-                        primary: a,
-                        secondary: b,
-                        tertiary: c,
-                    });
+                    super::push_palette_pair(&events, a, b, c);
                 }
             });
         });

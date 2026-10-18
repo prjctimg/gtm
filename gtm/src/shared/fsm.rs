@@ -368,6 +368,7 @@ impl DaemonState {
             | DaemonEvent::LastfmStatusChanged
             | DaemonEvent::ProviderError { .. }
             | DaemonEvent::ReactivePalette { .. }
+            | DaemonEvent::ReactiveTheme(_)
             | DaemonEvent::Heartbeat => {}
         }
         self.commit();

@@ -1,7 +1,22 @@
 # Reactive Tokens — moving colour derivation into the daemon
 
-Status: **proposed**. Follows on from `REACTIVE_THEME.md`, which moved *extraction*
-to gtmd. This moves *derivation* as well.
+Status: **implemented**, daemon and shared halves. Follows on from
+`REACTIVE_THEME.md`, which moved *extraction* to gtmd. This moves *derivation* as
+well. The `gtm.nvim` half below is still outstanding — that plugin is not in this
+repository — so do not cut a daemon release for this until it has shipped, which
+is the sequencing §8 of this document asks for.
+
+Two deviations from the text below, both because the code did not match the
+proposal:
+
+- **`derive` is `derive(pal, dark)` as specified, and the TUI's ambient wash
+  stays out of it.** `intensity` is a client preference the daemon has never
+  heard of, so folding it into the shared derivation would have made every
+  editor client's theme depend on a TUI setting. The TUI applies its own wash on
+  top, in `derive_theme`, which is the one layer that has the setting.
+- **The checklist's `gtm.spec` item does not apply.** `dist/rpm/gtm.spec` is RPM
+  packaging and carries no protocol text; `docs/man/gtmd-ipc.1.md` is the
+  canonical document and carries the new event.
 
 `REACTIVE_THEME.md` stopped the palette being computed three times, but left every
 client computing its own **ramp** from the same three colours. `gtm.nvim` still

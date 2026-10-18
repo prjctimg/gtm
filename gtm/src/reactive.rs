@@ -14,6 +14,7 @@
 //! Extraction and its color helpers live in [`crate::shared::reactive`]; this
 //! module is only the part that is ratatui-shaped.
 
+use crate::shared::theme::{derive, role_rgb_static};
 use crate::theme::{AppTheme, blend_colors};
 use ratatui::style::Color;
 
@@ -35,55 +36,53 @@ pub fn derive_theme(
     light: bool,
     intensity: f32,
 ) -> AppTheme {
-    let mut t = *base;
-    let rgb = |c: [u8; 3]| Color::Rgb(c[0], c[1], c[2]);
-
-    // Accents read best when nudged away from extreme luminance extremes:
-    // darken near-white primaries on light themes, brighten near-black ones
-    // on dark themes.
-    let adjust = |c: [u8; 3]| -> Color {
-        let l = luminance(&c);
-        let target = if light { 70.0f32 } else { 170.0 };
-        if (l - target).abs() < 40.0 {
-            return rgb(c);
-        }
-        let t = ((target - l) / 255.0).clamp(-0.35, 0.35);
-        if t >= 0.0 {
-            blend_colors(rgb(c), Color::Rgb(255, 255, 255), t as f64)
-        } else {
-            blend_colors(rgb(c), Color::Rgb(0, 0, 0), (-t) as f64)
+    // The ramp is not computed here any more. `shared::theme::derive` is the
+    // one derivation in this workspace and it is also what the daemon sends to
+    // every other client, so the TUI and an editor cannot end up with different
+    // colours from the same artwork.
+    let roles = derive(pal, !light);
+    let role = |name: &str| -> Color {
+        match role_rgb_static(&roles, name) {
+            Some([r, g, b]) => Color::Rgb(r, g, b),
+            None => base.fg,
         }
     };
 
-    let primary = adjust(pal.primary);
-    let secondary = adjust(pal.secondary);
-    let tertiary = adjust(pal.tertiary);
+    let mut t = *base;
+    let rgb = |c: [u8; 3]| Color::Rgb(c[0], c[1], c[2]);
 
+    let primary = role("accent");
     t.accent = primary;
-    t.secondary_accent = secondary;
-    t.tertiary_accent = tertiary;
+    t.secondary_accent = role("accent2");
+    t.tertiary_accent = role("accent3");
     t.border_active = blend_colors(base.border_active, primary, 0.55);
     t.sidebar_active_border = blend_colors(base.sidebar_active_border, primary, 0.7);
     t.notification_border = blend_colors(base.notification_border, primary, 0.5);
-    let primary_raw = rgb(pal.primary);
-    t.selection_bg = blend_colors(base.selection_bg, primary_raw, 0.4);
-    // Ambient wash: pull the background toward the artwork so the whole
-    // surface reacts to the current cover (Spotify-style). The strength is
-    // user-tunable; 0 disables the wash entirely.
-    let unified_bg = blend_colors(base.bg, primary_raw, intensity.clamp(0.0, 1.0) as f64);
+    // The selection fill is the raw artwork colour rather than the adjusted
+    // accent: the derived accent is pulled toward legible, which is right for
+    // a glyph and wrong for a block of background behind one.
+    t.selection_bg = blend_colors(base.selection_bg, rgb(pal.primary), 0.4);
+
+    // Ambient wash, the TUI's own: pull the background toward the artwork so the
+    // whole surface reacts to the current cover. The strength is user-tunable
+    // and 0 disables it. Editor clients have no equivalent knob, which is why
+    // `derive` does not take one and this layer does.
+    let wash = intensity.clamp(0.0, 1.0) as f64;
+    let unified_bg = blend_colors(base.bg, rgb(pal.primary), wash);
     t.bg = unified_bg;
     t.pane_bg = unified_bg;
     t.elevated_bg = unified_bg;
     t.picker_bg = unified_bg;
-    // Ensure fg_dim contrasts with the reactive bg for readability.
-    // Target luminance difference of at least 60 from bg luminance.
-    let bg_lum = luminance(&pal.primary);
-    let target_dim_lum = if bg_lum > 128.0 {
-        bg_lum - 60.0
-    } else {
-        bg_lum + 60.0
+
+    // The dim foreground comes from the derivation, which already moved it off
+    // the background it will be drawn on -- the wash shifts `bg` again after
+    // `derive` ran, so the contrast is checked here rather than assumed.
+    t.fg_dim = match (role("fg_dim"), unified_bg) {
+        (Color::Rgb(r, g, b), Color::Rgb(bg_r, bg_g, bg_b)) => {
+            adjust_for_contrast(Color::Rgb(r, g, b), luminance(&[bg_r, bg_g, bg_b]))
+        }
+        (dim, _) => dim,
     };
-    t.fg_dim = adjust_for_contrast(base.fg_dim, target_dim_lum);
     t.monochromatic = false;
     t
 }

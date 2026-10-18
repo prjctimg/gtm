@@ -18,6 +18,7 @@ pub mod reactive;
 pub mod secret;
 pub mod source;
 pub mod state;
+pub mod theme;
 pub mod track;
 pub mod tripwire;
 pub mod url;
@@ -48,6 +49,7 @@ pub use podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 pub use radio::RadioStation;
 pub use source::{SOURCES, SRC_CHART, SRC_LOCAL, SRC_PODCAST, SRC_RADIO, SRC_SPOTIFY, is_known};
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+pub use theme::{ROLE_NAMES, ReactiveTheme, Roles, THEME_VER, derive};
 pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 
 pub type Result<T> = std::result::Result<T, CoreError>;
