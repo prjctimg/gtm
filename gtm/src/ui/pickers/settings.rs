@@ -181,7 +181,8 @@ impl Pickers {
                     String::new(),
                     String::new(),
                     String::new(),
-                    String::new(),
+                    on_off(app.show_welcome),
+                    on_off(app.resume_on_start),
                 ]
             }
             2 => {

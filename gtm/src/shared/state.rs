@@ -543,8 +543,12 @@ pub struct SavedState {
     /// Playback position (seconds) into `current_track` at last save.
     #[serde(default)]
     pub time_pos: f64,
-    /// Whether playback was active (vs paused) at save time: when true the
-    /// daemon resumes playing at `time_pos`, otherwise it restores paused.
+    /// Whether playback was active (vs paused) at save time.
+    ///
+    /// Recorded, and no longer acted on. `apply_to` used to turn this straight
+    /// into `Playing`, which meant the machine started up mid-song with nothing
+    /// decoding; whether to actually play is now `resume_on_start` in
+    /// config.toml, read by the daemon. Kept so an old state file still parses.
     #[serde(default)]
     pub resume: bool,
 }
@@ -589,11 +593,16 @@ impl SavedState {
         state.time_pos = self.time_pos;
         if let Some(track) = &self.current_track {
             state.duration = track.duration;
-            state.status = if self.resume {
-                PlaybackStatus::Playing
-            } else {
-                PlaybackStatus::Paused
-            };
+            // Always Paused, never Playing -- whatever the file says.
+            //
+            // Loading a state file is not a decision to play. Claiming `Playing`
+            // here opened a window between the load and the startup resume task
+            // in which the daemon reported playing with nothing decoding: a
+            // client connecting in that window drew a running transport that
+            // never moved. The resume task, which knows the user's preference,
+            // is the only thing entitled to say `Playing`, and it does so by
+            // actually starting the transport.
+            state.status = PlaybackStatus::Paused;
         }
     }
 

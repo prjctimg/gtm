@@ -401,15 +401,25 @@ pub struct App {
     /// How long the cursor rests on a radio or chart row before its sound
     /// preview starts. Zero disables the preview.
     pub(crate) preview_delay_secs: u64,
+    /// Whether the welcome pane is shown at launch. Mirrors the config so `H`
+    /// on the pane can clear it without going through a settings round trip.
+    pub(crate) show_welcome: bool,
+    /// Whether the daemon should resume playing at startup. Read by the daemon
+    /// from the same config file; held here so the settings row can flip it.
+    pub(crate) resume_on_start: bool,
     /// The hover preview's resting row, when the rest began, and whether that
     /// rest has already fired. Keyed on the row rather than on a list index so
     /// moving the cursor away and back arms it again.
     pub(crate) preview_hover: Option<String>,
     pub(crate) preview_since: Option<std::time::Instant>,
     pub(crate) preview_fired: bool,
-    /// The onboarding view: true on the launch that found no config file, and
-    /// cleared by the first keypress.
+    /// True while the welcome pane is on screen. The first keypress clears it.
     pub onboard: bool,
+    /// Whether the welcome has been dismissed for good. Set by `H` on the pane
+    /// and written straight to the config rather than waiting for the next
+    /// `save_prefs`, because the pane is usually the very first thing the user
+    /// sees and the rest of the session may never change a setting at all.
+    pub onboard_hidden: bool,
     /// When the idle or onboarding wordmark was last drawn, so its hueshift is
     /// a function of time rather than of frame count: a slow frame does not
     /// make the gradient jump backwards.
@@ -1323,10 +1333,22 @@ impl App {
         let prefs = tokio::task::spawn_blocking(load_prefs)
             .await
             .unwrap_or_else(|_| Prefs::default());
-        // Sampled before anything can write the file, and never persisted: the
-        // onboarding view shows on the launch that found no config, so a
-        // reinstall over an existing profile does not greet the user again.
-        let onboard = !prefs_path().exists();
+        // The welcome reads a persisted flag rather than "is there a config
+        // file", which is what this used to be. That inferred the answer from a
+        // file that only exists once the user has changed some *other* setting,
+        // so anyone who read nothing and changed nothing was greeted on every
+        // launch, forever, with no way to say they had seen it.
+        let onboard = prefs.show_welcome;
+        // Write the defaults out on a first run, so the flags above have
+        // somewhere to live. Nothing did this before: the config appeared only
+        // when some setting changed, which is exactly why `show_welcome` could
+        // not be persisted from the pane and the welcome came back forever.
+        if !prefs_path().exists() {
+            let fresh = prefs.clone();
+            tokio::task::spawn_blocking(move || save_prefs(&fresh))
+                .await
+                .ok();
+        }
         let keybindings = build_keybindings(&prefs.keybindings);
         let initial_cursor = state.queue_cursor;
 
@@ -1371,10 +1393,13 @@ impl App {
             daydreaming: false,
             daydream_secs: DEFAULT_DAYDREAM_SECS,
             preview_delay_secs: default_preview_delay_secs(),
+            show_welcome: prefs.show_welcome,
+            resume_on_start: prefs.resume_on_start,
             preview_hover: None,
             preview_since: None,
             preview_fired: false,
             onboard,
+            onboard_hidden: false,
             logo_mark: std::time::Instant::now(),
             input_mode: InputMode::Normal,
             search_query: String::new(),

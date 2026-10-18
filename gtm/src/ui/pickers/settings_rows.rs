@@ -64,6 +64,11 @@ pub(crate) const SYSTEM_ROWS: SettingsRows = &[
     ("Clear Lyrics Cache", RowKind::Action),
     ("Clear Cover Cache", RowKind::Action),
     ("Notification Settings", RowKind::Action),
+    ("Show Welcome", RowKind::Toggle),
+    // The daemon outlives the client, so this one decides whether starting it
+    // starts the music. Off by default: nobody asked the machine to make noise
+    // just because they opened a socket.
+    ("Resume Playback on Start", RowKind::Toggle),
 ];
 
 /// Spotify. Connection state and the two things that can change it.
@@ -109,6 +114,11 @@ pub(crate) fn row_help(category: usize, option: usize) -> &'static str {
         (1, 14) => " Clear cached lyrics for all tracks.",
         (1, 15) => " Clear the downloaded cover art cache.",
         (1, 16) => " Press Enter to open notification settings.",
+        (1, 17) => " Show the welcome pane at launch. H on it clears this too.",
+        (1, 18) => {
+            " Let the daemon resume playing when it starts. Off: the last \
+track is restored paused instead."
+        }
         (2, 1) => " Authorize gtm with your Spotify account.",
         (2, 2) => " Remove the token and disconnect.",
         _ => "",

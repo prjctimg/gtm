@@ -1878,9 +1878,17 @@ impl App {
             // quiet. The `[extensions]` switch zeroes the streams outright.
             let animating = !self.extensions.is_disabled(ExtensionId::Visualizer)
                 && (self.daydreaming || (self.zen && self.zen_surface == ZenSurface::Visualizer));
+            // The welcome is the one screen with something moving on it that
+            // nothing else drives: the provider marquee and the wordmark's
+            // hueshift. Neither sets `data_dirty`, and the idle floor is one
+            // frame in ten, so the pane refreshed about six times a second
+            // while the scroll clock moved one cell every third iteration --
+            // which is why it read as frozen rather than as slow. A screen
+            // that is animating has to be redrawn every tick, or it is not.
+            let animating_surface = animating || self.onboard;
             let mut force_render = pos_changed
                 || (playing && frame_count.is_multiple_of(2))
-                || animating
+                || animating_surface
                 || !self.notifications.is_empty()
                 || frame_count.is_multiple_of(10)
                 || self.cover_art_dirty

@@ -97,6 +97,26 @@ impl App {
             // Esc is not what closes the program either -- both of them were
             // dismissing the splash and then going on to quit, which read as the
             // app hanging up on you the moment you tried to look at it.
+            // `H` says "I have seen this", and means it: the flag is written
+            // here rather than left for the next `save_prefs`, because a user
+            // whose complaint is the welcome reappearing is by definition not
+            // going to change a setting afterwards. Claimed above the dispatch
+            // so it cannot fall through to whatever `H` means in the list
+            // behind the pane -- `Alt+H` is the health check, plain `H` was
+            // unclaimed.
+            if key.code == KeyCode::Char('H') && key.modifiers.is_empty() {
+                self.onboard_hidden = true;
+                self.show_welcome = false;
+                save_prefs(&self.current_prefs());
+                self.notify_titled(
+                    "Welcome",
+                    "Won't show again",
+                    NotificationKind::Info,
+                    true,
+                    NotifType::System,
+                );
+                return true;
+            }
             if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
                 return true;
             }

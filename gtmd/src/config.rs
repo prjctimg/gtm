@@ -97,6 +97,13 @@ pub struct DaemonConfig {
     /// `None` disables presence. An id that Discord does not recognise simply
     /// never gets a connection, so a wrong value costs a log line.
     pub discord_id: Option<String>,
+    /// Whether to resume playback at startup rather than restoring the last
+    /// track paused. Read from the same `config.toml` the TUI edits.
+    ///
+    /// Off unless asked for. The daemon outlives the client, so "start playing"
+    /// here means the machine starts making noise whenever anything next runs a
+    /// `gtm` command -- which nobody asked for, in a room the daemon cannot see.
+    pub resume_on_start: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -247,8 +254,16 @@ impl DaemonConfig {
             .unwrap_or(crate::cover::DISK_CACHE_DEFAULT);
         let web_addr = web_addr(toml.as_ref());
         let discord_id = discord_id(toml.as_ref());
+        // Absent means no, which is the safe reading: a config written by an
+        // older build has no opinion, and the older behaviour was not to play.
+        let resume_on_start = toml
+            .as_ref()
+            .and_then(|v| v.get("resume_on_start"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         DaemonConfig {
+            resume_on_start,
             socket_path,
             socket_pulse_path,
             config_dir,

@@ -48,6 +48,8 @@ impl App {
             left_pane_lists: self.left_pane_lists.clone(),
             show_preview: self.show_preview,
             preview_delay_secs: self.preview_delay_secs,
+            show_welcome: self.show_welcome,
+            resume_on_start: self.resume_on_start,
         }
     }
 

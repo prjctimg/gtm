@@ -102,6 +102,15 @@ impl App {
                 5 => self.toggle_hide_footer(),
                 6 => self.toggle_reactive_theme(),
                 7 => self.cycle_reactive_intensity(),
+                17 => {
+                    self.show_welcome = !self.show_welcome;
+                    self.onboard_hidden = !self.show_welcome;
+                    save_prefs(&self.current_prefs());
+                }
+                18 => {
+                    self.resume_on_start = !self.resume_on_start;
+                    save_prefs(&self.current_prefs());
+                }
                 _ => {}
             },
             _ => {}
@@ -199,6 +208,9 @@ impl App {
                     });
                 }
                 16 => self.open_settings_overlay(),
+                // Both are toggles, so Enter reaches them here too rather than
+                // doing nothing on a row that visibly carries a value.
+                17 | 18 => self.settings_adjust(opt, tx),
                 _ => {}
             },
             2 => match opt {

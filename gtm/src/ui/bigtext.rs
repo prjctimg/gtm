@@ -42,6 +42,13 @@ pub(crate) const SITE: &str = "gtmd.dev";
 /// saying one thing.
 const HINT: &str = "Press s to star on GitHub";
 
+/// The way out of the pane for good, on the same row as the call to action.
+///
+/// Said here because `H` is otherwise invisible: it is not in the keymap, not
+/// in `?`, and not on any strip. A binding nobody can discover is not a
+/// binding.
+const NEVER_AGAIN: &str = "H: never show again";
+
 /// The mark at the end of the hint: GitHub's, when the font has it.
 ///
 /// Font Awesome's mark rather than Material Design's, for no better reason than
@@ -70,10 +77,10 @@ const GUTTER: u16 = 1;
 
 /// Ticks of the scroll clock per cell of marquee travel.
 ///
-/// The clock ticks once every third frame, so this puts the row at one cell
-/// every sixth frame: fast enough to read as motion, slow enough that a provider
-/// name is legible for the two seconds or so it takes to cross.
-const MARCH: usize = 2;
+/// One. The clock ticks once every third frame and the welcome now forces a
+/// redraw on every frame, so this is one cell per three frames -- a steady
+/// slide rather than the stall-then-jump it was tuned around.
+const MARCH: usize = 1;
 
 /// Cells one glyph occupies at `size`, as (width, height).
 ///
@@ -393,6 +400,11 @@ pub(crate) fn onboard(f: &mut ratatui::Frame, area: Rect, app: &App) {
                     format!("  {}", mark(&app.icon_style)),
                     Style::default().fg(app.theme.fg_dim),
                 ),
+                Span::raw("   "),
+                Span::styled(
+                    NEVER_AGAIN.to_string(),
+                    Style::default().fg(app.theme.fg_dim),
+                ),
             ]))
             .alignment(Alignment::Center),
             rows[5],
@@ -508,14 +520,24 @@ mod tests {
             .collect();
         assert_eq!(tail, "jabcde", "the row did not wrap back to the head");
 
-        // And it never holds. The offset has to move on every tick it changes,
-        // and change on every `MARCH` — the old code sat still for a whole
-        // window's width of ticks and then jumped, which is what read as jank.
-        // A hold is a tick that leaves the offset alone.
+        // And it never holds: every tick moves the offset exactly one cell, all
+        // the way round. The old code sat still for a whole window's width of
+        // ticks and then jumped, which is what read as jank -- a hold is a tick
+        // that leaves the offset alone, and there are none.
+        //
+        // `MARCH` is 1 because the welcome now forces a redraw every frame, so
+        // one cell per tick is one cell per frame: a steady slide, and slow
+        // enough to read. The assertion holds for any `MARCH`, so a future
+        // change to the speed is caught here too.
+        assert_eq!(MARCH, 1, "the marquee speed is tied to a per-frame redraw");
         let total = 37;
-        for f in 0..(total * 4 * MARCH) {
+        for f in 0..(total * 4) {
             let at = march(f, total);
-            if f % MARCH == 0 && f > 0 {
+            assert!(
+                at < total,
+                "tick {f}: offset {at} ran off the end of a {total}-cell row"
+            );
+            if f > 0 {
                 let prev = march(f - 1, total);
                 assert_eq!(
                     at,
@@ -523,14 +545,10 @@ mod tests {
                     "tick {f}: the row jumped {prev} -> {at} instead of one cell"
                 );
             }
-            assert!(
-                at < total,
-                "tick {f}: offset {at} ran off the end of a {total}-cell row"
-            );
         }
         // And it comes back around to where it started rather than stopping at
         // the end of the row, which is the other half of "revolving".
-        assert_eq!(march(total * MARCH * 7, total), 0);
+        assert_eq!(march(total * 7, total), 0);
     }
 
     /// Items in the provider row are separated well enough to see a boundary.

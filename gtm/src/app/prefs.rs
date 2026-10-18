@@ -134,6 +134,29 @@ pub struct Prefs {
     /// preview starts. Zero disables the preview.
     #[serde(default = "default_preview_delay_secs")]
     pub(crate) preview_delay_secs: u64,
+    /// Whether the first-run welcome pane is shown at launch.
+    ///
+    /// A flag rather than "is there a config file", which is what this used to
+    /// be. That inferred the answer from a file that only exists once the user
+    /// has changed some *other* setting, so a user who read nothing and changed
+    /// nothing was shown the welcome on every single launch, forever, with no
+    /// way to say they had seen it. `H` on the pane clears this and writes the
+    /// file, which is what finally makes it stick.
+    #[serde(default = "default_true")]
+    pub(crate) show_welcome: bool,
+    /// Whether the daemon resumes playback on startup instead of restoring the
+    /// last track paused.
+    ///
+    /// Off by default. The daemon outlives the client, so starting playback at
+    /// its own startup means the machine makes noise at whoever is in the room
+    /// whenever they next touch anything -- and "touch anything" includes the
+    /// client connecting, which is not something anyone asked for.
+    #[serde(default)]
+    pub(crate) resume_on_start: bool,
+}
+
+pub(crate) fn default_true() -> bool {
+    true
 }
 
 pub(crate) fn default_cover_provider() -> String {
@@ -272,6 +295,8 @@ impl Default for Prefs {
             left_pane_lists: left_pane_defaults(),
             show_preview: true,
             preview_delay_secs: default_preview_delay_secs(),
+            show_welcome: true,
+            resume_on_start: false,
         }
     }
 }
