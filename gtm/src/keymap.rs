@@ -96,7 +96,6 @@ pub enum KeyboardAction {
     Quit,
     QuitDaemon,
     ToggleHelp,
-    HideHelpBar,
     ToggleTheme,
     CycleSort,
     CheckHealth,
@@ -220,11 +219,6 @@ pub fn default_keybindings() -> Keybindings {
         bindings: vec![
             b!(KeyCode::Char('q'), KeyboardAction::Quit, GLOBAL),
             b!(KeyCode::Char('?'), KeyboardAction::ToggleHelp, GLOBAL),
-            b!(
-                KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
-                KeyboardAction::HideHelpBar,
-                NORMAL
-            ),
             b!(
                 KeyCode::Char(':'),
                 KeyboardAction::OpenOverlay(PickerId::CommandPalette),
@@ -616,7 +610,6 @@ impl KeyboardAction {
             "quit" => KeyboardAction::Quit,
             "quit_daemon" | "quit_all" => KeyboardAction::QuitDaemon,
             "toggle_help" | "help" => KeyboardAction::ToggleHelp,
-            "hide_help_bar" => KeyboardAction::HideHelpBar,
             "toggle_theme" | "theme" => KeyboardAction::ToggleTheme,
             "cycle_sort" | "sort" => KeyboardAction::CycleSort,
             "check_health" | "health" => KeyboardAction::CheckHealth,

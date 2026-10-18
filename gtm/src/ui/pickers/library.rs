@@ -12,11 +12,7 @@ impl Pickers {
     /// the cursor, typing searches the list, Enter switches to the highlighted
     /// category and closes.
     pub(crate) fn render_libraries(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(
-            app,
-            " Library ",
-            Some("\u{2191}/\u{2193}: move   type: search   Enter: open   Esc: cancel"),
-        );
+        let block = Self::picker_panel(app, " Library ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -136,12 +132,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_playlist_select(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let help = if app.playlist_creating {
-            None
-        } else {
-            Some("\u{2191}/\u{2193}: choose   n: new   Enter: add   Esc: cancel")
-        };
-        let block = Self::picker_panel(app, " Select Playlist ", help);
+        let block = Self::picker_panel(app, " Select Playlist ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -211,16 +202,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_track_select(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let selected = app.selected_track_ids.len();
-        let hint = format!(
-            "Space/Tab: toggle   \u{2191}/\u{2193}: navigate   Ctrl+Enter: add {} to playlist   Esc: cancel",
-            if selected > 0 {
-                format!("({selected} selected)")
-            } else {
-                String::new()
-            }
-        );
-        let block = Self::picker_panel(app, " Add Tracks ", Some(&hint));
+        let block = Self::picker_panel(app, " Add Tracks ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -289,13 +271,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_edit_metadata(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(
-            app,
-            " Edit Metadata ",
-            Some(
-                "Tab/\u{2191}/\u{2193}: field   Enter: next/save   Ctrl+S: sync cover   Esc: cancel",
-            ),
-        );
+        let block = Self::picker_panel(app, " Edit Metadata ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -389,7 +365,7 @@ impl Pickers {
     /// `picker_item_count` is zero and the arrow keys do nothing rather than
     /// moving a cursor over a form.
     pub(crate) fn render_track_info(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Track Info ", Some("Esc: close"));
+        let block = Self::picker_panel(app, " Track Info ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 

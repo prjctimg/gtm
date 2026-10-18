@@ -59,7 +59,6 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   d / Del     Delete Playlist (overview)"),
     ("topic", "View"),
     ("", "   ?           Toggle Help"),
-    ("", "   Ctrl+H      Hide Help Bar"),
     ("", "   Alt+V       Visualizer Preset"),
     ("", "   Alt+P       Progress Style"),
     ("", "   Alt+C       Theme Picker"),

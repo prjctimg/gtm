@@ -79,11 +79,6 @@ impl Pickers {
                 } else {
                     " Podcasts "
                 },
-                hint: if searching {
-                    "enter subscribe \u{b7} esc back to subscriptions"
-                } else {
-                    "/ directory \u{b7} a add by URL"
-                },
                 empty_msg: if searching {
                     " no results \u{2014} esc to go back"
                 } else if app.podcast.feeds_pending {
@@ -98,7 +93,6 @@ impl Pickers {
     }
 
     pub(crate) fn render_podcast_episodes(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let selected = app.pickers.top().map_or(0, |o| o.selected);
         let mut rows = Vec::new();
         for ep in &app.podcast.episodes {
             let dur = ep
@@ -123,23 +117,12 @@ impl Pickers {
             .first()
             .map(|e| format!(" {} ", e.feed_title))
             .unwrap_or_else(|| " Episodes ".into());
-        let has_transcript = app
-            .podcast
-            .episodes
-            .get(selected)
-            .is_some_and(|e| !e.transcripts.is_empty());
-        let hint = if has_transcript {
-            "enter play \u{b7} t transcript"
-        } else {
-            "enter play"
-        };
         Self::render_scroll_rows(
             f,
             area,
             app,
             ScrollList {
                 title: &title,
-                hint,
                 empty_msg: "no episodes \u{2014} press r in the feed list to refresh",
             },
             Vec::new(),
@@ -148,7 +131,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_podcast_subscribe(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Subscribe ", None);
+        let block = Self::picker_panel(app, " Subscribe ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         let mut lines = vec![Line::from(Span::styled(

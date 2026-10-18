@@ -9,7 +9,7 @@ use crate::ui::*;
 
 impl Pickers {
     pub(crate) fn render_about(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " About ", Some(crate::ui::bigtext::HINT_HELP));
+        let block = Self::picker_panel(app, " About ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -27,7 +27,10 @@ impl Pickers {
         // make room for the logo.
         const FULL: crate::ui::bigtext::PixelSize = crate::ui::bigtext::PixelSize::Full;
         const HALF: crate::ui::bigtext::PixelSize = crate::ui::bigtext::PixelSize::HalfHeight;
-        let text_rows: u16 = 6;
+        // The star hint is a line of this block now, not a bottom strip: it is
+        // part of what this window says rather than a running commentary on it,
+        // and the strip it came from is gone.
+        let text_rows: u16 = 7;
         let size = if inner.height >= 8 + 1 + text_rows {
             FULL
         } else {
@@ -51,7 +54,20 @@ impl Pickers {
         let accent = Style::default()
             .fg(app.theme.accent)
             .add_modifier(Modifier::BOLD);
+        let hint = Style::default().fg(app.theme.accent);
         let lines = vec![
+            // The call to action sits directly under the name. It used to sit
+            // under the whole block as a picker hint, which put "press s to star"
+            // below the copyright and below the site — the one line the window
+            // exists to prompt with, filed at the bottom next to legal text.
+            Line::from(Span::styled("Press s to star on GitHub", hint)),
+            // The mark rides at the end of the sentence rather than on a row of
+            // its own: it is the logo for the link the sentence names, so it
+            // reads as part of it.
+            Line::from(Span::styled(
+                format!("           {}", crate::ui::bigtext::mark(&app.icon_style)),
+                hint,
+            )),
             // Under the mark rather than welded to it: the name says what this
             // is, the numbers say which one.
             Line::from(Span::styled(
@@ -72,13 +88,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_help(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(
-            app,
-            " Keybindings ",
-            Some(
-                "Esc: close   ?: toggle   \u{2191}/\u{2193}/jk: browse   gg/G: top/bottom   0/$: first/last",
-            ),
-        );
+        let block = Self::picker_panel(app, " Keybindings ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -129,7 +139,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_notifications(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Notifications ", None);
+        let block = Self::picker_panel(app, " Notifications ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -304,7 +314,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_notification_settings(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Notification Settings ", None);
+        let block = Self::picker_panel(app, " Notification Settings ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -355,7 +365,7 @@ impl Pickers {
 
     pub(crate) fn render_sleep_timer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         if app.sleep_timer.input_mode {
-            let block = Self::picker_panel(app, " Sleep Timer: Manual Input ", None);
+            let block = Self::picker_panel(app, " Sleep Timer: Manual Input ");
             let inner = block.inner(area);
             f.render_widget(block, area);
             let cursor_style = cursor_span_style(app);
@@ -374,12 +384,7 @@ impl Pickers {
         }
 
         let is_active = app.sleep_timer.remaining.is_some();
-        let help = if is_active {
-            "↑/↓: option   ←/→ or h/l: ±5   -/+: ±1   i: input   Enter: set   c: cancel"
-        } else {
-            "↑/↓: option   ←/→ or h/l: ±5   -/+: ±1   i: input   Enter: set"
-        };
-        let block = Self::picker_panel(app, " Sleep Timer ", Some(help));
+        let block = Self::picker_panel(app, " Sleep Timer ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 

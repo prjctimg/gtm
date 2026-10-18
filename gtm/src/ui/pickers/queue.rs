@@ -12,7 +12,6 @@ use crate::ui::*;
 /// call sites read as one block.
 pub struct ScrollList<'a> {
     pub title: &'a str,
-    pub hint: &'a str,
     pub empty_msg: &'a str,
 }
 
@@ -23,21 +22,15 @@ impl Pickers {
         }
         let sel = app.pickers.top().map_or(0, |o| o.selected);
 
-        let (title, hint) = if app.queue.move_index.is_some() {
+        let title = if app.queue.move_index.is_some() {
             let from = app.queue.move_index.unwrap_or(0);
             let to = app.queue.move_target;
-            (
-                format!(" Queue (MOVE MODE: {} -> {}) ", from + 1, to + 1),
-                Some(" Enter: confirm   Esc: cancel   Ctrl+K/Ctrl+J: adjust position"),
-            )
+            format!(" Queue (MOVE MODE: {} -> {}) ", from + 1, to + 1)
         } else {
-            (
-                " Queue ".to_string(),
-                Some(" Enter: play   Ctrl+K/Ctrl+J: move   Ctrl+D: remove   Esc: close"),
-            )
+            " Queue ".to_string()
         };
 
-        let block = Self::picker_panel(app, title, hint);
+        let block = Self::picker_panel(app, title);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -170,11 +163,7 @@ impl Pickers {
     /// between the listener and the station.
     fn render_live(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let sel = app.pickers.top().map_or(0, |o| o.selected);
-        let block = Self::picker_panel(
-            app,
-            " Tracklist ",
-            Some(" read-only: a live stream has no queue to change   Esc: close"),
-        );
+        let block = Self::picker_panel(app, " Tracklist ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -356,16 +345,8 @@ impl Pickers {
         prepend: Vec<Line<'static>>,
         rows: Vec<String>,
     ) {
-        let ScrollList {
-            title,
-            hint,
-            empty_msg,
-        } = labels;
-        let block = if hint.is_empty() {
-            Self::picker_panel(app, title, None)
-        } else {
-            Self::picker_panel(app, title, Some(hint))
-        };
+        let ScrollList { title, empty_msg } = labels;
+        let block = Self::picker_panel(app, title);
         let inner = block.inner(area);
         f.render_widget(block, area);
 

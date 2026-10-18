@@ -91,6 +91,15 @@ impl App {
                 open_url(crate::ui::bigtext::REPO, &self.ipc_tx);
                 return true;
             }
+            // `q` and Esc are the two ways out, and both mean "close this pane"
+            // rather than "close the program". They have to be claimed here,
+            // above the dispatch, because `q` is `Quit` in the global keymap and
+            // Esc is not what closes the program either -- both of them were
+            // dismissing the splash and then going on to quit, which read as the
+            // app hanging up on you the moment you tried to look at it.
+            if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
+                return true;
+            }
         }
         // Ctrl+Z: suspend to background (pass-through SIGTSTP)
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('z') {
@@ -454,9 +463,6 @@ impl App {
                             self.pickers.open(PickerId::Help);
                             self.dismiss_track_popup();
                         }
-                    }
-                    Some(KeyboardAction::HideHelpBar) => {
-                        self.hide_help_bar = !self.hide_help_bar;
                     }
                     Some(KeyboardAction::PlayPause) => {
                         self.set_last_action("Play/Pause", &key);
@@ -1974,40 +1980,13 @@ impl App {
             }
         }
 
-        // Any picker: 'y' copies its hint. The alternate screen is destroyed on
-        // exit and most terminals do not keep it in the scrollback, so there is
-        // nothing to drag-select and the hint is only reachable by asking for
-        // it. What is copied is what was rendered, so it matches the screen.
-        if key.code == KeyCode::Char('y')
-            && !key.modifiers.contains(KeyModifiers::CONTROL)
-            && self
-                .pickers
-                .top()
-                .is_some_and(|o| o.id != PickerId::Notifications)
-            && let Some(hint) = crate::ui::pickers::hint_text(self)
-        {
-            let hint = hint.clone();
-            match copy_to_clipboard(&hint) {
-                Ok(()) => self.notify_typed(
-                    "System",
-                    format!("Hint copied: {hint}"),
-                    NotificationKind::Success,
-                    true,
-                    NotifType::System,
-                ),
-                Err(e) => self.notify_typed(
-                    "System",
-                    format!("Copy failed: {e}"),
-                    NotificationKind::Error,
-                    true,
-                    NotifType::System,
-                ),
-            }
-            return;
-        }
-
-        // Notifications picker: 'y' copies the highlighted notification's text
-        // (title + message) to the clipboard so error messages are easy to grab.
+        // 'y' copies the highlighted notification (title + message).
+        //
+        // Scoped to this picker on purpose. It used to fire in every picker
+        // *except* this one, copying the hint strip -- which meant typing `y`
+        // into a search box was swallowed instead of inserted. The hint it
+        // copied is gone with the hint strips. The one piece of text the
+        // user cannot retype is the error on screen.
         if key.code == KeyCode::Char('y')
             && !key.modifiers.contains(KeyModifiers::CONTROL)
             && self
@@ -3969,8 +3948,6 @@ impl App {
                                     } else {
                                         self.pickers.open(PickerId::Help);
                                     }
-                                } else if action == "toggle help bar" {
-                                    self.hide_help_bar = !self.hide_help_bar;
                                 } else if action == "health check" {
                                     self.send_high(TuiCommand::CheckHealth);
                                 } else if action == "setup" {

@@ -42,19 +42,20 @@ pub(crate) const SITE: &str = "gtmd.dev";
 /// saying one thing.
 const HINT: &str = "Press s to star on GitHub";
 
-/// The same hint as a picker hint, so About's bottom strip and the welcome's
-/// line say one thing in one place rather than drifting apart.
-pub(crate) const HINT_HELP: &str = "s: star on GitHub";
-
 /// The mark at the end of the hint: GitHub's, when the font has it.
 ///
-/// Two glyphs because the pane draws for both fonts. A private-use codepoint on
-/// a terminal without the nerd font is a tofu box, and a welcome that ends in a
-/// tofu box is worse than one that ends in an arrow. `↗` reads as "opens
-/// something" in either font, which is the only thing the mark is doing.
-fn mark(icon_style: &str) -> &'static str {
+/// Font Awesome's mark rather than Material Design's, for no better reason than
+/// that it is the one that sits consistently with the other `nf-fa-*` glyphs in
+/// the icon table. There is no official GitHub mark in any terminal font — the
+/// real one is a wordmark with a registered shape — so this is an Octocat in
+/// one idiom or another, not the brand asset.
+///
+/// Two glyphs because the pane draws for both fonts: a private-use codepoint on
+/// a terminal without the nerd font is a tofu box, and a pane that ends in a
+/// tofu box is worse than one that ends in an arrow.
+pub(crate) fn mark(icon_style: &str) -> &'static str {
     if icon_style == "mdi" && crate::ui::use_nerd_fonts() {
-        "\u{f0409}" // nf-md-github
+        "\u{f09b}" // nf-fa-github
     } else {
         "↗"
     }

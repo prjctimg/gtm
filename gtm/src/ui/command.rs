@@ -314,11 +314,6 @@ impl CommandPalette {
                 hint: "help",
             },
             Command {
-                label: "Toggle Help Bar",
-                keys: "Ctrl+h",
-                hint: "toggle help bar",
-            },
-            Command {
                 label: "Health Check",
                 keys: "Alt+H",
                 hint: "health check",

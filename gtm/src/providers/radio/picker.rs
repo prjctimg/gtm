@@ -42,17 +42,7 @@ impl Pickers {
         };
         // The trailing Esc token is auto-lifted to the panel's top-right
         // corner by picker_panel. The rest has to fit the panel's inner width,
-        // which is 56 columns at the Spotify picker's size: the hint was written
-        // for a panel up to 100 wide, so it ran off the bottom edge of the one
-        // it is now given. All five keys still fit — the filter label and the
-        // separators were what pushed it over, so `Enter` is the enter glyph and
-        // the spacing is single.
-        let hint = format!(
-            "Tab: {} \u{b7} \u{23ce} play \u{b7} s: save \u{b7} x: remove \u{b7} r: refresh",
-            app.radio.filter.label()
-        );
-
-        let block = Self::picker_panel(app, title, Some(&hint));
+        let block = Self::picker_panel(app, title);
         let inner = block.inner(area);
         f.render_widget(block, area);
 

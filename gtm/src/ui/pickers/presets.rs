@@ -56,7 +56,7 @@ impl Pickers {
             .top()
             .map_or(0, |o| o.selected.min(presets.len() - 1));
 
-        let block = Self::picker_panel(app, " Equalizer ", None);
+        let block = Self::picker_panel(app, " Equalizer ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -480,7 +480,7 @@ impl Pickers {
         // The panel is built before the theme list is borrowed: it records the
         // hint it rendered, and so takes the app mutably, which cannot overlap
         // a borrow of `app.themes`.
-        let block = Self::picker_panel(app, " Theme ", None);
+        let block = Self::picker_panel(app, " Theme ");
         let inner = block.inner(area);
         let filtered: Vec<_> = app
             .themes
@@ -582,7 +582,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_crossfade(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Crossfade Options ", None);
+        let block = Self::picker_panel(app, " Crossfade Options ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -647,7 +647,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_visualizer_preset(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Visualizer Preset ", None);
+        let block = Self::picker_panel(app, " Visualizer Preset ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -756,7 +756,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_progress_style(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Progress Style ", None);
+        let block = Self::picker_panel(app, " Progress Style ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -872,7 +872,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_footer_preset(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Footer Preset ", None);
+        let block = Self::picker_panel(app, " Footer Preset ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -1001,7 +1001,7 @@ impl Pickers {
     /// sink — the state a fresh install should be in, and the one that keeps
     /// working when a saved device is unplugged.
     pub(crate) fn render_audio_device(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Audio Output ", None);
+        let block = Self::picker_panel(app, " Audio Output ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 

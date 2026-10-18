@@ -20,7 +20,7 @@ impl Pickers {
             })
             .collect();
 
-        let block = Self::picker_panel(app, " Commands ", None);
+        let block = Self::picker_panel(app, " Commands ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 

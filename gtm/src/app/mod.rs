@@ -407,15 +407,6 @@ pub struct App {
     pub(crate) preview_hover: Option<String>,
     pub(crate) preview_since: Option<std::time::Instant>,
     pub(crate) preview_fired: bool,
-    /// The hint the top picker rendered last frame, already filtered of the
-    /// obvious bindings.
-    ///
-    /// Recorded at render rather than derived on demand because the hint is a
-    /// literal at each call site, and the alternate screen leaves the user
-    /// nothing to drag-select. This is what the copy binding hands over, so it
-    /// is the text that was on screen and not the text the picker was built
-    /// from.
-    pub(crate) hint_shown: Option<String>,
     /// The onboarding view: true on the launch that found no config file, and
     /// cleared by the first keypress.
     pub onboard: bool,
@@ -694,7 +685,6 @@ pub struct App {
     pub show_health_panel: bool,
     pub report_health: bool,
     pub health_report: Option<HealthReport>,
-    pub hide_help_bar: bool,
     pub hide_footer: bool,
     /// Visible left-pane categories (canonical names from TOML, sanitized).
     pub left_pane_lists: Vec<String>,
@@ -1384,7 +1374,6 @@ impl App {
             preview_hover: None,
             preview_since: None,
             preview_fired: false,
-            hint_shown: None,
             onboard,
             logo_mark: std::time::Instant::now(),
             input_mode: InputMode::Normal,
@@ -1620,7 +1609,6 @@ impl App {
             show_health_panel: false,
             report_health: false,
             health_report: None,
-            hide_help_bar: true,
             hide_footer: false,
             left_pane_lists: left_pane_defaults(),
             show_preview: true,

@@ -10,7 +10,7 @@ use crate::ui::*;
 
 impl Pickers {
     pub(crate) fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Settings ", Some("Tab: switch pane   Enter: act"));
+        let block = Self::picker_panel(app, " Settings ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 

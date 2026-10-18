@@ -9,11 +9,7 @@ use crate::ui::*;
 
 impl Pickers {
     pub(crate) fn render_yt_search(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(
-            app,
-            " \u{f16a} Search ",
-            Some(" Enter: play   Ctrl+D: download   Ctrl+A: queue   Esc: close"),
-        );
+        let block = Self::picker_panel(app, " \u{f16a} Search ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -136,7 +132,7 @@ impl Pickers {
     pub(crate) fn render_search_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let source = app.pickers.top().map_or(PickerSource::All, |o| o.source);
         let title = format!(" Search: {} ", source.label());
-        let block = Self::picker_panel(app, &title, None);
+        let block = Self::picker_panel(app, &title);
         let inner = block.inner(area);
         f.render_widget(block, area);
 

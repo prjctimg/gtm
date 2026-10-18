@@ -241,7 +241,7 @@ impl Pickers {
                     "♫"
                 };
                 let title = format!(" {icon} Connect Spotify ");
-                let block = Self::picker_panel(app, title.as_str(), None);
+                let block = Self::picker_panel(app, title.as_str());
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
@@ -337,14 +337,9 @@ impl Pickers {
                 }
             }
             PickerId::SpotifySearch => {
-                let help = if app.spotify.status.as_ref().is_none_or(|s| !s.linked) {
-                    None
-                } else {
-                    Some(" Enter: play   Ctrl+D: download   Esc: close")
-                };
                 let src = app.pickers.top().map_or(PickerSource::All, |o| o.source);
                 let title = format!(" \u{f04c7} Search: {} ", src.label());
-                let block = Self::picker_panel(app, &title, help);
+                let block = Self::picker_panel(app, &title);
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
@@ -609,75 +604,24 @@ impl Pickers {
     }
 }
 
-/// Hints that a picker need not spell out, because the screen already says it.
-///
-/// Keys a hint need not spell out, lowercased and without their trailing colon.
-/// Kept as data rather than as logic in the renderer so that adding a picker
-/// cannot quietly reintroduce a line of "Enter: open".
-const OBVIOUS: [&str; 7] = ["esc", "enter", "↑/↓", "↓", "↑", "←/→", "tab"];
-
-/// Drop the obvious entries from a picker hint and rejoin what is left.
-///
-/// A hint is a list of `key: what it does` entries separated by three spaces or
-/// by `\u{b7}`; the description of an entry may itself contain single spaces, so
-/// the split is on the separator and never on whitespace. An entry goes when its
-/// key is one the screen already communicates — Esc is a chip in the corner,
-/// Enter acts on the highlighted row, arrows move a list that visibly moves —
-/// and stays otherwise. Testing the key rather than the whole entry is what
-/// keeps "Ctrl+Enter: add" while "Enter: open" goes.
-fn filter_hint(hint: &str) -> String {
-    let kept: Vec<&str> = hint
-        .split('\u{b7}')
-        .flat_map(|s| s.split("   "))
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .filter(|entry| {
-            let key = entry
-                .split(':')
-                .next()
-                .unwrap_or(entry)
-                .trim()
-                .to_ascii_lowercase();
-            !OBVIOUS.contains(&key.as_str())
-        })
-        .collect();
-    kept.join("   ")
-}
-
-/// The hint the top picker is currently showing, already filtered.
-///
-/// This is what the copy binding hands to the clipboard: the text on screen is
-/// the text worth keeping, and re-deriving it from the picker's own hint string
-/// would copy the parts that were just removed.
-pub(crate) fn hint_text(app: &App) -> Option<&String> {
-    app.hint_shown.as_ref().filter(|h| !h.is_empty())
-}
-
 impl Pickers {
-    pub(crate) fn picker_panel<'a>(
-        app: &mut App,
-        title: impl Into<Cow<'a, str>>,
-        help: Option<&'a str>,
-    ) -> Block<'a> {
-        // The hint names only the keys that are not already obvious from the
-        // screen: Enter acts on the highlighted row, Esc closes, arrows move a
-        // list the user can see moving. Those are documented once, in `?`, and
-        // spending a line on them in every picker spends the width on nothing.
-        // What is left is the part that cannot be guessed — modifier combos,
-        // bare letter verbs, field cycling, steppers.
-        //
-        // The copy of the hint kept in `hint_text` is the filtered one, because
-        // that is what the user is looking at and the thing worth keeping.
-        let bottom_hint = help.map(filter_hint).filter(|h| !h.is_empty());
-        // Recorded because the alternate screen is destroyed on exit and most
-        // terminals do not put it in the scrollback, so there is no way for the
-        // user to select the hint by dragging over it. The copy binding reads
-        // back exactly what was rendered.
-        app.hint_shown.clone_from(&bottom_hint);
-        // Always a bare "Esc" — never "Esc: close" — with 2-space padding.
-        let esc_label = "  Esc  ".to_string();
+    /// A picker's frame: title, the `Esc` chip, and the pane's background.
+    ///
+    /// There is no bottom hint strip, and that is the point. A line reading
+    /// `Enter: play   Ctrl+D: download   Esc: close` under every picker spent a
+    /// row of height and a row of width restating bindings that were either
+    /// already obvious or documented once in `?`. Filtering the strip down to
+    /// the non-obvious entries did not rescue it either -- it left a strip whose
+    /// only surviving content was `Ctrl+D`, which is the definition of clutter.
+    ///
+    /// What stays is the `Esc` chip, in the title bar. That one is not a
+    /// restatement: it is the affordance saying the pane is dismissible at all,
+    /// and a title bar is where the controls belong.
+    pub(crate) fn picker_panel<'a>(app: &App, title: impl Into<Cow<'a, str>>) -> Block<'a> {
+        // Always a bare "Esc" -- never "Esc: close" -- with 2-space padding.
+        let esc_label = "  Esc  ";
 
-        let mut block = Block::default()
+        Block::default()
             .title(Line::from(Span::styled(
                 title.into(),
                 Style::default()
@@ -701,14 +645,7 @@ impl Pickers {
                 ratatui::style::Color::Reset
             } else {
                 app.float_bg()
-            }));
-        if let Some(h) = bottom_hint {
-            block = block.title_bottom(Line::from(Span::styled(
-                h,
-                Style::default().fg(app.theme.fg_dim),
-            )));
-        }
-        block
+            }))
     }
 
     pub(crate) fn picker_query_line(app: &App) -> Line<'static> {

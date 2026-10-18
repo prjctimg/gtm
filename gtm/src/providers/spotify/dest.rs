@@ -5,11 +5,7 @@ impl Pickers {
     /// user's synced Spotify playlists, filtered by the picker's query. Marks
     /// mirror `render_track_select` so a tick reads the same everywhere.
     pub(crate) fn render_live_dest(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let picked = app.live_dests.len();
-        let hint = format!(
-            "Space/Tab: toggle   \u{2191}/\u{2193}: navigate   Ctrl+Enter: add ({picked} selected)   Esc: cancel"
-        );
-        let block = Self::picker_panel(app, " Add to Spotify ", Some(&hint));
+        let block = Self::picker_panel(app, " Add to Spotify ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 

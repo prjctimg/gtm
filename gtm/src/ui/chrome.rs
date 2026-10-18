@@ -538,17 +538,6 @@ impl Render {
         }
     }
 
-    pub(crate) fn footer_help(f: &mut ratatui::Frame, area: Rect, app: &App) {
-        if app.pickers.is_open() || app.hide_help_bar {
-            return;
-        }
-        let text = " [?] Help  [:] Command palette  [q] Quit ";
-        let para = Paragraph::new(text)
-            .alignment(Alignment::Right)
-            .style(Style::default().fg(app.theme.fg_dim).bg(app.chrome_bg()));
-        f.render_widget(para, area);
-    }
-
     /// The rect the artwork will actually occupy inside `area`, centred.
     ///
     /// A protocol fits the image and never upscales it past its own pixel size,
@@ -2398,7 +2387,6 @@ impl Render {
                     && let Some(ref cached) = app.footer_cache.last
                 {
                     footer_draw(f, area, cached);
-                    Render::footer_help(f, area, app);
                     return;
                 }
                 let rendered = footer_render(app);
@@ -2411,7 +2399,6 @@ impl Render {
                     );
                 }
                 app.footer_cache.last = rendered;
-                Render::footer_help(f, area, app);
             }
             InputMode::Searching => {
                 f.render_widget(

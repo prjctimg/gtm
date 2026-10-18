@@ -4694,7 +4694,6 @@ fn zen_lyrics_re_derive_their_foreground() {
 #[test]
 fn about_shares_the_welcome_wordmark() {
     let about = include_str!("../src/ui/pickers/system.rs");
-    let bigtext = include_str!("../src/ui/bigtext.rs");
 
     assert!(
         about.contains("crate::ui::bigtext::logo(f, rows[0], app, size)"),
@@ -4710,21 +4709,35 @@ fn about_shares_the_welcome_wordmark() {
         about.contains("crate::ui::bigtext::SITE"),
         "About lost the site line the welcome carries"
     );
-    // `s` reaches the repository from both panes, and the hint that says so is
-    // written once so the two cannot drift apart.
+    // The call to action is a line of the block, directly under the name --
+    // not a picker hint strip. It sat under the copyright and under the site
+    // before, which filed the one line this window prompts with next to the
+    // legal text.
+    let star = about.find("Press s to star on GitHub");
+    let version_at = about.find("{version} ({:.7}{})");
     assert!(
-        about.contains("crate::ui::bigtext::HINT_HELP"),
-        "About's hint is its own string again"
+        star.is_some() && version_at.is_some(),
+        "About lost the star line"
     );
+    assert!(
+        star < version_at,
+        "the star line is no longer above the version"
+    );
+    assert!(
+        about.contains("crate::ui::bigtext::mark(&app.icon_style)"),
+        "About lost the mark that rides on the star line"
+    );
+    // And it is not in the hint strip any more, which no longer exists.
+    assert!(
+        !about.contains("HINT_HELP"),
+        "the star line is back in the picker hint strip"
+    );
+    // `s` still reaches the repository from both panes.
     let keys = include_str!("../src/app/keys.rs");
     assert!(
         keys.contains("PickerId::About if c == 's' => {")
             && keys.contains("open_url(crate::ui::bigtext::REPO, &self.ipc_tx)"),
         "s no longer opens the repository from About"
-    );
-    assert!(
-        bigtext.contains("pub(crate) const HINT_HELP: &str ="),
-        "the shared hint string is gone"
     );
 }
 

@@ -9,7 +9,7 @@ use crate::ui::*;
 
 impl Pickers {
     pub(crate) fn render_setup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, "Setup", None);
+        let block = Self::picker_panel(app, "Setup");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -87,11 +87,7 @@ impl Pickers {
             }
             _ => "Enter API key and secret, then authorize in the browser".to_string(),
         };
-        let block = Self::picker_panel(
-            app,
-            "Last.fm Setup",
-            Some(" Enter: authorize   Tab: field   Ctrl+V/X: clipboard   Esc: close"),
-        );
+        let block = Self::picker_panel(app, "Last.fm Setup");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -164,7 +160,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_load_stream(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Stream ", None);
+        let block = Self::picker_panel(app, " Stream ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         let url = app
@@ -197,7 +193,7 @@ impl Pickers {
     }
 
     pub(crate) fn render_youtube_setup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " YouTube Cookies ", None);
+        let block = Self::picker_panel(app, " YouTube Cookies ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         let path = app.setup.youtube_cookie_input.clone();
@@ -235,7 +231,7 @@ impl Pickers {
     /// An empty value clears the id, which is how presence is turned off --
     /// there is no separate on/off switch, because an id is the whole setting.
     pub(crate) fn render_discord_setup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Discord Rich Presence ", None);
+        let block = Self::picker_panel(app, " Discord Rich Presence ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
