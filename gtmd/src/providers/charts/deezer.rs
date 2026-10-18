@@ -155,7 +155,7 @@ impl DzTrack {
             artists: self.artist.map(|a| a.name).unwrap_or_default(),
             album: self.album.map(|a| a.title),
             duration_ms: self.duration.map(|s| s * 1000),
-            uri: self.preview.unwrap_or_default(),
+            uri: crate::daemon::stream::chart_uri(self.preview.unwrap_or_default().as_str()),
             cover_url: cover,
         }
     }

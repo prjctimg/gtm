@@ -68,8 +68,35 @@ Event objects have an `event` key where a response has `id`, which is how a
 client tells them apart on a multiplexed connection:
 
 ```json
-{"event": "playback_started", "track": {"title": "Song"}, "time_pos": 0.0, "duration": 240.0}
+{"event": "playback_started", "track": {"title": "Song"}, "time_pos": 0.0, "duration": 240.0, "source": "local"}
 ```
+
+### The `source` field
+
+Where the audio came from. Lowercase, from a fixed set of five:
+
+| Value | Meaning |
+|-------|---------|
+| `local` | A file on disk |
+| `spotify` | Spotify, via librespot |
+| `radio` | A Radio Browser station, or any other live stream |
+| `podcast` | A podcast episode |
+| `chart` | A charts provider's stream |
+
+Anything else — including an older daemon that omits the field, and the empty
+string a path the daemon could not classify produces — is an unknown source, and
+a client should render nothing rather than guess.
+
+The same value is a sibling of `current_track` in the `get_status` and
+`get_status_lite` payload, so a client that primes on connect has the marker
+before the first `playback_started` rather than after it. It is cleared on stop
+and on track end, along with `current_track`.
+
+One value is set per track; there is no separate event for a source change, and
+none is needed — a source does not change mid-track.
+
+**The set is a contract.** Clients match on the literal string, so a new value
+is a protocol change and not a build of the daemon.
 
 The bundled **gtm**(1) client does not read this stream; it consumes events only
 from the pulse socket, so that each event is delivered exactly once. Third-party
@@ -401,7 +428,7 @@ the rest are state transitions.
 
 | Event | Payload |
 |-------|---------|
-| `playback_started` | `track`, `auto_advanced`, `time_pos`, `duration` |
+| `playback_started` | `track`, `auto_advanced`, `time_pos`, `duration`, `source` |
 | `playback_paused` | `time_pos` |
 | `playback_stopped` | — |
 | `track_ended` | — |

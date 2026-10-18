@@ -1,4 +1,5 @@
 use super::*;
+use gtm::shared::{SRC_CHART, SRC_LOCAL, SRC_PODCAST, SRC_RADIO, SRC_SPOTIFY};
 
 pub(crate) const RESTART_THRESHOLD_SECS: f64 = 3.0;
 
@@ -6,6 +7,7 @@ pub(crate) const RESTART_THRESHOLD_SECS: f64 = 3.0;
 /// rebuilds the underlying stream URL from the manager owning the provider,
 /// so the TUI never needs a fetch library. Only these synthetic schemes are
 /// treated as remote; everything else goes down the local-file path.
+#[derive(Debug)]
 pub(crate) enum RemoteKind {
     Podcast {
         feed_id: String,
@@ -16,6 +18,20 @@ pub(crate) enum RemoteKind {
         station_name: String,
     },
     Stream {
+        url: String,
+    },
+    /// A charts provider's stream: an `http(s)` URL a chart handed us, which
+    /// fetches exactly like [`Stream`](Self::Stream) and lives at exactly the
+    /// same place.
+    ///
+    /// Its own variant, rather than folded into `Stream`, for one reason: a
+    /// chart row's playable URI is a bare `https://` link, and so is a station
+    /// the user pasted by hand. Both resolve identically, so nothing else
+    /// distinguishes them — but the source marker on the wire does, and a
+    /// client showing "radio" over an Apple chart would be telling the user
+    /// something false. The prefix is what carries the distinction, exactly as
+    /// `radio://` and `podcast://` carry theirs.
+    Chart {
         url: String,
     },
     /// yt-dlp extractor URLs (SoundCloud, Bandcamp, Mixcloud, ...): the URL
@@ -43,6 +59,12 @@ pub(crate) fn parse_remote_path(path: &str) -> Option<RemoteKind> {
             station_id,
             station_name,
         });
+    }
+    // Checked before the `http(s)` arms below, and the whole URL kept rather
+    // than just the host: a chart hands out signed CDN links whose query string
+    // is part of the address.
+    if let Some(rest) = path.strip_prefix("chart://") {
+        return Some(RemoteKind::Chart { url: rest.into() });
     }
     if ytdlp_label(path).is_some() {
         return Some(RemoteKind::YtDlp { url: path.into() });
@@ -122,6 +144,7 @@ pub(crate) async fn resolve_remote(
             }
         }
         RemoteKind::Stream { url } => url.clone(),
+        RemoteKind::Chart { url } => url.clone(),
         #[cfg(feature = "youtube")]
         RemoteKind::YtDlp { url } => {
             // Resolve via yt-dlp without holding the `YoutubeManager` mutex
@@ -145,8 +168,66 @@ pub(crate) async fn resolve_remote(
             ));
         }
     };
-    let live = matches!(kind, RemoteKind::Radio { .. } | RemoteKind::Stream { .. });
+    let live = matches!(
+        kind,
+        RemoteKind::Radio { .. } | RemoteKind::Stream { .. } | RemoteKind::Chart { .. }
+    );
     Ok(RemoteResolved { url, live })
+}
+
+/// The `SRC_*` value for a remote path.
+///
+/// On the path rather than on the request, because the path is what survives
+/// every hop that can start playback: a queued row, a resumed position and a
+/// crossfaded promotion all re-derive it from the same string, so none of them
+/// can disagree about where a track came from.
+impl RemoteKind {
+    pub(crate) fn source(&self) -> &'static str {
+        match self {
+            RemoteKind::Podcast { .. } => SRC_PODCAST,
+            RemoteKind::Radio { .. } => SRC_RADIO,
+            RemoteKind::Chart { .. } => SRC_CHART,
+            // A bare `https://` is a live stream by the only evidence there is:
+            // it has no length, and that is what the daemon already treats it
+            // as when it subscribes for ICY titles.
+            RemoteKind::Stream { .. } => SRC_RADIO,
+            // yt-dlp resolves to a direct CDN audio URL that the mixer decodes
+            // as a file. The bytes are remote; the playback is local, and
+            // `local` is the marker that means "this ends".
+            RemoteKind::YtDlp { .. } => SRC_LOCAL,
+        }
+    }
+}
+
+/// The queue path for a charts provider's playable URL.
+///
+/// Written next to [`parse_remote_path`] rather than in the chart providers,
+/// because the prefix is a two-sided convention: the provider emits it and this
+/// module reads it back. Two definitions of the same string in two files is
+/// how a chart row ends up silently reported as a radio stream.
+///
+/// An empty URL stays empty. `chart://` with nothing behind it would parse,
+/// resolve, and then fail on a fetch, which is a worse error to read than the
+/// blank row it came from.
+pub(crate) fn chart_uri(url: &str) -> String {
+    if url.is_empty() {
+        return String::new();
+    }
+    format!("chart://{url}")
+}
+
+/// The `SRC_*` value for any track path, local paths included.
+///
+/// The one entry point, so nothing has to remember that `spotify:` is handled
+/// before `parse_remote_path` and that a path matching neither is a file.
+pub(crate) fn source_for_path(path: &str) -> &'static str {
+    if path.starts_with("spotify:") {
+        return SRC_SPOTIFY;
+    }
+    match parse_remote_path(path) {
+        Some(kind) => kind.source(),
+        None => SRC_LOCAL,
+    }
 }
 
 /// Blocking HTTP open of a remote stream. Runs on a blocking thread; returns

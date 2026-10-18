@@ -165,6 +165,15 @@ pub struct DaemonState {
     pub mono: bool,
     pub crossfade: Option<CrossfadeConfig>,
     pub current_track: Option<TrackInfo>,
+    /// Where the audio came from: one of the `SRC_*` values, empty when
+    /// unknown.
+    ///
+    /// A sibling of `current_track` rather than a field on it, so a client that
+    /// primes from `get_status` has the marker on connect instead of waiting
+    /// for the first `playback_started`. Cleared wherever `current_track` is
+    /// cleared, because a source with no track on it describes nothing.
+    #[serde(default)]
+    pub source: String,
     pub time_pos: f64,
     pub duration: f64,
     /// Live `StreamTitle` reported by the current ICY/Shoutcast stream via
@@ -540,6 +549,13 @@ pub struct SavedState {
     /// the user left it (position included).
     #[serde(default)]
     pub current_track: Option<TrackInfo>,
+    /// Restored alongside `current_track`, for the same reason it is recorded
+    /// at all: a restored track is restored *silently*, so no
+    /// `playback_started` follows it, and a client priming from `get_status`
+    /// would otherwise see a track with no source until the user pressed play.
+    /// Re-derived from the path when playback actually resumes.
+    #[serde(default)]
+    pub source: String,
     /// Playback position (seconds) into `current_track` at last save.
     #[serde(default)]
     pub time_pos: f64,
@@ -569,6 +585,7 @@ impl SavedState {
             dynamic_mode: state.dynamic_mode.clone(),
             scrobble: state.scrobble.clone(),
             current_track: state.current_track.clone(),
+            source: state.source.clone(),
             time_pos: state.time_pos,
             resume: state.status == PlaybackStatus::Playing,
         }
@@ -590,6 +607,7 @@ impl SavedState {
         // Restore the last track so the daemon can resume exactly as left.
         // Actual playback is kicked off by the startup resume task.
         state.current_track = self.current_track.clone();
+        state.source = self.source.clone();
         state.time_pos = self.time_pos;
         if let Some(track) = &self.current_track {
             state.duration = track.duration;
@@ -646,6 +664,7 @@ pub fn path_is_remote(path: &str) -> bool {
     path.starts_with("spotify:")
         || path.starts_with("radio://")
         || path.starts_with("podcast:")
+        || path.starts_with("chart://")
         || path.starts_with("http://")
         || path.starts_with("https://")
 }
@@ -659,6 +678,10 @@ mod remote_path_tests {
         assert!(path_is_remote("spotify:track:4cOdK2wGLETKBW3PvgPWqT"));
         assert!(path_is_remote("radio://stream.example/live"));
         assert!(path_is_remote("https://cdn.example/stream.mp3"));
+        // A chart row is a remote entry even though its own scheme is not
+        // http: the URL behind `chart://` is. Without this the client would go
+        // looking for a library row and tags for a file that does not exist.
+        assert!(path_is_remote("chart://https://cdn.example/preview.m4s"));
     }
 
     #[test]

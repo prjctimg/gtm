@@ -706,6 +706,7 @@ macro_rules! wire_event_roundtrip {
 wire_event_roundtrip!(
     event_play_started,
     DaemonEvent::PlaybackStarted {
+        source: "local".into(),
         track: Box::new(sample_track()),
         auto_advanced: false,
         time_pos: 0.0,
@@ -892,7 +893,7 @@ fn trans_stop_play() {
 
     // Stopped -> Playing
     assert_eq!(s.status, PlaybackStatus::Stopped);
-    s.play(track.clone()).unwrap();
+    s.play(track.clone(), "local").unwrap();
     assert_eq!(s.status, PlaybackStatus::Playing);
     assert_eq!(s.current_track.as_ref().unwrap().id, 1);
 
@@ -901,7 +902,7 @@ fn trans_stop_play() {
     assert_eq!(s.status, PlaybackStatus::Paused);
 
     // Paused -> Playing
-    s.play(track.clone()).unwrap();
+    s.play(track.clone(), "local").unwrap();
     assert_eq!(s.status, PlaybackStatus::Playing);
 
     // Playing -> Stopped
@@ -926,31 +927,31 @@ fn restore_never_reports_playing() {
     let track = sample_track();
 
     // Stopped -> Paused with the track loaded.
-    s.restore(track.clone(), 42.0).unwrap();
+    s.restore(track.clone(), 42.0, "local").unwrap();
     assert_eq!(s.status, PlaybackStatus::Paused);
     assert_eq!(s.current_track.as_ref().unwrap().id, 1);
     assert_eq!(s.time_pos, 42.0);
 
     // And it is resumable: play from a restored track still works, which is the
     // whole point of leaving it loaded rather than dropped.
-    s.play(track.clone()).unwrap();
+    s.play(track.clone(), "local").unwrap();
     assert_eq!(s.status, PlaybackStatus::Playing);
     assert_eq!(s.time_pos, 42.0, "the position survived the restore");
 
     // Restoring from Paused is the same shape — a daemon restarting twice, or a
     // restore landing on top of a track already loaded.
     let mut s = sample_state();
-    s.play(track.clone()).unwrap();
+    s.play(track.clone(), "local").unwrap();
     s.pause().unwrap();
-    s.restore(track.clone(), 7.0).unwrap();
+    s.restore(track.clone(), 7.0, "local").unwrap();
     assert_eq!(s.status, PlaybackStatus::Paused);
     assert_eq!(s.time_pos, 7.0);
 
     // From Playing it is refused, exactly as `play` and `pause` are: a restore is
     // a load, not an interruption of something already sounding.
     let mut s = sample_state();
-    s.play(track.clone()).unwrap();
-    assert!(s.restore(track, 0.0).is_err());
+    s.play(track.clone(), "local").unwrap();
+    assert!(s.restore(track, 0.0, "local").is_err());
 }
 
 #[test]
@@ -1078,7 +1079,7 @@ fn trans_advance_empty() {
 fn trans_version() {
     let mut s = sample_state();
     let v0 = s.version;
-    s.play(sample_track()).unwrap();
+    s.play(sample_track(), "local").unwrap();
     assert_eq!(s.version, v0 + 1);
     s.pause().unwrap();
     assert_eq!(s.version, v0 + 2);
@@ -1092,6 +1093,7 @@ fn trans_version() {
 fn apply_playback_started() {
     let mut s = DaemonState::new();
     s.apply_event(&DaemonEvent::PlaybackStarted {
+        source: "local".into(),
         track: Box::new(sample_track()),
         auto_advanced: false,
         time_pos: 0.0,

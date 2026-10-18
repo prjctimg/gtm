@@ -43,6 +43,7 @@ impl DaemonState {
                 duration_secs: 6,
             }),
             current_track: None,
+            source: String::new(),
             time_pos: 0.0,
             duration: 0.0,
             radio_title: None,

@@ -16,6 +16,7 @@ pub mod paths;
 pub mod playlist;
 pub mod reactive;
 pub mod secret;
+pub mod source;
 pub mod state;
 pub mod track;
 pub mod tripwire;
@@ -45,6 +46,7 @@ pub use paths::{
 pub use playlist::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
 pub use podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 pub use radio::RadioStation;
+pub use source::{SOURCES, SRC_CHART, SRC_LOCAL, SRC_PODCAST, SRC_RADIO, SRC_SPOTIFY, is_known};
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 

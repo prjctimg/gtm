@@ -1676,6 +1676,20 @@ pub enum DaemonEvent {
         auto_advanced: bool,
         time_pos: f64,
         duration: f64,
+        /// Where the audio came from: one of the `SRC_*` values, empty when the
+        /// daemon could not classify it.
+        ///
+        /// Trailing on purpose. A client that indexes the positions it knows is
+        /// unaffected by a field past the end, and this frame is the one every
+        /// client has to be able to read. Not on `TrackInfo`, because a file's
+        /// source does not change with how you played it and threading it
+        /// through the library to say so would be a lie for every stored row.
+        ///
+        /// Defaults rather than required: a new client against a daemon that
+        /// predates this field gets `""`, the same way it already handles a
+        /// missing `reactive_theme`.
+        #[serde(default)]
+        source: String,
     },
     #[serde(rename = "playback_paused")]
     PlaybackPaused { time_pos: f64 },
@@ -2661,4 +2675,93 @@ pub struct HealthReport {
     pub daemon_uptime_secs: f64,
     pub version: String,
     pub components: Vec<ComponentHealth>,
+}
+
+#[cfg(test)]
+mod source_field_tests {
+    use super::DaemonEvent;
+    use crate::shared::{SRC_LOCAL, SRC_RADIO};
+
+    fn track_json() -> String {
+        serde_json::json!({
+            "id": 0, "path": "/m/song.mp3", "title": "S", "artist": "A",
+            "album": "Al", "duration": 240.0, "genre": "", "year": null,
+            "bitrate": null, "samplerate": null, "hash": "",
+            "cover_path": null, "album_id": null, "favourite": false,
+            "artist_image": null, "cover_url": null
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn source_rides_on_the_wire() {
+        let ev = DaemonEvent::PlaybackStarted {
+            track: Box::new(serde_json::from_str(&track_json()).unwrap()),
+            auto_advanced: false,
+            time_pos: 0.0,
+            duration: 240.0,
+            source: SRC_RADIO.into(),
+        };
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(v["event"], "playback_started");
+        assert_eq!(v["source"], "radio");
+        let back: DaemonEvent = serde_json::from_value(v).unwrap();
+        match back {
+            DaemonEvent::PlaybackStarted { source, .. } => assert_eq!(source, SRC_RADIO),
+            _ => panic!("round-trip changed the variant"),
+        }
+    }
+
+    /// A new client against a daemon that predates the field.
+    ///
+    /// The skew the doc calls out, and the reason for `#[serde(default)]`: a
+    /// client that required `source` would fail to decode *every* playback
+    /// event from an older daemon, and the failure would look like a decode bug
+    /// rather than a version difference. It reads as the empty string, which
+    /// `is_known` rejects, which is the "render nothing" case.
+    #[test]
+    fn an_omitted_source_reads_as_unknown() {
+        let raw = serde_json::json!({
+            "event": "playback_started",
+            "track": serde_json::from_str::<serde_json::Value>(&track_json()).unwrap(),
+            "auto_advanced": true,
+            "time_pos": 12.5,
+            "duration": 240.0,
+        });
+        let ev: DaemonEvent = serde_json::from_value(raw).unwrap();
+        match ev {
+            DaemonEvent::PlaybackStarted {
+                source,
+                auto_advanced,
+                ..
+            } => {
+                assert_eq!(source, "");
+                assert!(!crate::shared::is_known(&source));
+                assert!(auto_advanced);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    /// The keys an older client already knows, unchanged.
+    ///
+    /// `source` is additive on purpose. This pins the exact key set the
+    /// pre-existing readers were written against, so a future field cannot
+    /// quietly rename or repurpose one of them.
+    #[test]
+    fn the_pre_existing_keys_are_untouched() {
+        let v = serde_json::to_value(DaemonEvent::PlaybackStarted {
+            track: Box::new(serde_json::from_str(&track_json()).unwrap()),
+            auto_advanced: false,
+            time_pos: 1.5,
+            duration: 240.0,
+            source: SRC_LOCAL.into(),
+        })
+        .unwrap();
+        let obj = v.as_object().unwrap();
+        for k in ["event", "track", "auto_advanced", "time_pos", "duration"] {
+            assert!(obj.contains_key(k), "{k} went missing");
+        }
+        assert_eq!(obj.len(), 6, "unexpected extra keys: {obj:?}");
+    }
 }

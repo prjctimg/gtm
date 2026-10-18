@@ -39,7 +39,7 @@ impl DaemonState {
     /// nothing had to be silenced afterwards. Restoring a saved track on daemon
     /// startup is exactly that — the user asked for the track to be *there*, not
     /// for the machine to start making noise at them.
-    pub fn restore(&mut self, track: TrackInfo, time_pos: f64) -> Result<()> {
+    pub fn restore(&mut self, track: TrackInfo, time_pos: f64, source: &str) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
         if self.status != PlaybackStatus::Stopped && self.status != PlaybackStatus::Paused {
             return Err(CoreError::Daemon(format!(
@@ -50,13 +50,20 @@ impl DaemonState {
         self.status = PlaybackStatus::Paused;
         self.current_track = Some(track);
         self.time_pos = time_pos;
+        self.source = source.to_string();
         self.commit();
         Ok(())
     }
 
     /// Transition to Playing with the given track.
     /// Allowed from: Stopped, Paused.
-    pub fn play(&mut self, track: TrackInfo) -> Result<()> {
+    ///
+    /// `source` is the `SRC_*` value for where the audio came from. Taken as an
+    /// argument rather than derived from the track because the track cannot
+    /// supply it: a row in the library knows its path, but not that this
+    /// particular play was a Spotify stream rather than the file it names, and
+    /// every caller here has already been through the branch that knows.
+    pub fn play(&mut self, track: TrackInfo, source: &str) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
         if self.status != PlaybackStatus::Stopped && self.status != PlaybackStatus::Paused {
             return Err(CoreError::Daemon(format!(
@@ -66,6 +73,7 @@ impl DaemonState {
         }
         self.status = PlaybackStatus::Playing;
         self.current_track = Some(track);
+        self.source = source.to_string();
         self.commit();
         Ok(())
     }
@@ -94,6 +102,7 @@ impl DaemonState {
         }
         self.status = PlaybackStatus::Stopped;
         self.current_track = None;
+        self.source.clear();
         self.time_pos = 0.0;
         self.commit();
         Ok(())
@@ -223,6 +232,7 @@ impl DaemonState {
                 track,
                 time_pos,
                 duration,
+                source,
                 ..
             } => {
                 self.current_track = Some(track.as_ref().clone());
@@ -230,6 +240,7 @@ impl DaemonState {
                 self.time_pos = *time_pos;
                 self.duration = *duration;
                 self.radio_title = None;
+                self.source = source.clone();
             }
             DaemonEvent::PlaybackPaused { time_pos } => {
                 self.status = PlaybackStatus::Paused;
@@ -238,6 +249,7 @@ impl DaemonState {
             DaemonEvent::PlaybackStopped => {
                 self.status = PlaybackStatus::Stopped;
                 self.current_track = None;
+                self.source.clear();
                 self.time_pos = 0.0;
                 self.radio_title = None;
             }
@@ -278,6 +290,7 @@ impl DaemonState {
             DaemonEvent::TrackEnded => {
                 self.status = PlaybackStatus::Stopped;
                 self.current_track = None;
+                self.source.clear();
                 self.time_pos = 0.0;
                 self.radio_title = None;
                 // Note: do NOT clear the queue here: the daemon owns queue

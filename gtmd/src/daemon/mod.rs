@@ -384,9 +384,9 @@ impl Cmd {
         // loaded and positioned without a window in which the daemon reported a
         // track as started.
         if silent {
-            state.restore(track.clone(), start_pos)?;
+            state.restore(track.clone(), start_pos, source_for_path(&track.path))?;
         } else {
-            state.play(track.clone())?;
+            state.play(track.clone(), source_for_path(&track.path))?;
         }
         state.time_pos = start_pos;
         state.duration = dur;
@@ -400,7 +400,14 @@ impl Cmd {
         // Last.fm now-playing handshake below (which can hang for up to 10s),
         // so the TUI's Now Playing pane and cover art update immediately.
         if !silent {
-            Daemon::push_started(inner, &track, auto_advanced, start_pos, dur);
+            Daemon::push_started(
+                inner,
+                &track,
+                auto_advanced,
+                start_pos,
+                dur,
+                source_for_path(&track.path),
+            );
         }
 
         // Update Last.fm now playing
@@ -453,7 +460,8 @@ impl Cmd {
         if state.status != PlaybackStatus::Stopped {
             state.stop()?;
         }
-        state.restore(track, start_pos)?;
+        let source = source_for_path(&track.path);
+        state.restore(track, start_pos, source)?;
         drop(state);
         Daemon::save_state(inner);
         Ok(DaemonRes::Ok)
@@ -702,12 +710,19 @@ impl Cmd {
         {
             state.queue.rotate_left(pos);
         }
-        state.play(track.clone())?;
+        state.play(track.clone(), source_for_path(&track.path))?;
         state.time_pos = start_pos;
         state.duration = dur;
         drop(state);
         inner.scrobble.lock().await.start(&track.path, start_pos);
-        Daemon::push_started(inner, &track, auto_advanced, start_pos, dur);
+        Daemon::push_started(
+            inner,
+            &track,
+            auto_advanced,
+            start_pos,
+            dur,
+            source_for_path(&track.path),
+        );
         Self::announce_now_playing(inner).await;
         Ok(DaemonRes::Ok)
     }
@@ -812,6 +827,10 @@ impl Cmd {
                     // it identifies the source the way the literal "Stream"
                     // never did.
                     RemoteKind::Stream { url } => (stream_label(url), "Internet Radio", "Stream"),
+                    // Same audio, and the same honest host-based title — what
+                    // differs is only that a chart handed us this URL, which is
+                    // what the album line says so the source reads right.
+                    RemoteKind::Chart { url } => (stream_label(url), "Internet Radio", "Chart"),
                     RemoteKind::YtDlp { url } => {
                         let label = ytdlp_label(url).unwrap_or("YouTube");
                         (label, label, label)
@@ -832,7 +851,7 @@ impl Cmd {
         {
             state.queue.rotate_left(pos);
         }
-        state.play(track.clone())?;
+        state.play(track.clone(), source_for_path(&track.path))?;
         state.time_pos = start_pos;
         state.duration = dur;
         drop(state);
@@ -840,7 +859,14 @@ impl Cmd {
         inner.scrobble.lock().await.start(&track.path, start_pos);
 
         // Broadcast before the Last.fm handshake so Now Playing syncs fast.
-        Daemon::push_started(inner, &track, auto_advanced, start_pos, dur);
+        Daemon::push_started(
+            inner,
+            &track,
+            auto_advanced,
+            start_pos,
+            dur,
+            source_for_path(&track.path),
+        );
 
         Self::announce_now_playing(inner).await;
         Ok(DaemonRes::Ok)
@@ -1019,11 +1045,18 @@ impl Cmd {
                         });
                     }
                 };
-                state.play(track.clone())?;
+                state.play(track.clone(), source_for_path(&track.path))?;
                 let time_pos = state.time_pos;
                 let duration = state.duration;
                 drop(state);
-                Daemon::push_started(inner, &track, false, time_pos, duration);
+                Daemon::push_started(
+                    inner,
+                    &track,
+                    false,
+                    time_pos,
+                    duration,
+                    source_for_path(&track.path),
+                );
                 Ok(DaemonRes::Ok)
             } else if !path.is_empty() {
                 Cmd::play(inner, &path, 0.0, false).await
@@ -3752,12 +3785,19 @@ impl Daemon {
     /// to produce the palette, or the reactive theme tracks whichever path
     /// happens to be missing. One helper is what makes that a property of
     /// "a track started" rather than of each caller's memory.
+    ///
+    /// `source` is a `SRC_*` value, and an argument rather than something
+    /// derived here: every caller has already been through the branch that
+    /// classifies the path, and the path is the only thing that can tell a
+    /// pasted `https://` station from a chart that handed out the same
+    /// shape of URL.
     fn push_started(
         inner: &DaemonInner,
         track: &TrackInfo,
         auto_advanced: bool,
         time_pos: f64,
         duration: f64,
+        source: &str,
     ) {
         Self::push_event(
             inner,
@@ -3766,6 +3806,7 @@ impl Daemon {
                 auto_advanced,
                 time_pos,
                 duration,
+                source: source.to_string(),
             },
         );
         Self::push_palette(inner, track);
@@ -4497,12 +4538,13 @@ impl Daemon {
                     state.status = PlaybackStatus::Playing;
                     state.time_pos = actual;
                     state.current_track = Some(next.clone());
+                    state.source = source_for_path(&next.path).to_string();
                     state.duration = dur;
                 }
                 inner.scrobble.lock().await.start(&next.path, actual);
                 // Update Last.fm now playing for the new track
                 Cmd::announce_now_playing(inner).await;
-                Daemon::push_started(inner, &next, true, actual, dur);
+                Daemon::push_started(inner, &next, true, actual, dur, source_for_path(&next.path));
                 Self::push_queue_state(inner).await;
             }
             Ok(None) => {
@@ -5085,6 +5127,7 @@ impl Daemon {
             state.status = PlaybackStatus::Playing;
             state.time_pos = 0.0;
             state.current_track = Some(track.clone());
+            state.source = source_for_path(&track.path).to_string();
             state.duration = dur;
         }
         // A promoted track is playing, so Last.fm has to hear about it. The
@@ -5093,7 +5136,7 @@ impl Daemon {
         // whole length -- and since a crossfade promotes most auto-advances,
         // that was the common case rather than an edge one.
         Cmd::announce_now_playing(inner).await;
-        Daemon::push_started(inner, &track, true, 0.0, dur);
+        Daemon::push_started(inner, &track, true, 0.0, dur, source_for_path(&track.path));
         Self::push_queue_state(inner).await;
     }
 

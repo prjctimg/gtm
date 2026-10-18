@@ -218,9 +218,12 @@ impl ChartProvider for AppleCharts {
             let cover = detail
                 .and_then(|d| d.artwork_url100.clone())
                 .map(|u| upgrade_artwork(&u));
-            let uri = detail
-                .and_then(|d| d.preview_url.clone())
-                .unwrap_or_default();
+            let uri = crate::daemon::stream::chart_uri(
+                detail
+                    .and_then(|d| d.preview_url.clone())
+                    .unwrap_or_default()
+                    .as_str(),
+            );
 
             tracks.push(ChartTrack {
                 index: i,

@@ -1,7 +1,12 @@
 # Playback source on the wire
 
-Status: **proposed**. Follows `REACTIVE_TOKENS.md`, which moved colour derivation
+Status: **implemented**. Follows `REACTIVE_TOKENS.md`, which moved colour derivation
 to gtmd. This adds the one fact a client needs to label where audio came from.
+
+Two things landed differently from how this reads, both because the frame is
+internally tagged JSON (`{"event": ..., ...}`) rather than the positional
+StructTuple assumed in §1, and because `radio`, `podcast` and `chart` cannot all
+be recovered from a path alone. See "What changed" at the bottom.
 
 ## Problem
 
@@ -76,3 +81,39 @@ local SRC_ICON = { local = "♫", spotify = "◉", radio = "☁", podcast = "❋
 ```
 
 Unknown values render nothing rather than guessing.
+
+## What changed
+
+**The frame is internally tagged, not positional.** `playback_started` is
+`#[serde(tag = "event")]` on `DaemonEvent`, so the wire form is an object and
+every key is named. That makes the compatibility argument stronger rather than
+weaker — an old client ignores the extra key outright — so `source` stayed
+trailing anyway, which keeps it in the same position for any client that reads
+the object positionally by mistake.
+
+**`chart` needed a route to be reachable.** `radio://`, `podcast://` and
+`spotify:` are all distinguishable from the path. A bare `https://` is not: an
+Apple chart preview, a Deezer preview and a station the user pasted by hand are
+the same shape of URL, resolving to the same bytes, with no length. Reporting
+all three as `radio` would have made the field half-wrong.
+
+So charts now emit `chart://<url>`, parsed by `parse_remote_path` into a new
+`RemoteKind::Chart` that fetches exactly like `RemoteKind::Stream` and is `live`
+in the same way. The prefix is the whole mechanism, and it is written once in
+`stream.rs` — both `chart_uri()`, which the providers call, and the parse arm,
+which lives beside it — so the two sides cannot drift.
+
+The classification itself is `source_for_path`, one function over the path, used
+by every site that can start playback: a queued row, a resumed position and a
+crossfaded promotion all re-derive it from the same string rather than carrying a
+value forward from whatever happened to be playing.
+
+**`yt-dlp` resolves to `local`.** The bytes are remote; the playback is a file
+the mixer decodes start to finish, and `local` is the marker that means "this
+ends".
+
+## Not done
+
+The bundled TUI does not read `source` yet. It has its own knowledge of where
+audio came from, and adding a marker there is a display decision rather than a
+protocol one — the field exists for third-party clients, `gtm.nvim` first.
