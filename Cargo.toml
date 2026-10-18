@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.93"
+version = "0.2.94"
 edition = "2024"
 license = "GPL-3.0-only"
 repository = "https://github.com/prjctimg/gtm"

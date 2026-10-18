@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.2.94] - 2026-10-18
+
+### Added
+- **Playback source on the wire.** `playback_started` carries a trailing
+  `source`, and the status snapshot carries one beside `current_track`, so a
+  client priming on connect has it before the first event. Five lowercase
+  values, a closed set. The TUI shows a glyph for every source but `local`.
+- **Charts emit `chart://`.** An Apple or Deezer preview is the same shape of
+  `https://` URL as a station you pasted, so charts route through their own
+  prefix and report `chart` rather than `radio`.
+- **Gapless Spotify transitions.** librespot is asked 30s before the end to
+  preload the next track, so the change has no fetch and no silence at the seam.
+- **Reactive tokens.** gtmd broadcasts the derived role set for both polarities
+  beside `reactive_palette`, from the same extraction. The TUI now reads roles
+  rather than running the ramp itself.
+- **Welcome pane** with a jumbotron wordmark and an animated provider marquee,
+  `show_welcome` and `resume_on_start`, both written on first run.
+- **Up-next cover art** in the station tracklist, and a chart sleeve drawn from
+  the #1 track without loading the tracklist.
+- **Radio Paradise** on air via the depth-3 endpoint.
+
+### Changed
+- **Equal-power crossfade.** `cos`/`sin` instead of `1-t`/`t`. Linear held the
+  sum of amplitudes at 1 while the power summed to 0.5, which is the 3dB dip in
+  the middle. Costs a ~1.5dB rise through the fade.
+- **Progress bar drawn on the GPU.** One shader instead of four glyph styles.
+- **Removed the picker hint strips and the footer help bar** (`Ctrl+H`).
+- **Restoring a saved track no longer implies playing it.** `resume_on_start`
+  decides.
+
+### Fixed
+- **A crossfade into a live stream kept the previous file's duration**, so the
+  stream reported position 0 against the last song's length — a full progress
+  bar re-filling on a track with no end to reach.
+- **Apple podcast charts resolve to feed URLs**, in two requests: the chart
+  endpoint publishes no `feedUrl`, so ids are resolved through iTunes lookup.
+- **Tracklists from cp1252 sources** re-encode correctly. `É` was arriving as
+  `‰`; a latin-1 round trip got the case right and lost the other.
+- **Provider glyphs** are padded to a fixed slot, so a source with no icon no
+  longer starts its name four columns left of everyone else's.
+- **Dance Wave** rejected its placeholder response, which parsed as a valid
+  one-row tracklist.
+
+### Removed
+- **Seven visualizer presets** with no shader: Braille, Blocks, Spectrum,
+  BarsDot, ClassicPeak, Columns, Retro. Every survivor has one.
+- **The progress bar from the footer.** The segment is a string, and a GPU bar
+  comes back as per-cell spans.
+- **The progress style picker** and its `Alt+P` chord, which had been shadowing
+  Podcasts — which had been unreachable by key since it shipped.
+
+### Compatibility
+- `visualizer_preset` and `progress_style` are read leniently: a config naming a
+  value this build no longer has loads with everything else intact instead of
+  being discarded whole.
+- `reactive_palette` is unchanged and still broadcast. `reactive_theme` is
+  additive; a client that does not know it never sees it.
+
 ## [0.2.6] - 2026-08-27
 
 ### Added
