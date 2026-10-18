@@ -427,6 +427,15 @@ pub struct StreamManager {
     /// Where provider-level failures are reported. Held as a sender rather than
     /// the daemon itself so the event pump can never reach into daemon state.
     notify: tokio::sync::broadcast::Sender<DaemonEvent>,
+    /// The URI the daemon believes comes next, if it is a Spotify one.
+    ///
+    /// Written by the daemon whenever the queue changes and read by the event
+    /// pump when librespot says it is time to preload. Held as a shared slot for
+    /// the same reason `notify` is a sender: the pump must not reach into daemon
+    /// state, and the queue is daemon state. It is a *hint*, not a promise --
+    /// the queue can change after it is written, and the next `load` is what
+    /// actually decides what plays.
+    preload_uri: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for StreamManager {
@@ -445,6 +454,7 @@ impl StreamManager {
             session_token: None,
             stat: Arc::new(Mutex::new(None)),
             notify,
+            preload_uri: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -457,6 +467,24 @@ impl StreamManager {
         // Dropping the sender makes the rodio source drain its buffer and
         // then end, which triggers the mixer's normal end-of-track path.
         self.target.lock().unwrap().take();
+    }
+
+    /// Tell the event pump what to preload, or `None` for nothing.
+    ///
+    /// Called from the queue-change path, which is the only place that knows
+    /// what follows the current track without racing the advance that has not
+    /// happened yet.
+    pub fn set_preload(&mut self, uri: Option<String>) {
+        *self.preload_uri.lock().unwrap() = uri;
+    }
+
+    /// Forget any pending preload.
+    ///
+    /// On teardown rather than on every track: a stale URI is only ever
+    /// preloaded into a player that is about to be replaced anyway, and the
+    /// slot is rewritten on the next queue change.
+    fn clear_preload(&self) {
+        *self.preload_uri.lock().unwrap() = None;
     }
 
     /// Halt any in-flight stream decoding and drop buffered audio.
@@ -579,6 +607,8 @@ impl StreamManager {
         let events = player.get_player_event_channel();
         let target = self.target.clone();
         let notify = self.notify.clone();
+        let preload_uri = self.preload_uri.clone();
+        let preload_player = player.clone();
         tokio::spawn(async move {
             let mut events = events;
             let mut streak = RefusalStreak::new();
@@ -615,6 +645,36 @@ impl StreamManager {
                     }
                     // Anything that actually starts playing clears the streak.
                     PlayerEvent::Playing { .. } => streak.played(),
+                    // librespot asks for this 30 seconds before the track ends.
+                    // Answering it is what makes a Spotify-to-Spotify change
+                    // gapless: the next track's audio is already decoded and
+                    // buffered by the time the advance arrives, so there is no
+                    // fetch, no CDN round trip and no silence at the seam.
+                    //
+                    // This is preload, not crossfade. The two players overlap
+                    // nowhere -- there is one player, and the next track simply
+                    // starts when the current one ends. A true overlap would
+                    // need a second `Player`, which means a second Spotify
+                    // device and double the bandwidth for both tracks, and
+                    // gtm already has a working crossfade for the cases that
+                    // can overlap: two local files.
+                    PlayerEvent::TimeToPreloadNextTrack { .. } => {
+                        // Nothing followable -- a local file, a station, or
+                        // the end of the queue -- is the ordinary case at the
+                        // end of a Spotify run rather than an error, and preload
+                        // has no meaning for those, so there is no else.
+                        let next = preload_uri.lock().unwrap().clone();
+                        if let Some(uri) = next {
+                            match SpotifyUri::from_uri(&uri) {
+                                Ok(uri) => preload_player.preload(uri),
+                                // A queue entry that claimed to be a Spotify
+                                // track and is not one. Logged rather than
+                                // propagated: it is a bad row, not a failure
+                                // of the track that is playing.
+                                Err(e) => warn!("spotify preload skipped: {uri:?}: {e}"),
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -656,6 +716,7 @@ impl StreamManager {
     /// established (e.g. with a renewed access token).
     fn teardown_session(&mut self) {
         self.clear_target();
+        self.clear_preload();
         if let Some(player) = &self.player {
             player.stop();
         }

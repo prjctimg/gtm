@@ -3989,8 +3989,16 @@ impl Daemon {
     pub(crate) async fn push_queue_state(inner: &DaemonInner) {
         let state = inner.state.read().await;
         let (queue, cursor) = queue::visible(&state);
+        // Read while the guard is held, so the hint cannot be computed against a
+        // queue that has already moved on. Released before the await below:
+        // holding a state lock across a second lock is how this file gets a
+        // deadlock.
+        let preload = Self::next_track(&state)
+            .map(|t| t.path)
+            .filter(|p| p.starts_with("spotify:"));
         drop(state);
         Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
+        inner.stream.lock().await.set_preload(preload);
     }
 
     /// What the countdown and the crossfade will play next.
