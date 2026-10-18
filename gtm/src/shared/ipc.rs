@@ -626,6 +626,16 @@ pub enum DaemonReq {
         source_id: String,
         chart_id: String,
     },
+    /// Cover art for an arbitrary "artist - title", by name.
+    ///
+    /// For rows that are not files and not chart entries: a station's tracklist
+    /// publishes no artwork, so a "what plays next" preview has nothing to go
+    /// on but the name. Reuses the cached Deezer search every other track cover
+    /// goes through, so it is a lookup rather than a new pipeline.
+    RadioTrackCover {
+        artist: String,
+        title: String,
+    },
     /// The sleeve for one chart, without loading or replacing its tracklist.
     ///
     /// Separate from `ChartsTracks` because that request overwrites whatever the
@@ -754,6 +764,7 @@ impl DaemonReq {
             DaemonReq::ChartsList { .. } => "charts_list",
             DaemonReq::ChartsTracks { .. } => "charts_tracks",
             DaemonReq::ChartsSleeve { .. } => "charts_sleeve",
+            DaemonReq::RadioTrackCover { .. } => "radio_track_cover",
             DaemonReq::GetStatus => "get_status",
             DaemonReq::GetStatusLite => "get_status_lite",
             DaemonReq::CheckHealth => "check_health",
@@ -1862,6 +1873,9 @@ pub enum DaemonRes {
         chart_id: String,
         cover: Option<String>,
     },
+    RadioTrackCoverRes {
+        data: Option<String>,
+    },
     ChartsLoaded {
         charts: Vec<ChartPlaylist>,
     },
@@ -1998,6 +2012,7 @@ impl DaemonRes {
             DaemonRes::ChartSleeve { chart_id, cover } => {
                 Some(serde_json::json!({ "chart_id": chart_id, "cover": cover }))
             }
+            DaemonRes::RadioTrackCoverRes { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::ChartsLoaded { charts } => Some(serde_json::json!({ "charts": charts })),
             DaemonRes::ChartTracksLoaded { tracks } => {
                 Some(serde_json::json!({ "tracks": tracks }))
@@ -2177,6 +2192,7 @@ impl DaemonRes {
                 field!("chart_id", &chart_id);
                 field!("cover", &cover);
             }
+            DaemonRes::RadioTrackCoverRes { data } => field!("data", &data),
             DaemonRes::ChartsLoaded { charts } => field!("charts", &charts),
             DaemonRes::ChartTracksLoaded { tracks } => field!("tracks", &tracks),
             DaemonRes::CoverArt { data } => field!("data", &data),
@@ -2481,6 +2497,9 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
+            "radio_track_cover" => DaemonRes::RadioTrackCoverRes {
+                data: data.get("data").and_then(|v| v.as_str()).map(String::from),
+            },
             "charts_sleeve" | "chart_sleeve" => DaemonRes::ChartSleeve {
                 chart_id: field(&data, "chart_id")
                     .as_str()

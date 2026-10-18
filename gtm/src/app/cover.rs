@@ -380,6 +380,61 @@ impl App {
         self.clear_popup_cover();
     }
 
+    /// Cover for the track the station plays next, looked up by name.
+    ///
+    /// A station's tracklist publishes no artwork -- there is no image field on
+    /// a row at all -- so the next track's cover has to be asked for by the name
+    /// the station printed. That is a catalog search rather than an image
+    /// fetch, and it is latched by the query string so holding the tracklist
+    /// open costs nothing and scrolling back over a track already seen costs
+    /// nothing.
+    ///
+    /// Nothing here touches the now playing pane's slot: that one is showing the
+    /// on-air row's artwork, which is a different track.
+    pub fn fetch_up_next_cover(&mut self) {
+        if no_image_protocol() {
+            return;
+        }
+        let at = self.state.radio_tracks.at;
+        let Some(next) = self.state.radio_tracks.tracks.get(at + 1).cloned() else {
+            // Off the end of the list: drop the last answer rather than leave a
+            // sleeve under a track that is no longer the next one.
+            self.up_next_cover = None;
+            self.up_next_cover_stateful = None;
+            self.up_next_cover_query = None;
+            self.up_next_cover_slot.clear();
+            return;
+        };
+        let query = next.query();
+        if self.up_next_cover_query.as_deref() == Some(query.as_str()) {
+            return;
+        }
+        self.up_next_cover_query = Some(query.clone());
+        self.up_next_cover = None;
+        self.up_next_cover_stateful = None;
+        if self.up_next_cover_slot.pending(&query) {
+            return;
+        }
+        let client = self.client.clone();
+        let ipc = self.ipc_tx.clone();
+        self.up_next_cover_slot.claim(query.clone(), 0);
+        tokio::spawn(async move {
+            let got = client.radio().track_cover(&next.artist, &next.title).await;
+            // A miss is the common case -- the catalog does not have every
+            // tracklist entry -- and is not an error worth notifying about.
+            let bytes = got.ok().flatten().and_then(|b64| {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD.decode(b64).ok()
+            });
+            let _ = ipc.send(IpcResult::UpNextCover { query, data: bytes });
+        });
+    }
+
+    /// Build the protocol for the up-next sleeve from its bytes.
+    pub(crate) fn up_next_cover_sync(&mut self) {
+        self.up_next_cover_stateful = self.protocol(self.up_next_cover.as_deref());
+    }
+
     /// Artwork for the highlighted row, for the kinds that name their image by
     /// URL rather than by library id.
     ///

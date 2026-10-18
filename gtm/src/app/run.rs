@@ -973,6 +973,17 @@ impl App {
                             self.state.radio_tracks = list;
                         }
                     }
+                    IpcResult::UpNextCover { query, data } => {
+                        // A reply for a track the station has already moved on
+                        // from is dropped rather than drawn under whatever
+                        // happens to be next now.
+                        if self.up_next_cover_query.as_deref() == Some(query.as_str()) {
+                            self.up_next_cover = data;
+                            self.up_next_cover_slot.clear();
+                            self.up_next_cover_sync();
+                            self.cover_art_dirty = true;
+                        }
+                    }
                     IpcResult::ChartSleeve { chart_id, cover } => {
                         // Filed under the chart it belongs to, keyed by id so a
                         // reply for a row the cursor has left still lands where

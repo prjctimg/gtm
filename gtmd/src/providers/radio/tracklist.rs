@@ -23,6 +23,20 @@ pub enum Stamp {
     Clock,
 }
 
+/// How much history a source publishes.
+///
+/// `Full` sources carry a list, and the code anchors and walks it. `Now`
+/// sources publish one entry and nothing else -- that is the shape, not a
+/// degraded list, and handing back a one-row `RadioTracklist` would make the
+/// queue view show a history of one that never existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Depth {
+    /// A list of recent entries, newest first.
+    Full,
+    /// One entry: what is on air right now.
+    Now,
+}
+
 /// Field names inside a source's JSON body, plus where the tracks live.
 /// Dotted keys walk nested objects, which is how sources that nest the artist
 /// (`{"artist":{"name":…}}`) are described without a special case.
@@ -78,6 +92,8 @@ struct Source {
     /// refused. Matched against the now-playing entry, because a placeholder is
     /// a single row and would otherwise be reported as the track on air.
     placeholder: &'static [&'static str],
+    /// How much this endpoint publishes. See [`Depth`].
+    depth: Depth,
 }
 
 /// Headers that make a request look like the panel's own AJAX call. The user
@@ -119,6 +135,17 @@ const STREAMSB_KEYS: Keys = Keys {
     stamp: Stamp::Clock,
 };
 
+/// Radio Paradise. A single flat object rather than a list, so `rows` is the
+/// body itself.
+const RADIOPARADISE_KEYS: Keys = Keys {
+    rows: "",
+    artist: "artist",
+    title: "title",
+    start: "",
+    art: "cover",
+    stamp: Stamp::Clock,
+};
+
 /// Recognised tracklist endpoints, tried in order against a station's stream
 /// host. laut.fm and SomaFM lead because both publish absolute stamps and need
 /// no configuration; the StreamSB panel is last and only carries wall clocks.
@@ -131,6 +158,7 @@ const SOURCES: &[Source] = &[
         keys: LAUT_KEYS,
         headers: &[],
         placeholder: &[],
+        depth: Depth::Full,
     },
     Source {
         host: "laut.fm",
@@ -140,6 +168,7 @@ const SOURCES: &[Source] = &[
         keys: LAUT_KEYS,
         headers: &[],
         placeholder: &[],
+        depth: Depth::Full,
     },
     Source {
         host: "somafm.com",
@@ -149,6 +178,22 @@ const SOURCES: &[Source] = &[
         keys: SOMAFM_KEYS,
         headers: &[],
         placeholder: &[],
+        depth: Depth::Full,
+    },
+    // A documented, key-less JSON API that answers on any host, so the channel
+    // lives in the `chan` parameter rather than in the slug. It publishes the
+    // track on air with its own cover, which no other source here does -- and
+    // only that one entry: `/api/history` and `/api/archive` both exist and both
+    // answer "Nothing to see here", so there is no list to take.
+    Source {
+        host: "radioparadise.com",
+        api: "api.radioparadise.com",
+        path: "/api/now_playing?chan=0",
+        slug: Slug::Host,
+        keys: RADIOPARADISE_KEYS,
+        headers: &[],
+        placeholder: &[],
+        depth: Depth::Now,
     },
     // Neither the station id nor the mount is derivable from the stream host
     // here: `Slug::Host` would yield "dancewave", but the panel keys its user
@@ -164,6 +209,7 @@ const SOURCES: &[Source] = &[
         keys: STREAMSB_KEYS,
         headers: BROWSER_HEADERS,
         placeholder: &["dancewave.online"],
+        depth: Depth::Full,
     },
 ];
 
@@ -195,7 +241,10 @@ pub async fn fetch(
         let url = expand(src, &host, parsed.path(), id);
         match get(client, &url, src.headers).await {
             Ok(body) => {
-                let list = build(&body, &src.keys, now);
+                let list = match src.depth {
+                    Depth::Full => build(&body, &src.keys, now),
+                    Depth::Now => build_now(&body, &src.keys, now),
+                };
                 // A refused request still parses: the placeholder is a
                 // well-formed single-row list, so without this the panel's
                 // "listen on our website" notice would be accepted as the
@@ -334,13 +383,37 @@ pub fn client() -> &'static reqwest::Client {
 /// knowing the station's timezone, which is the whole point: a wall clock alone
 /// cannot be converted correctly, but it never needs to be.
 fn build(body: &str, keys: &Keys, now: i64) -> RadioTracklist {
+    build_at(body, keys, now, Depth::Full)
+}
+
+/// The same parse, for a source that publishes only what is on air.
+///
+/// A single flat object rather than a list, so it is read as one row and
+/// anchored at `now` like the head of any list. Kept a separate entry point
+/// rather than a flag on `Keys` because `Keys` describes where fields are and
+/// this describes how much there is -- two different questions, and the walk in
+/// [`build`] must not be handed a row it will try to walk backwards from.
+fn build_now(body: &str, keys: &Keys, now: i64) -> RadioTracklist {
+    build_at(body, keys, now, Depth::Now)
+}
+
+fn build_at(body: &str, keys: &Keys, now: i64, depth: Depth) -> RadioTracklist {
     let Ok(json) = serde_json::from_str::<Value>(&scrub_surrogates(body)) else {
         return RadioTracklist {
             at_time: now,
             ..Default::default()
         };
     };
-    let Some(items) = dig(&json, keys.rows).and_then(Value::as_array) else {
+    // A `Now` source's body is the entry itself. Wrapping it is what lets one
+    // parse handle both shapes without a second reader per source.
+    let wrapped;
+    let body = if depth == Depth::Now {
+        wrapped = serde_json::json!([json]);
+        &wrapped
+    } else {
+        &json
+    };
+    let Some(items) = dig(body, keys.rows).and_then(Value::as_array) else {
         return RadioTracklist {
             at_time: now,
             ..Default::default()
@@ -776,6 +849,64 @@ mod tests {
         let body = r#"{"songs":[{"title":"A","artist":"X","date":"1790434286"}]}"#;
         let list = build(body, &SOMAFM_KEYS, 1_790_440_000);
         assert_eq!(list.tracks[0].start, Some(1_790_434_286));
+    }
+
+    /// Trimmed from a live `api.radioparadise.com` response.
+    const PARADISE: &str = r#"{"time":171,"artist":"Ezra Collective",
+     "title":"Well Organised (feat. Lila Iké)","album":"Well Organised",
+     "year":"2026","cover":"https://img.radioparadise.com/covers/l/30662.jpg",
+     "cover_med":"https://img.radioparadise.com/covers/m/30662.jpg"}"#;
+
+    /// A source that publishes one entry parses as one entry, with its own cover
+    /// and anchored at the fetch clock.
+    ///
+    /// The body is a flat object, not a list, and there is no date or time of
+    /// any kind in it -- so it cannot go through the list walk, which would
+    /// either find no rows or try to walk backwards from a timestamp that is
+    /// not there. Wrapping it as a single row is what makes one parser serve
+    /// both shapes.
+    #[test]
+    fn a_now_source_parses_as_one_row() {
+        let now = 1_790_440_000;
+        let list = build_now(PARADISE, &RADIOPARADISE_KEYS, now);
+        assert_eq!(list.tracks.len(), 1, "{list:?}");
+        assert_eq!(list.tracks[0].artist, "Ezra Collective");
+        assert_eq!(list.tracks[0].title, "Well Organised (feat. Lila Iké)");
+        // The one thing this source has that no other entry does.
+        assert_eq!(
+            list.tracks[0].art.as_deref(),
+            Some("https://img.radioparadise.com/covers/l/30662.jpg")
+        );
+        assert_eq!(list.tracks[0].start, Some(now), "not anchored at now");
+        assert_eq!(list.at, 0);
+        assert_eq!(list.at_time, now);
+    }
+
+    #[test]
+    fn a_now_source_survives_a_bad_body() {
+        for body in ["", "null", "<html/>", "{}"] {
+            let list = build_now(body, &RADIOPARADISE_KEYS, 1);
+            assert!(list.tracks.is_empty(), "invented a track from {body:?}");
+        }
+    }
+
+    /// The registry must not claim a history it cannot deliver.
+    #[test]
+    fn only_publishing_sources_are_marked_full() {
+        for src in SOURCES {
+            let list = match src.depth {
+                Depth::Full => build("[]", &src.keys, 1),
+                Depth::Now => build_now("{}", &src.keys, 1),
+            };
+            assert!(
+                list.tracks.is_empty(),
+                "the empty fixture parsed for {src:?}"
+            );
+        }
+        assert!(
+            SOURCES.iter().any(|s| s.host == "radioparadise.com"),
+            "radio paradise fell out of the registry"
+        );
     }
 
     #[test]

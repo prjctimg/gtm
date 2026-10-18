@@ -1486,6 +1486,26 @@ pub struct Radio<'a> {
 }
 
 impl<'a> Radio<'a> {
+    /// Cover art for a named track, as base64.
+    ///
+    /// Stations publish no artwork, so previewing a row means looking the name
+    /// up. `None` is the common answer and not an error: a track the catalog
+    /// does not have leaves the caller drawing a placeholder.
+    pub async fn track_cover(&self, artist: &str, title: &str) -> Result<Option<String>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::RadioTrackCover {
+                artist: artist.into(),
+                title: title.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::RadioTrackCoverRes { data } => Ok(data),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
     pub async fn search(&self, query: &str, limit: u16) -> Result<Vec<RadioStation>> {
         let res = self
             .client

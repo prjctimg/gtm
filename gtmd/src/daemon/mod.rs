@@ -3606,6 +3606,11 @@ impl Daemon {
                 source_id,
                 chart_id,
             } => Charts::sleeve(inner, source_id.clone(), chart_id.clone()).await,
+            DaemonReq::RadioTrackCover { artist, title } => {
+                let hit = Cover::named_track_cover(inner, artist, title).await;
+                let data = hit.map(|b| base64::engine::general_purpose::STANDARD.encode(&b));
+                Ok(DaemonRes::RadioTrackCoverRes { data })
+            }
             DaemonReq::LastfmSetConfig {
                 enabled,
                 api_key,

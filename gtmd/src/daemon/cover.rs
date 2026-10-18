@@ -331,6 +331,31 @@ impl Cover {
     /// Every step caches, so only the first call for a given track or station
     /// touches the network. All of them resolve to `None` rather than
     /// erroring, leaving the caller to render the placeholder glyph.
+    /// Cover art for a named track, from the same cached Deezer search that
+    /// every other track cover uses.
+    ///
+    /// Needed because a station's tracklist publishes no artwork at all, so the
+    /// only thing to go on when previewing a row is the row's name.
+    pub(crate) async fn named_track_cover(
+        inner: &DaemonInner,
+        artist: &str,
+        title: &str,
+    ) -> Option<Vec<u8>> {
+        if artist.trim().is_empty() && title.trim().is_empty() {
+            return None;
+        }
+        let query = format!("{artist} - {title}");
+        let provider = inner.effective_cover_provider().await;
+        let mut guard = inner.cover_cache().await;
+        let cache = guard.as_mut()?;
+        match tokio::time::timeout(Duration::from_secs(5), cache.get_text(&query, provider)).await {
+            Ok(hit) => hit.map(|c| c.data),
+            // A lookup that hangs is a row with no artwork, not a stalled
+            // daemon: the caller draws the placeholder and carries on.
+            Err(_) => None,
+        }
+    }
+
     pub(crate) async fn radio_cover(inner: &DaemonInner, uuid: &str) -> Option<Vec<u8>> {
         if let Some(bytes) = Self::track_cover(inner).await {
             return Some(bytes);

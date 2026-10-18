@@ -404,6 +404,15 @@ pub struct App {
     /// Whether the welcome pane is shown at launch. Mirrors the config so `H`
     /// on the pane can clear it without going through a settings round trip.
     pub(crate) show_welcome: bool,
+    /// Cover for the track the station plays next, and its protocol.
+    ///
+    /// Its own slot rather than the now playing pane's because that one is
+    /// showing the on-air row's artwork, which is a different track. Latched by
+    /// query so holding the tracklist open does not re-ask every frame.
+    pub(crate) up_next_cover: Option<Vec<u8>>,
+    pub(crate) up_next_cover_stateful: Option<StatefulProtocol>,
+    pub(crate) up_next_cover_query: Option<String>,
+    pub(crate) up_next_cover_slot: FetchSlot<String>,
     /// Whether the daemon should resume playing at startup. Read by the daemon
     /// from the same config file; held here so the settings row can flip it.
     pub(crate) resume_on_start: bool,
@@ -818,6 +827,13 @@ pub(crate) enum IpcResult {
     ChartSleeve {
         chart_id: String,
         cover: Option<String>,
+    },
+    /// Cover for the track the station plays next, tagged with the query it was
+    /// asked for so a reply that raced the station changing its mind can be
+    /// dropped instead of drawn under the wrong track.
+    UpNextCover {
+        query: String,
+        data: Option<Vec<u8>>,
     },
     ChartTracksLoaded(Vec<crate::shared::chart::ChartTrack>),
     ChartsSources(Vec<crate::shared::chart::ChartSource>),
@@ -1398,6 +1414,10 @@ impl App {
             daydreaming: false,
             daydream_secs: DEFAULT_DAYDREAM_SECS,
             preview_delay_secs: default_preview_delay_secs(),
+            up_next_cover: None,
+            up_next_cover_stateful: None,
+            up_next_cover_query: None,
+            up_next_cover_slot: FetchSlot::default(),
             show_welcome: prefs.show_welcome,
             resume_on_start: prefs.resume_on_start,
             preview_hover: None,

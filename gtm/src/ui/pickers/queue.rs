@@ -233,6 +233,64 @@ impl Pickers {
             app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
         }
         f.render_widget(Paragraph::new(lines), inner);
+
+        // A sleeve for what plays next, in the slack under the list.
+        //
+        // The on-air row needs no artwork: it already has the one the now
+        // playing pane is showing. The row *after* it is the one with nothing --
+        // a station publishes no artwork, so the only way to know what the next
+        // cover will be is to look the name up. Drawing it under the list costs
+        // no row from the list itself, which is why this is in the slack rather
+        // than in a column beside the rows.
+        let next = app
+            .state
+            .radio_tracks
+            .tracks
+            .get(on_air + 1)
+            .map(|t| t.query());
+        app.fetch_up_next_cover();
+        let Some(next) = next else { return };
+        let Some(art) = app.up_next_cover_stateful.as_mut() else {
+            return;
+        };
+        let strip_h = 10u16.min(inner.height.saturating_sub(total as u16));
+        if strip_h < 4 {
+            return;
+        }
+        let y = inner.y + inner.height.saturating_sub(strip_h);
+        // Two cells wide per row of art, so a sleeve of `strip_h` rows is also
+        // `strip_h * 2` columns and reads as a square.
+        let art_w = (strip_h * 2).min(inner.width.saturating_sub(4));
+        let art_h = (art_w / 2).min(strip_h - 2);
+        if art_h == 0 || art_w == 0 {
+            return;
+        }
+        let art_rect = Rect {
+            x: inner.x + inner.width.saturating_sub(art_w) / 2,
+            y,
+            width: art_w,
+            height: art_h,
+        };
+        Render::cover(
+            f,
+            art_rect,
+            Some(art),
+            app.up_next_cover.as_deref(),
+            app.theme.fg_dim,
+            None,
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  next: {next}"),
+                Style::default().fg(app.theme.fg_dim),
+            ))),
+            Rect {
+                x: inner.x,
+                y: y + art_h,
+                width: inner.width,
+                height: 1,
+            },
+        );
     }
 
     pub(crate) fn render_preview(f: &mut ratatui::Frame, area: Rect, app: &mut App, idx: usize) {
