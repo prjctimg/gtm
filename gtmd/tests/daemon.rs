@@ -193,7 +193,10 @@ async fn pulse_frame(stream: &mut UnixStream) -> Vec<DaemonEvent> {
         .await
         .expect("pulse frame truncated")
         .expect("pulse frame body");
-    let (events, _) = wire::decode(&body)
+    let mut framed = Vec::with_capacity(4 + len);
+    framed.extend_from_slice(&head);
+    framed.extend_from_slice(&body);
+    let (events, _) = wire::decode(&framed)
         .expect("pulse frame decode")
         .expect("pulse frame present");
     events
