@@ -4716,9 +4716,7 @@ impl Daemon {
         // A new song on the same station: same path, new art. The track start
         // fired once, when the station did, so without this the per-song
         // palette would never be pushed at all.
-        if has_title
-            && let Some(track) = track
-        {
+        if has_title && let Some(track) = track {
             Self::push_art(inner, &track);
         }
         if from_icy {
