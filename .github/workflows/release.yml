@@ -666,8 +666,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" \
-            -X PATCH -f draft=false >/dev/null || \
+          # `releases/tags/nightly` is GET-only; the old PATCH against it 404'd
+          # on every run and the `|| echo` hid it. `gh release edit` looks the
+          # numeric id up first, which is what the REST API wants.
+          gh release edit nightly --draft=false || \
             echo "::warning::could not un-draft nightly release"
 
   bench:
