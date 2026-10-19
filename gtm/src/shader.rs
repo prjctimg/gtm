@@ -19,6 +19,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 
 use bytemuck::{Pod, Zeroable};
 use image::RgbaImage;
+use tracing::warn;
 use wgpu::util::DeviceExt;
 
 /// Rows per second the heat climbs. Scaled by the frame delta, so a
@@ -179,10 +180,27 @@ struct Uniforms {
     band_count: u32,
     band_width: u32,
     bands: [[f32; 4]; 16],
-    /// `wave_count` then three words of padding: the array below is a fixed
-    /// size, so the count cannot sit inside it.
+    /// `wave_count` then padding: the array below is a fixed size, so the count
+    /// cannot sit inside it.
+    ///
+    /// Seven words, not three, and that number is not a guess. The WGSL side
+    /// writes `_pad4: vec3<u32>`, which is 12 bytes of data with a *16-byte
+    /// alignment*: it cannot start until 16-byte padding has carried `wave_count`
+    /// from offset 304 up to 320, so it occupies 320..332, and `wave` — itself
+    /// 16-aligned — then begins at 336 rather than 320. Three `u32`s put `wave`
+    /// 16 bytes early, `stereo` and the three ramp colours all drift with it, and
+    /// the struct finishes at 640 where the shader expects 656.
+    ///
+    /// wgpu checks that at draw time and panics, and it did: the buffer was
+    /// "bound with size 640 where the shader expects 656". It only ever reached
+    /// a draw when the preset had a shader, which is why it sat latent behind a
+    /// cell-rendered default and then appeared the moment the default changed.
+    ///
+    /// [`UNIFORM_BYTES`] pins the total, and `Shader::new` compares it against
+    /// what the shader module actually declares, so the next drift is a log line
+    /// and a fallback rather than a crash.
     wave_count: u32,
-    pad2: [u32; 3],
+    pad2: [u32; 7],
     wave: [[f32; 4]; WAVE / 4],
     /// Left/right level and left/right peak.
     stereo: [f32; 4],
@@ -214,7 +232,7 @@ impl Uniforms {
             // capping after let a full buffer report twice what it held and the
             // sampler read past the end.
             wave_count: ((job.wave_count as usize).min(WAVE / 2) & !1) as u32,
-            pad2: [0; 3],
+            pad2: [0; 7],
             wave: std::array::from_fn(|i| pack(&job.wave, i)),
             stereo: job.stereo,
             cool: pad(job.cool),
@@ -587,6 +605,13 @@ impl Shader {
         }))
         .ok()?;
 
+        // Before a device, even: an adapter is cheap to ask for and the size
+        // check does not need one. Getting this wrong is a panic on first draw,
+        // and the one thing a visualizer must never do is take the process down.
+        if !uniform_size_matches_shader() {
+            return None;
+        }
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("gtm visualizer"),
             required_features: wgpu::Features::empty(),
@@ -708,6 +733,134 @@ impl std::fmt::Debug for Shader {
     }
 }
 
+/// The size the shader module actually declares for the `Uniforms` binding.
+///
+/// Parsed with naga, which wgpu already links, so this asks the same module the
+/// pipeline is built from rather than a second copy of the text.
+///
+/// `None` when the module does not parse or has no uniform block, which is a
+/// shader problem the pipeline creation will report on its own.
+fn shader_uniform_bytes(source: &str) -> Option<u64> {
+    let module = naga::front::wgsl::parse_str(source).ok()?;
+    let (_, global) = module
+        .global_variables
+        .iter()
+        .find(|(_, g)| g.space == naga::AddressSpace::Uniform)?;
+    let gctx = module.to_ctx();
+    let ty = &module.types[global.ty];
+    let naga::TypeInner::Struct { members, .. } = &ty.inner else {
+        return None;
+    };
+    // The struct's size is the end of its last member: a trailing pad member is
+    // the usual way that runs past the data.
+    let last = members.last()?;
+    let size = module.types[last.ty].inner.size(gctx);
+    Some(last.offset as u64 + size as u64)
+}
+
+/// Whether the Rust block and every shader's block agree on size.
+///
+/// Checked once per device rather than per draw, and checked at all because the
+/// failure mode without it is a panic: wgpu validates a bind group at draw time
+/// and aborts the process when the buffer is smaller than the shader reads. A
+/// `wgpu::Error` escaping that way takes the whole TUI with it, and the only
+/// thing the user sees is a crash on first paint.
+///
+/// Returns `false` when any preset disagrees, and the caller falls back to the
+/// cell renderer, which is slower and looks different and always works.
+fn uniform_size_matches_shader() -> bool {
+    let rust = std::mem::size_of::<Uniforms>() as u64;
+    for preset in Preset::ALL {
+        let want = shader_uniform_bytes(&preset.source());
+        match want {
+            Some(got) if got == rust => {}
+            Some(got) => {
+                warn!(
+                    "shader uniform size mismatch: Rust block is {rust} bytes, \
+                     {} declares {got}; falling back to the cell renderer",
+                    preset.name()
+                );
+                return false;
+            }
+            None => {
+                warn!(
+                    "could not read the uniform size out of {}; \
+                     falling back to the cell renderer",
+                    preset.name()
+                );
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Bytes the uniform block occupies.
+///
+/// The WGSL side is the authority and the number here has to match it exactly:
+/// `common.wgsl.inc` lays the fields out the same way and the two disagree at
+/// the user's expense, not the shader's, when they drift.
+pub const UNIFORM_BYTES: usize = 656;
+
 /// The uniform block is `Pod` only because every field has an explicit type
 /// here; a 16-byte multiple keeps it inside the address space's rules.
 const _: () = assert!(std::mem::size_of::<Uniforms>().is_multiple_of(16));
+
+/// And it has to be exactly as big as the shader says it is.
+///
+/// This is the check that would have caught the 640-vs-656 drift at compile
+/// time. It cannot compare against the WGSL — that is parsed at runtime — so it
+/// pins the number the WGSL is known to produce, and
+/// `uniform_size_matches_shader` re-checks it against the parsed module once a
+/// device exists.
+const _: () = assert!(std::mem::size_of::<Uniforms>() == UNIFORM_BYTES);
+
+#[cfg(all(test, feature = "shader-viz"))]
+mod uniform_layout_tests {
+    use super::{Preset, UNIFORM_BYTES, shader_uniform_bytes, uniform_size_matches_shader};
+    use std::mem::size_of;
+
+    /// The Rust block is exactly as big as the shader says.
+    ///
+    /// The regression: the WGSL writes its padding as a `vec3<u32>`, which is
+    /// 12 bytes of data with a 16-byte alignment, so it pushes `wave` 16 bytes
+    /// further along than the Rust side's three `u32`s put it. The block came
+    /// out 640 where the shader expected 656, and wgpu turned that mismatch into
+    /// a panic on the first draw — the crash this replaced.
+    #[test]
+    fn the_rust_block_matches_every_shader() {
+        assert_eq!(size_of::<super::Uniforms>(), UNIFORM_BYTES);
+        assert!(
+            uniform_size_matches_shader(),
+            "a shader and the Rust uniform block disagree; the device is refused \\
+             and the pane falls back to cells, but that is a regression"
+        );
+    }
+
+    /// Reported per preset, so a failure names which one drifted.
+    #[test]
+    fn each_preset_declares_the_pinned_size() {
+        for preset in Preset::ALL {
+            assert_eq!(
+                shader_uniform_bytes(&preset.source()),
+                Some(UNIFORM_BYTES as u64),
+                "{} declares a different uniform size",
+                preset.name()
+            );
+        }
+    }
+
+    /// A shader with no uniform block is a miss, not a silent pass.
+    ///
+    /// `None` means the check could not confirm anything, and treating that as
+    /// agreement is how a broken shader would come back as a crash later.
+    #[test]
+    fn a_module_without_a_uniform_block_reads_as_none() {
+        assert_eq!(
+            shader_uniform_bytes(
+                "@fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(0.0); }"
+            ),
+            None
+        );
+    }
+}

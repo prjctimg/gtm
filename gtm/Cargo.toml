@@ -24,7 +24,7 @@ pulseaudio = ["dep:pulseaudio"]
 # GPU visualizer backend. `wgpu` is the heaviest dependency this crate can
 # take; it is behind a feature so `--no-default-features` and the daemon's
 # build never compile it.
-shader-viz = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+shader-viz = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:naga"]
 # Test/debug helper that forces IPC failures (tripwire).
 debug-fail = ["dep:rustc-hash"]
 
@@ -44,6 +44,10 @@ image = "0.25"
 # `wgpu`/`pollster`/`bytemuck` are only pulled in by the `shader-viz` feature.
 wgpu = { version = "30", optional = true, default-features = false, features = ["wgsl", "vulkan", "gles", "metal", "dx12"] }
 pollster = { version = "0.4", optional = true }
+# Pinned to wgpu's own naga so the uniform block is read out of the same
+# parser the pipeline is compiled with. Already in the binary through wgpu, so
+# this costs no additional code.
+naga = { version = "30", optional = true, features = ["wgsl-in"] }
 bytemuck = { version = "1", optional = true, features = ["derive"] }
 color-thief = "0.2"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"] }
