@@ -5,9 +5,6 @@
 [![Crates.io downloads](https://img.shields.io/crates/d/gtm)](https://crates.io/crates/gtm)
 [![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
 [![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm/ci.yml?label=CI)](https://github.com/prjctimg/gtm/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/prjctimg/gtm)](https://github.com/prjctimg/gtm/blob/main/LICENSE)
-
-
 
 ![](./screenshots/1.png)
 
