@@ -59,7 +59,7 @@ fn source_marker(app: &App) -> Option<Span<'static>> {
     }
     let glyph = crate::ui::icons::source_icon(source, &app.icon_style)?;
     Some(Span::styled(
-        format!(" {glyph}"),
+        format!("{glyph} "),
         Style::default().fg(app.theme.fg_dim),
     ))
 }
@@ -318,9 +318,15 @@ impl Render {
                 track.artist.clone(),
                 Style::default().fg(app.theme.fg),
             )];
-            // Same marker as the now-playing panel, so the answer to "where is
-            // this coming from" does not depend on which surface is open.
-            spans.extend(source_marker(app));
+            // Same marker as the now-playing panel: it leads the artist so it
+            // is always visible instead of trailing the end of a scrolling line.
+            if let Some(marker) = source_marker(app) {
+                spans.push(marker);
+            }
+            spans.extend(vec![Span::styled(
+                track.artist.clone(),
+                Style::default().fg(app.theme.fg),
+            )]);
             spans
         }))
         .alignment(Alignment::Center);
@@ -1088,11 +1094,14 @@ impl Render {
                             .as_ref()
                             .map_or(0, |m| Line::from(m.content.as_ref()).width()),
                     );
-                    let mut artist_spans = vec![Span::styled(
+                    let mut artist_spans: Vec<Span<'static>> = Vec::with_capacity(2);
+                    if let Some(marker) = marker {
+                        artist_spans.push(marker);
+                    }
+                    artist_spans.push(Span::styled(
                         scroll_text(&display_artist, label_w, app.np_title_scroll, true),
                         Style::default().fg(app.theme.fg_bright),
-                    )];
-                    artist_spans.extend(marker);
+                    ));
                     let artist_para = Paragraph::new(Line::from(artist_spans));
                     f.render_widget(artist_para, info_chunks[1]);
 
@@ -1165,11 +1174,14 @@ impl Render {
                                 .add_modifier(Modifier::BOLD),
                         )]),
                         Line::from({
-                            let mut spans = vec![Span::styled(
+                            let mut spans: Vec<Span<'static>> = Vec::with_capacity(2);
+                            if let Some(marker) = source_marker(app) {
+                                spans.push(marker);
+                            }
+                            spans.push(Span::styled(
                                 display_artist,
                                 Style::default().fg(app.theme.fg_bright),
-                            )];
-                            spans.extend(source_marker(app));
+                            ));
                             spans
                         }),
                     ];
