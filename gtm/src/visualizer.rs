@@ -18,6 +18,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
+use tracing::warn;
 
 use crate::theme::{AppTheme, blend_colors};
 
@@ -74,16 +75,54 @@ impl VisualizerPreset {
     /// Separate from [`Self::all`] so the tolerant read a config file goes
     /// through is the same resolution the picker uses, and there is only ever
     /// one list of what a name can mean.
+    ///
+    /// A removed name is warned about rather than remapped quietly. The value
+    /// has to keep resolving — see the `Deserialize` impl for why a failure
+    /// there costs the whole config file — but a setting the user chose
+    /// changing with nothing said is worse than one that visibly reset, so the
+    /// old name and the new value both go to the log.
     pub fn from_name(name: &str) -> Self {
-        match name.trim().to_lowercase().as_str() {
+        let key = name.trim().to_lowercase();
+        match key.as_str() {
             "mirror" => Self::Mirror,
             "gradient" => Self::Gradient,
             "wave" => Self::Wave,
             "stereo" => Self::Stereo,
             "flame" => Self::Flame,
-            _ => Self::default(),
+            other => {
+                let known = Self::REMOVED.iter().any(|(old, _)| *old == other);
+                let gone = other.chars().next().is_some_and(char::is_alphabetic);
+                if known && gone {
+                    warn!(
+                        "visualizer_preset = \"{other}\" was removed; using {} instead",
+                        Self::default().name()
+                    );
+                }
+                Self::default()
+            }
         }
     }
+
+    /// Names this build no longer accepts, and what replaced each.
+    ///
+    /// Kept so the deprecation can name the value rather than just complain,
+    /// and so a test can assert that every name here is genuinely gone rather
+    /// than a typo for something that still works.
+    pub const REMOVED: &'static [(&'static str, &'static str)] = &[
+        ("braille", "mirror"),
+        ("blocks", "mirror"),
+        ("spectrum", "mirror"),
+        ("barsdot", "mirror"),
+        ("classicpeak", "mirror"),
+        ("columns", "mirror"),
+        ("retro", "mirror"),
+        // The four progress-bar styles are gone from `config.toml` outright,
+        // listed here only so the log can explain a key that now does nothing.
+        ("seekhead", "the gpu progress bar"),
+        ("classic", "the gpu progress bar"),
+        ("dots", "the gpu progress bar"),
+        ("truegradient", "the gpu progress bar"),
+    ];
 
     pub fn next(&self) -> VisualizerPreset {
         let all = Self::all();
@@ -1224,6 +1263,52 @@ mod tests {
                 "{p:?} has no shader"
             );
         }
+    }
+
+    /// Every removed name is genuinely gone.
+    ///
+    /// The list is what the deprecation log reads, so a typo in it would tell a
+    /// user their working setting was removed. It is checked against the live
+    /// table rather than trusted.
+    #[test]
+    fn every_removed_name_really_is_removed() {
+        for (old, _) in VisualizerPreset::REMOVED {
+            assert_eq!(
+                VisualizerPreset::from_name(old),
+                VisualizerPreset::default(),
+                "{old} still resolves to a preset of its own"
+            );
+            // And no removed name collides with a live one, in either case.
+            assert!(
+                !VisualizerPreset::all()
+                    .iter()
+                    .any(|p| p.name().eq_ignore_ascii_case(old)),
+                "{old} is in both the live set and the removed set"
+            );
+        }
+    }
+
+    /// The list does not grow by accident, and keeps the four progress styles
+    /// documented here even though they live in a different config field.
+    #[test]
+    fn the_removed_set_is_the_one_that_went() {
+        let names: Vec<&str> = VisualizerPreset::REMOVED.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            names,
+            vec![
+                "braille",
+                "blocks",
+                "spectrum",
+                "barsdot",
+                "classicpeak",
+                "columns",
+                "retro",
+                "seekhead",
+                "classic",
+                "dots",
+                "truegradient",
+            ]
+        );
     }
 
     #[test]

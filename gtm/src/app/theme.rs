@@ -23,10 +23,6 @@ impl App {
                 .get(self.footer_preset)
                 .map(|p| p.name.to_string())
                 .unwrap_or_else(default_preset_name),
-            // The progress style is no longer a choice, so nothing is carried
-            // over from the running app; the field stays only to keep an old
-            // config parseable.
-            progress_style: None,
             visualizer_preset: self.visualizer.preset,
             daydream_secs: self.daydream_secs,
             extensions: self.extensions.clone(),
@@ -43,7 +39,6 @@ impl App {
             // the prefs must not silently reset the user's choice.
             footer_key_action: self.footer_key_action,
             cover_provider: self.cover_provider.clone(),
-            cover_cache_mb: self.cover_cache_mb,
             discord_id: self.discord_id.clone(),
             auto_fetch_lyrics: self.auto_fetch_lyrics,
             icon_style: self.icon_style.clone(),

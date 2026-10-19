@@ -559,14 +559,6 @@ pub struct SavedState {
     /// Playback position (seconds) into `current_track` at last save.
     #[serde(default)]
     pub time_pos: f64,
-    /// Whether playback was active (vs paused) at save time.
-    ///
-    /// Recorded, and no longer acted on. `apply_to` used to turn this straight
-    /// into `Playing`, which meant the machine started up mid-song with nothing
-    /// decoding; whether to actually play is now `resume_on_start` in
-    /// config.toml, read by the daemon. Kept so an old state file still parses.
-    #[serde(default)]
-    pub resume: bool,
 }
 
 impl SavedState {
@@ -587,7 +579,6 @@ impl SavedState {
             current_track: state.current_track.clone(),
             source: state.source.clone(),
             time_pos: state.time_pos,
-            resume: state.status == PlaybackStatus::Playing,
         }
     }
 

@@ -73,7 +73,7 @@ impl App {
 
     /// Check if config.toml was modified since last load; if so, re-parse
     /// and apply hot-reloadable settings (theme, transparent_bg,
-    /// progress_style, visualizer_preset, keybindings).
+    /// visualizer_preset, keybindings).
     pub(crate) fn check_config_reload(&mut self) {
         let path = prefs_path();
         let mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {

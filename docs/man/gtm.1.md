@@ -422,10 +422,17 @@ daemon and prints the result. Use **\--json** for machine-readable output.
     discarded and defaults are used, silently. Validate before relying on a
     hand-edited file.
 
-    `progress_style` and the removed `visualizer_preset` names are still
-    accepted and ignored rather than rejected. Both are read leniently so a
-    config naming a style this build no longer has loads with everything else
-    in it intact, instead of being discarded whole.
+    Keys this build no longer has are ignored, and a key it still has but with
+    values it dropped is resolved to the default and logged rather than
+    rejected. `visualizer_preset` is the one such key: `braille`, `blocks`,
+    `spectrum`, `barsdot`, `classicpeak`, `columns` and `retro` were removed
+    when the presets without a shader went, and reading one logs the name and
+    the value used instead.
+
+    The alternative — erroring — was rejected deliberately. A config file that
+    fails to parse is discarded whole, so one stale key costs the queue, the
+    volume, the EQ and the resume position. A visualizer preset costs nothing
+    and is visible immediately.
 
 **sleep-timer** *minutes*
 :   Set the sleep timer (minutes until playback fades out and stops).

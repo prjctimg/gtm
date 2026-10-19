@@ -517,7 +517,6 @@ pub struct App {
     /// persisted in config.toml and consumed by the daemon for cover lookups.
     pub cover_provider: String,
     /// On-disk cover cache budget in MiB, pushed to the daemon on change.
-    pub cover_cache_mb: u64,
     /// Discord application id for Rich Presence; the Setup chooser edits it.
     pub discord_id: Option<String>,
     /// Last reported cover cache disk usage in bytes.
@@ -1516,7 +1515,6 @@ impl App {
             footer_key_action: prefs.footer_key_action,
             audio_devices: Vec::new(),
             cover_provider: prefs.cover_provider.clone(),
-            cover_cache_mb: prefs.cover_cache_mb,
             discord_id: prefs.discord_id.clone(),
             cover_cache_bytes: 0,
             auto_fetch_lyrics: prefs.auto_fetch_lyrics,

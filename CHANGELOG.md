@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **The client crashed on the first GPU visualizer frame.** The uniform block
+  the Rust side wrote and the one the WGSL declared disagreed by 16 bytes: the
+  shader pads with a `vec3<u32>`, which is 12 bytes of data on a 16-byte
+  alignment, so it pushed `wave` further along than three `u32`s put it. wgpu
+  validates that at draw time and aborts, so every shader preset took the
+  process down on first paint.
+  It had been latent behind a cell-rendered default preset; removing the
+  presets without a shader made `Mirror` the default and turned it into a
+  crash on every launch.
+- **A uniform/shader size mismatch now falls back instead of panicking.** The
+  Rust block is parsed against the shader module — with naga, the same parser
+  the pipeline is built from — and a device is refused if they disagree. The
+  pane draws with cells instead. The layout is also pinned at compile time.
+
+### Changed
+- **A removed `visualizer_preset` is logged, not silently remapped.** The value
+  and what replaced it both go to the log. It still resolves, because a config
+  file that fails to parse is discarded whole and one stale key would take the
+  queue, volume, EQ and resume position with it.
+
+### Removed
+- **`progress_style`** from `config.toml`. The bar is one shader now, so there
+  was nothing left to choose. The key is ignored rather than rejected.
+- **`cover_cache_mb` from the client's copy of the config.** It was carried
+  through `Prefs` into `App` and never read; the daemon reads its own copy from
+  `config.toml` directly, which is unchanged.
+- **`resume` from the saved state file.** Recorded at save time and never acted
+  on since `resume_on_start` took over deciding whether to play.
+
 ## [0.2.94] - 2026-10-18
 
 ### Added

@@ -81,12 +81,6 @@ pub struct Prefs {
     pub(crate) reactive_theme_intensity: f32,
     #[serde(default = "default_preset_name")]
     pub(crate) footer_preset_name: String,
-    /// The progress bar style, kept only so a config that names one still
-    /// parses. There is one look now — a shader — so there is nothing to read
-    /// it into. `VisualizerPreset` does the same thing for the same reason.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[allow(dead_code, reason = "read only so an old config parses; never used")]
-    pub(crate) progress_style: Option<String>,
     #[serde(default)]
     pub(crate) visualizer_preset: VisualizerPreset,
     /// Seconds of keyboard, paste or mouse inactivity before the visualizer
@@ -111,8 +105,6 @@ pub struct Prefs {
     pub(crate) footer_key_action: FooterKeyAction,
     #[serde(default = "default_cover_provider")]
     pub(crate) cover_provider: String,
-    #[serde(default = "cover_cache_mb")]
-    pub(crate) cover_cache_mb: u64,
     /// Discord application id for Rich Presence, written by the Setup form.
     /// `None` disables presence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,10 +157,6 @@ pub(crate) fn default_true() -> bool {
 
 pub(crate) fn default_cover_provider() -> String {
     "auto".into()
-}
-
-pub(crate) fn cover_cache_mb() -> u64 {
-    512
 }
 
 /// Seconds of inactivity before the visualizer takes over. Long enough to be an
@@ -280,7 +268,6 @@ impl Default for Prefs {
             reactive_theme: true,
             reactive_theme_intensity: default_reactive_intensity(),
             footer_preset_name: default_preset_name(),
-            progress_style: None,
             visualizer_preset: VisualizerPreset::default(),
             daydream_secs: DEFAULT_DAYDREAM_SECS,
             extensions: ExtensionsConfig::default(),
@@ -291,7 +278,6 @@ impl Default for Prefs {
             notification_modes: default_notification_modes(),
             footer_key_action: FooterKeyAction::default(),
             cover_provider: default_cover_provider(),
-            cover_cache_mb: cover_cache_mb(),
             discord_id: None,
             auto_fetch_lyrics: default_fetch_lyrics(),
             icon_style: default_icon_style(),
