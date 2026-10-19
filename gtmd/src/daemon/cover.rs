@@ -47,42 +47,39 @@ impl Cover {
         }) = res
             && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64)
         {
-            Self::push_palette(inner, track_id, path.as_deref(), bytes);
+            let want = match path.as_deref() {
+                Some(p) => live_title(inner, p).await,
+                None => None,
+            };
+            emit_palette(inner, track_id, path, want, bytes);
         }
         res
     }
 
-    /// Extract and broadcast the palette for the current track, given its art.
+    /// Resolve the art for the track on air with no client asking, and put its
+    /// palette on the wire.
     ///
-    /// Guarded on the request naming the track on air, because this runs for
-    /// whatever row the client asked about — a scroll through the library is a
-    /// dozen requests, and only one of them is the song playing. The other
-    /// eleven would each repaint the whole theme.
-    fn push_palette(inner: &DaemonInner, track_id: i64, path: Option<&str>, bytes: Vec<u8>) {
-        let state = inner.state.clone();
-        let events = inner.event_tx.clone();
-        let path = path.map(str::to_string);
-        tokio::task::spawn_blocking(move || {
-            let pal = gtm::shared::reactive::extract_palette(&bytes);
-            let (a, b, c) = pal.map_or_else(
-                || (String::new(), String::new(), String::new()),
-                |p| {
-                    use gtm::shared::reactive::to_hex;
-                    (to_hex(p.primary), to_hex(p.secondary), to_hex(p.tertiary))
-                },
-            );
-            // Read the current track after the decode, not before: a fast skip
-            // can finish first, and a palette for a track already left would
-            // repaint the UI in the wrong album's colors.
-            tokio::runtime::Handle::current().block_on(async {
-                let current = state.read().await;
-                let is_on_air = on_air(&current, track_id, path.as_deref());
-                drop(current);
-                if is_on_air {
-                    super::push_palette_pair(&events, a, b, c);
-                }
-            });
-        });
+    /// Runs on every track start and every song change on a stream: the palette
+    /// used to be owed to a client's cover request, and a client that never
+    /// sends one never sees a stream, a Spotify URI or a remote play tinted.
+    pub(crate) async fn push_art(inner: &DaemonInner, track: &TrackInfo) {
+        let want = live_title(inner, &track.path).await;
+        let path = track.path.clone();
+        let bytes = match Self::resolve(inner, track.id, Some(path.clone())).await {
+            Ok(DaemonRes::CoverArt { data: Some(b64) }) => {
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .unwrap_or_default()
+            }
+            // `resolve` reaches a station's art through the `radio://` prefix
+            // only, so a bare stream URL needs the tracklist route by hand;
+            // every other route the two already share.
+            _ if is_stream(&path) && !path.starts_with("radio://") => {
+                Self::track_cover(inner).await.unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        emit_palette(inner, track.id, Some(path), want, bytes);
     }
 
     async fn resolve(

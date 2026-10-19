@@ -19,7 +19,7 @@ use gtm::shared::ipc::{DaemonEvent, DaemonRes};
 use gtm::shared::spotify::{LIBRESPOT_CLIENT_ID, SpotifyTrack};
 use gtm::shared::track::TrackInfo;
 
-use crate::daemon::{Cmd, Daemon, DaemonInner, is_rate_limit};
+use crate::daemon::{Cmd, Daemon, DaemonInner, is_rate_limit, on_air};
 use crate::queue;
 
 use super::api::{access_token, like, playlist_add, resolve_uri, search};
@@ -885,8 +885,19 @@ impl Spotify {
             return;
         };
         let mut state = inner.state.write().await;
+        let mut hit = None;
         if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == uri) {
             entry.cover_path = Some(path.to_string_lossy().into_owned());
+            hit = Some(entry.clone());
+        }
+        drop(state);
+        // The art landed after `PlaybackStarted`, so whatever palette went out
+        // for this track went out without it — if this is the track on air,
+        // push the real one now rather than waiting for a skip to.
+        if let Some(entry) = hit
+            && on_air(&*inner.state.read().await, 0, Some(&entry.path))
+        {
+            Daemon::push_art(inner, &entry);
         }
     }
 

@@ -6,7 +6,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 use gtm::shared::global::PlaybackStatus;
-use gtm::shared::ipc::{DaemonReq, DaemonRes, LibraryAction, QueueAction, WireReq, WireRes};
+use gtm::shared::ipc::{
+    DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction, WireReq, WireRes,
+};
+use gtm::shared::wire;
 
 use gtm::shared::spotify::LIBRESPOT_CLIENT_ID;
 use gtmd::config::{DaemonArgs, DaemonConfig};
@@ -171,6 +174,29 @@ async fn connect(socket_path: &PathBuf) -> (TestReader, tokio::net::unix::OwnedW
     let writer = writer_half;
 
     (reader, writer)
+}
+
+/// Read one pulse frame and decode the events it carries.
+///
+/// The pulse socket speaks length-prefixed msgpack arrays, not the JSON
+/// envelopes the command socket answers with, so this is a second reader
+/// rather than something `TestReader` can be reused for.
+async fn pulse_frame(stream: &mut UnixStream) -> Vec<DaemonEvent> {
+    let mut head = [0u8; 4];
+    tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut head))
+        .await
+        .expect("no pulse frame arrived")
+        .expect("pulse frame header");
+    let len = u32::from_be_bytes(head) as usize;
+    let mut body = vec![0u8; len];
+    tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut body))
+        .await
+        .expect("pulse frame truncated")
+        .expect("pulse frame body");
+    let (events, _) = wire::decode(&body)
+        .expect("pulse frame decode")
+        .expect("pulse frame present");
+    events
 }
 
 #[tokio::test]
@@ -753,6 +779,134 @@ async fn spotify_cover_concurrency() {
             "unexpected error for a linked account: {res:?}"
         );
     }
+
+    handle.abort();
+    cleanup(&config);
+}
+
+/// A client connecting after the track started still gets its palette.
+///
+/// The editor plugin connects to the pulse socket on its own schedule, so a
+/// palette broadcast before that connection existed is gone unless the daemon
+/// kept it. This is the mid-track connect the theme never survived before.
+#[tokio::test]
+async fn late_pulse_client_gets_the_current_palette() {
+    let (handle, config) = daemon_handle().await;
+
+    let audio_dir = config.data_dir.join("audio");
+    std::fs::create_dir_all(&audio_dir).unwrap();
+    let wav = audio_dir.join("tinted.wav");
+    create_test_wav(&wav, 30.0);
+    // The sidecar the fast path extracts from: same stem, image extension.
+    std::fs::copy(fixture("cover.png"), audio_dir.join("tinted.png")).unwrap();
+    let path = wav.to_string_lossy().to_string();
+
+    let (mut reader, mut writer) = connect(&config.socket_path).await;
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::Queue {
+            action: QueueAction::Add {
+                paths: vec![path.clone()],
+                position: None,
+            },
+        },
+    )
+    .await;
+    assert!(matches!(res, DaemonRes::Ok));
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::Play {
+            path,
+            start_pos: 0.0,
+        },
+    )
+    .await;
+    assert!(matches!(res, DaemonRes::Ok));
+
+    // Connected only now, so nothing broadcast earlier can arrive on its own:
+    // the pair has to come from the daemon's cache. The sleep covers the
+    // blocking extraction `Play` does not wait for.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let pulse_path = PathBuf::from(&config.socket_pulse_path);
+    let mut pulse = UnixStream::connect(&pulse_path).await.unwrap();
+    let events = pulse_frame(&mut pulse).await;
+
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            DaemonEvent::ReactivePalette { primary, .. } if !primary.is_empty()
+        )),
+        "late client got no palette: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, DaemonEvent::ReactiveTheme(_))),
+        "the role set must ride the same frame as its palette: {events:?}"
+    );
+
+    handle.abort();
+    cleanup(&config);
+}
+
+/// A track with no art at all pushes the empty palette, so a client clears
+/// rather than keeping the previous track's colours.
+#[tokio::test]
+async fn late_pulse_client_is_told_there_is_no_palette() {
+    let (handle, config) = daemon_handle().await;
+
+    let audio_dir = config.data_dir.join("audio");
+    std::fs::create_dir_all(&audio_dir).unwrap();
+    let wav = audio_dir.join("bare.wav");
+    create_test_wav(&wav, 30.0);
+    let path = wav.to_string_lossy().to_string();
+
+    let (mut reader, mut writer) = connect(&config.socket_path).await;
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::Queue {
+            action: QueueAction::Add {
+                paths: vec![path.clone()],
+                position: None,
+            },
+        },
+    )
+    .await;
+    assert!(matches!(res, DaemonRes::Ok));
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::Play {
+            path,
+            start_pos: 0.0,
+        },
+    )
+    .await;
+    assert!(matches!(res, DaemonRes::Ok));
+
+    // The resolve runs off the queue, so wait for it before connecting.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let pulse_path = PathBuf::from(&config.socket_pulse_path);
+    let mut pulse = UnixStream::connect(&pulse_path).await.unwrap();
+    let events = pulse_frame(&mut pulse).await;
+
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            DaemonEvent::ReactivePalette { primary, secondary, tertiary }
+                if primary.is_empty() && secondary.is_empty() && tertiary.is_empty()
+        )),
+        "an artless track must push the empty palette: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|ev| matches!(ev, DaemonEvent::ReactiveTheme(_))),
+        "an empty palette has no role set to derive: {events:?}"
+    );
 
     handle.abort();
     cleanup(&config);

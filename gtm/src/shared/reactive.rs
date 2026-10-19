@@ -97,6 +97,16 @@ pub fn extract_palette(bytes: &[u8]) -> Option<ReactivePalette> {
     })
 }
 
+/// The wire form of one extraction: three `#rrggbb` strings, or three empty
+/// ones when there is no palette to extract. One shape every emitter passes
+/// along, so "no art" is a value rather than an early return.
+pub fn palette_hex(bytes: &[u8]) -> (String, String, String) {
+    match extract_palette(bytes) {
+        Some(p) => (to_hex(p.primary), to_hex(p.secondary), to_hex(p.tertiary)),
+        None => (String::new(), String::new(), String::new()),
+    }
+}
+
 /// `#rrggbb` for one channel triple, the form the palette crosses the wire in.
 pub fn to_hex(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])

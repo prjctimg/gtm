@@ -15,7 +15,7 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
 use gtm::shared::paths::resolve_pid_file;
-use gtm::shared::reactive::{ReactivePalette, from_hex};
+use gtm::shared::reactive::{ReactivePalette, from_hex, palette_hex};
 use gtm::shared::theme::ReactiveTheme;
 
 use crate::config::AudioBackendKind;
@@ -1836,6 +1836,10 @@ pub(crate) struct DaemonInner {
     #[cfg(feature = "mpris")]
     pub(crate) mpris: tokio::sync::Mutex<Option<MprisHandle>>,
     pub(crate) event_tx: broadcast::Sender<DaemonEvent>,
+    /// The reactive events last put on the wire, in order, so a client that
+    /// connects mid-track is handed the current palette instead of waiting for
+    /// the next track to start. Replaced whole on every push.
+    pub(crate) pushed: Arc<tokio::sync::Mutex<Vec<DaemonEvent>>>,
     pub(crate) cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
     pub(crate) lyrics_manager: tokio::sync::Mutex<Option<LyricsManager>>,
     /// `Arc` so a detached scrobble can own the client without borrowing the
@@ -1920,6 +1924,11 @@ pub(crate) struct DaemonInner {
     pub(crate) health: Arc<HealthTracker>,
     pub(crate) active_clients: AtomicUsize,
     pub(crate) internal_req_tx: mpsc::UnboundedSender<DaemonReq>,
+    /// Tracks whose palette is still owed: art not readable when
+    /// `PlaybackStarted` fired, or a new song on a stream. Consumed on the run
+    /// loop, the one place a detached task can own an `Arc<DaemonInner>` to
+    /// fetch the art with.
+    pub(crate) art_tx: mpsc::UnboundedSender<TrackInfo>,
     /// Serializes state-mutating commands. Read-only commands take a read
     /// lock so fast reads are not blocked behind slow mutating operations
     /// (Spotify sync, YouTube download, library scan, audio decode).
@@ -2107,6 +2116,7 @@ pub struct Daemon {
     req_tx: mpsc::UnboundedSender<(ClientId, u64, DaemonReq, ReplyTx)>,
     req_rx: mpsc::UnboundedReceiver<(ClientId, u64, DaemonReq, ReplyTx)>,
     internal_req_rx: mpsc::UnboundedReceiver<DaemonReq>,
+    art_rx: mpsc::UnboundedReceiver<TrackInfo>,
     next_client_id: ClientId,
 }
 
@@ -2359,6 +2369,7 @@ impl Daemon {
         let (event_tx, _) = broadcast::channel::<DaemonEvent>(EVENT_CHANNEL_CAPACITY);
         let (req_tx, req_rx) = mpsc::unbounded_channel();
         let (internal_req_tx, internal_req_rx) = mpsc::unbounded_channel();
+        let (art_tx, art_rx) = mpsc::unbounded_channel();
 
         let config_dir = config.config_dir.clone();
         let audio_backend_name = match config.audio_backend {
@@ -2373,6 +2384,7 @@ impl Daemon {
             mixer: tokio::sync::Mutex::new(mixer),
             config,
             event_tx: event_tx.clone(),
+            pushed: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             cover_cache: tokio::sync::Mutex::new(None),
             cover_provider_override: tokio::sync::Mutex::new(None),
             #[cfg(feature = "mpris")]
@@ -2406,6 +2418,7 @@ impl Daemon {
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             active_clients: AtomicUsize::new(0),
             internal_req_tx,
+            art_tx,
             cmd_lock: tokio::sync::RwLock::new(()),
             play_lock: tokio::sync::RwLock::new(()),
             spotify_slow_lock: tokio::sync::Mutex::new(()),
@@ -2455,6 +2468,7 @@ impl Daemon {
             req_tx,
             req_rx,
             internal_req_rx,
+            art_rx,
             next_client_id: 0,
         })
     }
@@ -3061,6 +3075,14 @@ impl Daemon {
                         }
                     });
                 }
+                Some(track) = self.art_rx.recv() => {
+                    // Detached, like the internal commands above: the fetch is
+                    // network work with an 8s ceiling, and nothing waits on it.
+                    let inner = Arc::clone(&self.inner);
+                    tokio::spawn(async move {
+                        Cover::push_art(&inner, &track).await;
+                    });
+                }
                 Some((client_id, request_id, req, reply_tx)) = self.req_rx.recv() => {
                     let inner = Arc::clone(&self.inner);
                     tokio::spawn(async move {
@@ -3248,8 +3270,20 @@ impl Daemon {
 
     async fn accept_pulse_client(stream: UnixStream, inner: &DaemonInner) {
         let event_rx = inner.event_tx.subscribe();
+        let pushed = Arc::clone(&inner.pushed);
         tokio::spawn(async move {
             let mut writer = stream;
+            // Subscribe first, then the cached pair: an event broadcast in
+            // between arrives twice, which an idempotent palette shrugs off,
+            // while the other ordering could lose one forever. A client
+            // connecting mid-track used to sit unthemed until the next track.
+            let cached = pushed.lock().await.clone();
+            if !cached.is_empty()
+                && let Ok(frame) = wire::encode(&cached)
+                && writer.write_all(&frame).await.is_err()
+            {
+                return;
+            }
             let mut event_rx = event_rx;
             loop {
                 match event_rx.recv().await {
@@ -3811,21 +3845,22 @@ impl Daemon {
                 source: source.to_string(),
             },
         );
-        Self::push_palette(inner, track);
+        Self::push_art(inner, track);
     }
 
-    /// Extract the palette from `track`'s cover and broadcast it.
+    /// Put the palette for the track on air on the wire, from the fastest
+    /// source that has its art.
     ///
-    /// Only a track already on air, and only art readable without the client
-    /// asking for it: a local cover file, or the sidecar beside the audio. Remote
-    /// and Spotify art arrives with the client's `Cover::get`, which emits again
-    /// from the bytes it resolved — so this is the fast path, not the only one.
+    /// Art sitting beside the audio is read and extracted here; everything the
+    /// disk does not hold — a cover URL, a provider search, a radio tracklist,
+    /// a station image — goes to the resolver on the run loop, which is the one
+    /// place a detached task can own an `Arc<DaemonInner>` to fetch with.
     ///
-    /// Decoding is a full image load and a median cut, so it runs on a blocking
-    /// task rather than the command loop. Nothing is emitted when there is no
-    /// art: the palette already on screen belongs to the previous track, and
-    /// clearing it would flash the chrome on every track with no cover.
-    fn push_palette(inner: &DaemonInner, track: &TrackInfo) {
+    /// Every source of bytes ends in [`emit_palette`], so "a track started"
+    /// cannot mean "the theme did not change": the palette used to be owed to
+    /// a client's cover request, which no client sends, and only a local file
+    /// played at all.
+    pub(crate) fn push_art(inner: &DaemonInner, track: &TrackInfo) {
         let path = track
             .cover_path
             .as_deref()
@@ -3834,43 +3869,84 @@ impl Daemon {
             .or_else(|| audio_sidecar(&track.path))
             .filter(|p| p.is_file());
         let Some(path) = path else {
+            let _ = inner.art_tx.send(track.clone());
             return;
         };
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
-            Err(_) => return,
+            Err(_) => {
+                let _ = inner.art_tx.send(track.clone());
+                return;
+            }
         };
-        let (id, path_key) = (track.id, track.path.clone());
-        let state = inner.state.clone();
-        let events = inner.event_tx.clone();
-        tokio::task::spawn_blocking(move || {
-            // A fast skip can finish before the decode does, and the palette for
-            // a track the user already left would repaint the whole UI in the
-            // wrong album's colors. Read the current track once the work is
-            // done, not when it was queued.
-            let pal = gtm::shared::reactive::extract_palette(&bytes);
-            let out = pal.map_or_else(
-                || (String::new(), String::new(), String::new()),
-                |p| {
-                    use gtm::shared::reactive::to_hex;
-                    (to_hex(p.primary), to_hex(p.secondary), to_hex(p.tertiary))
-                },
-            );
-            let current = tokio::runtime::Handle::current();
-            current.block_on(async {
-                let state = state.read().await;
-                let still_current = on_air(&state, id, Some(&path_key));
-                drop(state);
-                if !still_current {
-                    return;
-                }
-                push_palette_pair(&events, out.0, out.1, out.2);
-            });
-        });
+        emit_palette(inner, track.id, Some(track.path.clone()), None, bytes);
     }
 }
 
-/// Broadcast the palette, and the role set derived from it.
+/// Extract the palette from `bytes` and put it on the wire, if the track is
+/// still the one on air when the work finishes.
+///
+/// The one funnel every source of art ends in, local or remote, because the
+/// staleness guard belongs with the emission and not with each caller's
+/// memory: a decode is milliseconds, and a fast skip finishes first, so a
+/// palette pushed for a track the user already left would repaint the whole
+/// UI in the wrong album's colours.
+///
+/// `want` is the song a stream's art was resolved for, when there is one. A
+/// stream's path never changes, so the track guard alone cannot tell one song
+/// from the next; the title can, and the change that moved it queues its own
+/// resolve to push the newer palette.
+pub(crate) fn emit_palette(
+    inner: &DaemonInner,
+    id: i64,
+    path: Option<String>,
+    want: Option<String>,
+    bytes: Vec<u8>,
+) {
+    let label = want
+        .clone()
+        .or_else(|| path.clone())
+        .unwrap_or_else(|| format!("id {id}"));
+    let state = inner.state.clone();
+    let events = inner.event_tx.clone();
+    let pushed = Arc::clone(&inner.pushed);
+    tokio::task::spawn_blocking(move || {
+        let hex = palette_hex(&bytes);
+        tokio::runtime::Handle::current().block_on(async move {
+            // The current track, read once the work is done rather than when
+            // it was queued, and the title with it: both may have moved on.
+            let current = state.read().await;
+            let on_track = on_air(&current, id, path.as_deref());
+            let on_song = want
+                .as_ref()
+                .is_none_or(|w| current.radio_title.as_deref() == Some(w.as_str()));
+            drop(current);
+            if on_track && on_song {
+                push_palette_pair(&events, &pushed, &label, hex).await;
+            }
+        });
+    });
+}
+
+/// The song a stream's palette is for: its mirrored ICY title. `None` when
+/// `path` names no stream — or a stream that has announced nothing yet, where
+/// there is nothing to grow stale against.
+async fn live_title(inner: &DaemonInner, path: &str) -> Option<String> {
+    if !is_stream(path) {
+        return None;
+    }
+    inner.state.read().await.radio_title.clone()
+}
+
+/// Whether `path` names something endless: a registered station or a bare
+/// stream URL. Those are the paths whose song changes arrive as ICY titles
+/// instead of track starts.
+fn is_stream(path: &str) -> bool {
+    path.starts_with("radio://") || path.starts_with("http://") || path.starts_with("https://")
+}
+
+/// Broadcast the palette, and the role set derived from it, and remember both
+/// for the next client to connect.
 ///
 /// One extraction, two events, back to back. The derivation is pure and costs
 /// nothing beside the extraction that has already happened; re-extracting for
@@ -3880,26 +3956,38 @@ impl Daemon {
 /// The role set is skipped when the palette is empty, which is what extraction
 /// failure produces. A complete role set of black would be worse than none: a
 /// client would apply it and turn its surface dark having been told nothing went
-/// wrong.
-pub(crate) fn push_palette_pair(
-    events: &tokio::sync::broadcast::Sender<DaemonEvent>,
-    primary: String,
-    secondary: String,
-    tertiary: String,
+/// wrong. The empty pair still goes out — clients treat it as "clear", which is
+/// the truth when a track has no art at all.
+pub(crate) async fn push_palette_pair(
+    events: &broadcast::Sender<DaemonEvent>,
+    pushed: &Arc<tokio::sync::Mutex<Vec<DaemonEvent>>>,
+    label: &str,
+    hex: (String, String, String),
 ) {
+    let (primary, secondary, tertiary) = hex;
+    if primary.is_empty() {
+        info!("no palette for {label}");
+    } else {
+        info!("palette {primary} {secondary} {tertiary} for {label}");
+    }
     let parse = |s: &str| from_hex(s).unwrap_or([0, 0, 0]);
     let theme = ReactiveTheme::from_palette(&ReactivePalette {
         primary: parse(&primary),
         secondary: parse(&secondary),
         tertiary: parse(&tertiary),
     });
-    let _ = events.send(DaemonEvent::ReactivePalette {
+    let mut frame = Vec::with_capacity(2);
+    frame.push(DaemonEvent::ReactivePalette {
         primary,
         secondary,
         tertiary,
     });
     if let Some(theme) = theme {
-        let _ = events.send(DaemonEvent::ReactiveTheme(Box::new(theme)));
+        frame.push(DaemonEvent::ReactiveTheme(Box::new(theme)));
+    }
+    *pushed.lock().await = frame.clone();
+    for ev in frame {
+        let _ = events.send(ev);
     }
 }
 
@@ -4608,12 +4696,7 @@ impl Daemon {
         let is_live = state
             .current_track
             .as_ref()
-            .map(|t| {
-                t.path.starts_with("radio://")
-                    || t.path.starts_with("http://")
-                    || t.path.starts_with("https://")
-            })
-            .unwrap_or(false);
+            .is_some_and(|t| is_stream(&t.path));
         if is_live {
             if state.radio_title.as_deref() == slot_title.as_deref() {
                 return;
@@ -4625,9 +4708,19 @@ impl Daemon {
             state.radio_title = None;
         }
         let title = state.radio_title.clone();
+        let has_title = title.is_some();
         let from_icy = state.radio_tracks.tracks.is_empty() && history_len > 1;
+        let track = state.current_track.clone();
         drop(state);
         Self::push_event(inner, DaemonEvent::RadioTitleChanged { title });
+        // A new song on the same station: same path, new art. The track start
+        // fired once, when the station did, so without this the per-song
+        // palette would never be pushed at all.
+        if has_title
+            && let Some(track) = track
+        {
+            Self::push_art(inner, &track);
+        }
         if from_icy {
             Self::publish_icy_history(inner, titles).await;
         }
