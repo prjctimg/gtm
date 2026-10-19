@@ -5,6 +5,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use crate::progress::{ProgressStyle, render_progress_styled};
 use crate::ui::*;
 
 impl Pickers {
@@ -168,9 +169,7 @@ impl Pickers {
         const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
         const BRAILLE: [char; 8] = ['⠁', '⠃', '⠇', '⡇', '⣇', '⣧', '⣷', '⣿'];
         let chars: &[char; 8] = match app.visualizer.preset {
-            // Gradient's dot grid is the closest match for the braille ramp
-            // that used to sit on this arm.
-            VisualizerPreset::Gradient => &BRAILLE,
+            VisualizerPreset::Braille | VisualizerPreset::Gradient => &BRAILLE,
             _ => &BLOCKS,
         };
         let mut spans = vec![Span::raw("  ")];
@@ -226,7 +225,30 @@ impl Pickers {
         };
 
         match preset {
-            VisualizerPreset::Mirror => {
+            VisualizerPreset::Braille => {
+                lines.extend(row(
+                    2,
+                    Box::new(|r, _, b| {
+                        let l = (b * 4.0) as u32;
+                        let ch = match r {
+                            0 => match l {
+                                4.. => '⣿',
+                                3.. => '⣷',
+                                2.. => '⣧',
+                                1.. => '⠇',
+                                _ => '⠀',
+                            },
+                            _ => match l {
+                                2.. => '⣿',
+                                1.. => '⡇',
+                                _ => '⠀',
+                            },
+                        };
+                        (ch, app.theme.accent)
+                    }),
+                ));
+            }
+            VisualizerPreset::Blocks | VisualizerPreset::Mirror => {
                 const GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
                 lines.extend(row(
                     2,
@@ -268,7 +290,84 @@ impl Pickers {
                     }),
                 ));
             }
-
+            VisualizerPreset::Spectrum => {
+                // The real renderer ramps through `amplitude_color`; a hardcoded
+                // colour here both ignored the theme and previewed a preset that
+                // does not look like itself.
+                lines.extend(row(
+                    2,
+                    Box::new(|r, _, b| {
+                        const UP: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+                        const DOWN: [char; 8] = ['█', '▇', '▆', '▅', '▄', '▃', '▂', '▁'];
+                        let i = ((b * 7.0).round() as usize).min(7);
+                        (
+                            if r == 0 { UP[i] } else { DOWN[i] },
+                            crate::visualizer::amplitude_color(b, &app.theme),
+                        )
+                    }),
+                ));
+            }
+            VisualizerPreset::BarsDot => {
+                lines.extend(row(
+                    2,
+                    Box::new(|r, _, b| {
+                        let l = (b * 7.0) as u32;
+                        let ch = if r == 0 {
+                            match l {
+                                6.. => '⣿',
+                                4.. => '⣷',
+                                2.. => '⣧',
+                                1.. => '⠇',
+                                _ => '⠀',
+                            }
+                        } else {
+                            match l {
+                                4.. => '⣿',
+                                2.. => '⡇',
+                                1.. => '⠁',
+                                _ => '⠀',
+                            }
+                        };
+                        (ch, app.theme.accent)
+                    }),
+                ));
+            }
+            VisualizerPreset::ClassicPeak => {
+                lines.extend(row(
+                    2,
+                    Box::new(|r, _, b| {
+                        if r == 0 {
+                            if b > 0.78 {
+                                ('⎺', app.theme.accent)
+                            } else {
+                                (' ', app.theme.bg)
+                            }
+                        } else if b > 0.35 {
+                            ('▏', app.theme.fg_bright)
+                        } else {
+                            (' ', app.theme.bg)
+                        }
+                    }),
+                ));
+            }
+            VisualizerPreset::Columns => {
+                lines.extend(row(
+                    2,
+                    Box::new(|r, _, b| {
+                        if r == 0 {
+                            if b > 0.55 {
+                                ('█', app.theme.warning)
+                            } else {
+                                (' ', app.theme.bg)
+                            }
+                        } else if b > 0.05 {
+                            ('█', app.theme.accent)
+                        } else {
+                            (' ', app.theme.bg)
+                        }
+                    }),
+                ));
+            }
             VisualizerPreset::Wave => {
                 // A dot sweep over the samples themselves, the dot row following
                 // the signal within each cell's four rows. A sine written here
@@ -335,7 +434,26 @@ impl Pickers {
                     lines.push(Line::from(spans));
                 }
             }
-
+            VisualizerPreset::Retro => {
+                lines.extend((0..3).map(|r| {
+                    Line::from(
+                        (0..w)
+                            .map(|x| {
+                                let dist = (x as f64 / w.max(1) as f64 - 0.5).abs() * 2.0;
+                                let (ch, color) = match r {
+                                    0 if dist < 0.62 => ('⠛', app.theme.accent),
+                                    0 => (' ', app.theme.bg),
+                                    1 => ('▔', app.theme.fg_dim),
+                                    _ if dist < 0.4 => ('⣀', app.theme.fg_dim),
+                                    _ if dist < 0.75 => ('⣀', app.theme.secondary_accent),
+                                    _ => ('⣀', app.theme.tertiary_accent),
+                                };
+                                Span::styled(ch.to_string(), Style::default().fg(color))
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                }));
+            }
             VisualizerPreset::Flame => {
                 lines.extend(row(
                     2,
@@ -635,6 +753,122 @@ impl Pickers {
                     },
                 );
             }
+        }
+    }
+
+    pub(crate) fn render_progress_style(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " Progress Style ");
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let current = app.progress_style;
+        let styles = ProgressStyle::all();
+
+        let sel = app
+            .pickers
+            .top()
+            .map_or(0, |o| o.selected.min(styles.len() - 1));
+
+        let preview_height: u16 = 4;
+        let list_h = inner.height.saturating_sub(preview_height);
+        let list_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: list_h,
+        };
+        let preview_area = Rect {
+            x: inner.x,
+            y: inner.y + list_h,
+            width: inner.width,
+            height: inner.height.saturating_sub(list_h),
+        };
+
+        let visible = list_h as usize;
+        let total = styles.len();
+        let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top_mut() {
+            let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
+            top.viewport_offset = s;
+            (s, e)
+        } else {
+            (0, total)
+        };
+
+        let mut lines = Vec::new();
+        for (i, style) in styles
+            .iter()
+            .enumerate()
+            .skip(scroll_start)
+            .take(scroll_end - scroll_start)
+        {
+            let is_sel = i == sel;
+            let is_cur = *style == current;
+            let prefix = if is_sel { " > " } else { "   " };
+            let cur = if is_cur { "   (current)" } else { "" };
+            let line_style = if is_sel {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+            } else if is_cur {
+                Style::default().fg(app.theme.accent)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{prefix}{}{cur}", style.name()),
+                line_style,
+            )));
+        }
+
+        let list = List::new(lines.into_iter().map(ListItem::new).collect::<Vec<_>>());
+        f.render_widget(list, list_area);
+
+        if preview_area.height >= 3 {
+            let selected_name = styles.get(sel).map(|s| s.name()).unwrap_or("");
+            let rule = Self::preset_heading(app, selected_name);
+            f.render_widget(
+                Paragraph::new(rule),
+                Rect {
+                    x: preview_area.x,
+                    y: preview_area.y,
+                    width: preview_area.width,
+                    height: 1,
+                },
+            );
+
+            let sel_style = styles.get(sel).copied().unwrap_or(current);
+            let preview_w = preview_area.width.saturating_sub(2) as usize;
+            let spans = render_progress_styled(
+                0.6,
+                preview_w,
+                sel_style,
+                app.theme.accent,
+                app.theme.secondary_accent,
+                app.theme.tertiary_accent,
+            );
+            f.render_widget(
+                Paragraph::new(Line::from(spans)),
+                Rect {
+                    x: preview_area.x,
+                    y: preview_area.y + 1,
+                    width: preview_area.width,
+                    height: 1,
+                },
+            );
+
+            let preview_label = Line::from(Span::styled(
+                format!("  60% filled, {} chars wide", preview_w),
+                Style::default().fg(app.theme.fg_dim),
+            ));
+            f.render_widget(
+                Paragraph::new(preview_label),
+                Rect {
+                    x: preview_area.x,
+                    y: preview_area.y + 2,
+                    width: preview_area.width,
+                    height: 1,
+                },
+            );
         }
     }
 

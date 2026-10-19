@@ -23,6 +23,7 @@ impl App {
                 .get(self.footer_preset)
                 .map(|p| p.name.to_string())
                 .unwrap_or_else(default_preset_name),
+            progress_style: self.progress_style,
             visualizer_preset: self.visualizer.preset,
             daydream_secs: self.daydream_secs,
             extensions: self.extensions.clone(),

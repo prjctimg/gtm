@@ -53,7 +53,7 @@ pub(crate) use crate::keymap::{
 pub(crate) use crate::mouse::{MouseMap, MouseZone};
 pub(crate) use crate::oauth::open_browser;
 pub(crate) use crate::picker::{PickerId, PickerManager, PickerSource};
-pub(crate) use crate::progress::{ProgressBar, ProgressSmoother};
+pub(crate) use crate::progress::{ProgressSmoother, ProgressStyle};
 pub(crate) use crate::reactive::{ReactivePalette, derive_theme, extract_palette};
 pub(crate) use crate::theme::{
     AppTheme, ThemeEntry, blend_colors, chadrula, detect_os_theme, merged_themes,
@@ -630,7 +630,7 @@ pub struct App {
     pub footer_preset: usize,
     pub(crate) last_event_time: std::time::Instant,
     pub multiselect_mode: bool,
-    pub progress_bar: ProgressBar,
+    pub progress_style: ProgressStyle,
     pub visualizer: AudioVisualizer,
     /// Config-driven component registry (`[extensions]` in the TUI config).
     pub extensions: ExtensionsConfig,
@@ -1595,7 +1595,7 @@ impl App {
             footer_preset,
             last_event_time: std::time::Instant::now(),
             multiselect_mode: false,
-            progress_bar: ProgressBar::new(),
+            progress_style: prefs.progress_style,
             visualizer: {
                 let mut v = AudioVisualizer::new();
                 v.preset = prefs.visualizer_preset;
@@ -1975,6 +1975,7 @@ impl App {
             // Read-only: nothing to select, so no cursor to move.
             PickerId::TrackInfo => 0,
             PickerId::VisualizerPreset => VisualizerPreset::all().len().saturating_sub(1),
+            PickerId::ProgressStyle => ProgressStyle::all().len().saturating_sub(1),
             PickerId::FooterPreset => self.footer_presets.len().saturating_sub(1),
             PickerId::Notifications => self.notification_history.len().saturating_sub(1),
             PickerId::NotificationSettings => NotifType::ALL.len().saturating_sub(1),
@@ -2023,6 +2024,7 @@ impl App {
             PickerId::Crossfade => 6,
             PickerId::TrackInfo => 0,
             PickerId::VisualizerPreset => VisualizerPreset::all().len(),
+            PickerId::ProgressStyle => ProgressStyle::all().len(),
             PickerId::FooterPreset => self.footer_presets.len(),
             PickerId::Notifications => self.notification_history.len(),
             PickerId::NotificationSettings => NotifType::ALL.len(),

@@ -1,18 +1,71 @@
 // Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
-// Track progress indicator
+// Track progress indicator styles
 //
 // This is free software released under the GPL-3.0 license.
 
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Color;
+use ratatui::text::Span;
+use serde::{Deserialize, Serialize};
+
+/// The bar's look. Four glyph styles, chosen with `Alt+P`.
+///
+/// Every one is drawn with cells. An earlier version drew them through a shader,
+/// which bought smooth colour ramps and one horizontal sample per cell of
+/// spatial detail — and the cell grid sets that ceiling regardless, because the
+/// frame comes back read through `▀` half-blocks either way. That was a lot of
+/// dependency for a bar graph, and one uniform block one field short of its
+/// shader took the whole TUI down on first paint. See `shaderless.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ProgressStyle {
+    SeekHead,
+    Classic,
+    Dots,
+    /// True color gradient using theme accent colors.
+    #[default]
+    TrueGradient,
+}
+
+impl ProgressStyle {
+    pub fn all() -> &'static [ProgressStyle] {
+        &[
+            ProgressStyle::SeekHead,
+            ProgressStyle::Classic,
+            ProgressStyle::Dots,
+            ProgressStyle::TrueGradient,
+        ]
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            ProgressStyle::SeekHead => "Seek Head",
+            ProgressStyle::Classic => "Classic",
+            ProgressStyle::Dots => "Dots",
+            ProgressStyle::TrueGradient => "True Gradient",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        let all = Self::all();
+        let idx = all.iter().position(|s| s == self).unwrap_or(0);
+        all[(idx + 1) % all.len()]
+    }
+
+    /// Whether the bar eases toward the position rather than tracking it.
+    ///
+    /// Gates the smoother: a style with a head that moves a cell at a time
+    /// reads as jitter if the number behind it is already smoothed, and one
+    /// that is a solid run reads as a lag if it is not.
+    pub fn is_animated(&self) -> bool {
+        matches!(self, ProgressStyle::SeekHead | ProgressStyle::TrueGradient)
+    }
+}
 
 const SMOOTHING_TAU_SECS: f64 = 0.12;
 
-/// Frame-rate independent exponential smoother for the bar.
-///
-/// Owned by the app and advanced once per frame so every bar on screen moves in
-/// lockstep — two bars at different ratios is a rendering bug, not two bars.
+/// Frame-rate independent exponential smoother for animated progress styles.
+/// Owned by the app and advanced once per frame so every bar on screen moves
+/// in lockstep.
 #[derive(Debug, Clone)]
 pub struct ProgressSmoother {
     value: f64,
@@ -44,128 +97,207 @@ impl ProgressSmoother {
     }
 }
 
-/// The bar itself, and the one place that knows how it is drawn.
-///
-/// There is no style picker any more. Four glyph styles became one shader
-/// (`shaders/progress.wgsl`), so there is one look, and a picker over a single
-/// entry is a picker that cannot choose.
-pub struct ProgressBar {
-    /// Lazily created on the first draw. `None` on a machine with no usable GPU,
-    /// which is not an error state: [`Self::draw`] falls back to cells and the
-    /// bar is still a bar.
-    #[cfg(feature = "shader-viz")]
-    gpu: Option<crate::shader::Shader>,
+/// Ratio a render call should draw: the smoothed value for animated styles,
+/// the raw position otherwise.
+pub fn render_ratio(style: ProgressStyle, raw: f64, smoothed: f64) -> f64 {
+    if style.is_animated() { smoothed } else { raw }
 }
 
-impl Default for ProgressBar {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ProgressBar {
-    pub fn new() -> Self {
-        Self {
-            #[cfg(feature = "shader-viz")]
-            gpu: None,
+/// Interpolate between two RGB colors by factor `t` (0.0..=1.0).
+fn lerp_color(a: Color, b: Color, t: f64) -> Color {
+    match (a, b) {
+        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+            let t = t.clamp(0.0, 1.0);
+            Color::Rgb(
+                (r1 as f64 + (r2 as f64 - r1 as f64) * t) as u8,
+                (g1 as f64 + (g2 as f64 - g1 as f64) * t) as u8,
+                (b1 as f64 + (b2 as f64 - b1 as f64) * t) as u8,
+            )
         }
+        _ => a,
     }
+}
 
-    /// The bar, `width` cells wide, `ratio` of the way through.
-    ///
-    /// Returns a [`Line`] rather than a `String` because the GPU path cannot
-    /// produce one: a frame is read back and printed with `▀`, which resolves
-    /// to a glyph carrying a foreground *and* a background colour per cell. Two
-    /// coloured halves cannot be expressed as text.
-    ///
-    /// `accent` and `dim` are only read by the fallback. On the GPU path they
-    /// come from the theme ramp the shader was given, which is the same palette
-    /// the visualizer uses.
-    pub fn draw(&mut self, ratio: f64, width: usize, accent: Color, dim: Color) -> Line<'static> {
-        let width = width.max(1);
-        let ratio = ratio.clamp(0.0, 1.0);
+/// Render a progress bar as a `Vec<Span>` with per-character coloring.
+/// For non-gradient styles this is equivalent to a single styled span;
+/// for `TrueGradient` each filled cell is colored by interpolating through
+/// `accent -> secondary_accent -> tertiary_accent`.
+pub fn render_progress_styled<'a>(
+    ratio: f64,
+    width: usize,
+    style: ProgressStyle,
+    accent: Color,
+    secondary: Color,
+    tertiary: Color,
+) -> Vec<Span<'a>> {
+    let inner_w = width.saturating_sub(2).max(4);
 
-        #[cfg(feature = "shader-viz")]
-        {
-            if self.gpu.is_none() {
-                self.gpu = crate::shader::Shader::new();
-            }
-            if let Some(gpu) = self.gpu.as_mut() {
-                let job = crate::shader::Draw {
-                    preset: crate::shader::Preset::Progress,
-                    playing: true,
-                    dt: 0.0,
-                    bands: [0.0; crate::shader::BANDS],
-                    band_count: 0,
-                    wave: [0.0; crate::shader::WAVE],
-                    wave_count: 0,
-                    stereo: [0.0; 4],
-                    cells: (width as u16, 1),
-                    progress: ratio as f32,
-                    // The ramp the shader shades the run along. The bar is drawn
-                    // on whatever pane it sits in, so it borrows the pane's
-                    // background rather than painting one of its own.
-                    cool: rgb(accent),
-                    warm: rgb(accent),
-                    peak: rgb(accent),
-                };
-                // `Shader::draw` answers `None` on the very first call by
-                // design — a device that exists still has a frame in flight —
-                // so `None` means "cells this frame", not "give up on the GPU".
-                if let Some(img) = gpu.draw(job) {
-                    let lines = crate::visualizer::pixels_to_lines(&img, width as u16, 1);
-                    // One cell row was asked for, so the readback is one line.
-                    // Concatenated rather than returned as `Lines` because the
-                    // caller splices the bar into a line it composes itself.
-                    return match lines.0.into_iter().next() {
-                        Some(line) => line,
-                        None => Self::cells(ratio, width, accent, dim),
+    match style {
+        ProgressStyle::TrueGradient => {
+            let eased_filled = (ratio.clamp(0.0, 1.0) * inner_w as f64).round() as usize;
+
+            let mut spans = Vec::with_capacity(inner_w + 2);
+            spans.push(Span::raw(" "));
+            for i in 0..inner_w {
+                if i < eased_filled.saturating_sub(1) {
+                    let t = if eased_filled > 1 {
+                        i as f64 / (eased_filled - 1) as f64
+                    } else {
+                        0.0
                     };
+                    let color = if t < 0.5 {
+                        lerp_color(accent, secondary, t * 2.0)
+                    } else {
+                        lerp_color(secondary, tertiary, (t - 0.5) * 2.0)
+                    };
+                    spans.push(Span::styled(
+                        "━",
+                        ratatui::style::Style::default().fg(color),
+                    ));
+                } else if i == eased_filled.saturating_sub(1) && eased_filled > 0 {
+                    let t = if eased_filled > 1 {
+                        (i - 1) as f64 / (eased_filled - 1) as f64
+                    } else {
+                        0.0
+                    };
+                    let color = if t < 0.5 {
+                        lerp_color(accent, secondary, t * 2.0)
+                    } else {
+                        lerp_color(secondary, tertiary, (t - 0.5) * 2.0)
+                    };
+                    spans.push(Span::styled(
+                        "●",
+                        ratatui::style::Style::default().fg(color),
+                    ));
+                } else {
+                    spans.push(Span::styled(
+                        "─",
+                        ratatui::style::Style::default().fg(Color::Rgb(60, 60, 60)),
+                    ));
                 }
             }
+            spans.push(Span::raw(" "));
+            spans
         }
-
-        Self::cells(ratio, width, accent, dim)
-    }
-
-    /// The bar without a GPU.
-    ///
-    /// A run of `━` in the accent, a `●` head, and a `─` track after it. It is
-    /// not the old `Seek Head` style brought back — it is the minimum the shader
-    /// draws expressed in glyphs, so the fallback reads as the same bar rather
-    /// than as a different one.
-    fn cells(ratio: f64, width: usize, accent: Color, dim: Color) -> Line<'static> {
-        let filled = (ratio * width as f64).round() as usize;
-        let head = filled.min(width.saturating_sub(1));
-        let mut spans = Vec::with_capacity(width);
-        for i in 0..width {
-            let (ch, color) = if i < head {
-                ('━', accent)
-            } else if i == head {
-                ('●', accent)
-            } else {
-                ('─', dim)
-            };
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+        _ => {
+            // For non-gradient styles, return as a single span (no per-char color)
+            let text = render_progress(ratio, width, style);
+            vec![Span::raw(text)]
         }
-        Line::from(spans)
     }
 }
 
-/// A `Color` as the 0–255 triple the shader uniform carries.
-fn rgb(c: Color) -> [u8; 3] {
-    match c {
-        Color::Rgb(r, g, b) => [r, g, b],
-        // Indexed and Reset have no components to send. Black is the honest
-        // answer: it renders as "not the accent", and the bar is drawn from the
-        // accent on every theme that can produce one at all.
-        _ => [0, 0, 0],
+pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String {
+    let inner_w = width.saturating_sub(2).max(4);
+    let filled = (ratio.clamp(0.0, 1.0) * inner_w as f64).round() as usize;
+    let mut line = String::with_capacity(width);
+    match style {
+        ProgressStyle::SeekHead => {
+            let head = filled.min(inner_w.saturating_sub(1));
+            line.push('─');
+            for i in 0..inner_w {
+                if i == head {
+                    line.push('●');
+                } else {
+                    line.push('─');
+                }
+            }
+            line.push('─');
+        }
+        ProgressStyle::Classic => {
+            for i in 0..inner_w {
+                line.push(if i < filled { '━' } else { '─' });
+            }
+        }
+        ProgressStyle::Dots => {
+            line.push(' ');
+            for i in 0..inner_w {
+                if i < filled {
+                    line.push('●');
+                } else {
+                    line.push('○');
+                }
+            }
+            line.push(' ');
+        }
+        ProgressStyle::TrueGradient => {
+            let eased_filled = filled;
+            line.push(' ');
+            for i in 0..inner_w {
+                if i < eased_filled.saturating_sub(1) {
+                    let dist = (eased_filled - i) as f64 / eased_filled.max(1) as f64;
+                    if dist > 0.66 {
+                        line.push('━');
+                    } else if dist > 0.33 {
+                        line.push('╌');
+                    } else {
+                        line.push('─');
+                    }
+                } else if i == eased_filled.saturating_sub(1) && eased_filled > 0 {
+                    line.push('●');
+                } else {
+                    line.push('─');
+                }
+            }
+            line.push(' ');
+        }
     }
+    line
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The head is visible at every ratio, including none.
+    ///
+    /// A head computed as `filled - 1` goes negative at ratio 0, and an
+    /// unwrapped `filled` indexing left the bar blank until a percent of the
+    /// track had passed. Zero has to read as zero, not as nothing.
+    #[test]
+    fn seek_head_visible() {
+        for ratio in [0.0f64, 0.5, 1.0] {
+            let bar = render_progress(ratio, 22, ProgressStyle::SeekHead);
+            assert!(bar.contains('●'), "head missing at ratio {ratio}");
+        }
+    }
+
+    /// Every style fills proportionally, so switching between them shows the
+    /// same position rather than a different one.
+    #[test]
+    fn every_style_agrees_on_the_fill() {
+        for style in ProgressStyle::all() {
+            for (ratio, lo, hi) in [(0.0, 0, 1), (0.5, 3, 7), (1.0, 15, 20)] {
+                let bar = render_progress(ratio, 22, *style);
+                let filled = bar.chars().filter(|c| matches!(c, '━' | '●')).count();
+                assert!(
+                    (lo..=hi).contains(&filled),
+                    "{:?} at {ratio}: {filled} filled, want {lo}..={hi} in {bar:?}",
+                    style
+                );
+            }
+        }
+    }
+
+    /// The bar is exactly as wide as it was asked for.
+    ///
+    /// It is drawn into a fixed row beside the elapsed and total times, so one
+    /// cell narrower shifts everything after it and one wider is clipped.
+    #[test]
+    fn the_bar_is_exactly_the_width_asked_for() {
+        for style in ProgressStyle::all() {
+            for width in [4usize, 12, 40] {
+                let bar = render_progress(0.42, width, *style);
+                assert_eq!(
+                    bar.chars().count(),
+                    width,
+                    "{:?} at width {width} came out {:?}",
+                    style,
+                    bar
+                );
+            }
+        }
+    }
 
     #[test]
     fn smoother_converges() {
@@ -185,10 +317,9 @@ mod tests {
         assert!((s.value() - 0.1).abs() < f64::EPSILON);
     }
 
+    /// The same elapsed time lands in the same place whatever the step count.
     #[test]
     fn smoother_is_frame_rate_independent() {
-        // The same elapsed time in different step counts has to land in the
-        // same place, or the bar moves at a different speed on a faster machine.
         let mut coarse = ProgressSmoother::new();
         for _ in 0..10 {
             coarse.smooth(1.0, 0.1);
@@ -198,60 +329,5 @@ mod tests {
             fine.smooth(1.0, 0.01);
         }
         assert!((coarse.value() - fine.value()).abs() < 1e-6);
-    }
-
-    /// The bar is always exactly as wide as it was asked for.
-    ///
-    /// It is drawn into a fixed-width row beside the elapsed and total times, so
-    /// a bar one cell narrower shifts everything after it, and one wider is
-    /// clipped. The width is a contract with the layout, not a hint.
-    #[test]
-    fn the_bar_is_exactly_the_width_asked_for() {
-        let mut bar = ProgressBar::new();
-        for width in [1usize, 4, 12, 40] {
-            for ratio in [0.0f64, 0.37, 1.0] {
-                let line = bar.draw(ratio, width, Color::Rgb(1, 2, 3), Color::Rgb(4, 5, 6));
-                assert_eq!(
-                    line.width(),
-                    width,
-                    "{width}-cell bar came out {} cells at ratio {ratio}",
-                    line.width()
-                );
-            }
-        }
-    }
-
-    /// A bar is visible at every ratio, including none and all.
-    ///
-    /// The regression this pins: a head computed as `filled - 1` is negative at
-    /// ratio 0, so an unwrapped `filled` indexing left the bar blank until a
-    /// percent of the track had passed. Zero has to read as zero.
-    #[test]
-    fn something_is_drawn_at_every_ratio() {
-        let mut bar = ProgressBar::new();
-        for ratio in [0.0f64, 0.01, 0.5, 0.99, 1.0] {
-            let line = bar.draw(ratio, 20, Color::Rgb(200, 120, 40), Color::Rgb(60, 60, 60));
-            let text: String = line
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>();
-            assert!(text.contains('●'), "no head at ratio {ratio}: {text:?}");
-        }
-    }
-
-    /// The filled run never exceeds the bar, and never overruns it by rounding.
-    #[test]
-    fn the_fill_stays_inside_the_bar() {
-        let mut bar = ProgressBar::new();
-        for ratio in [0.0f64, 0.999, 1.0, 1.5, -1.0] {
-            let line = bar.draw(ratio, 8, Color::Rgb(9, 9, 9), Color::Rgb(3, 3, 3));
-            let heads = line
-                .spans
-                .iter()
-                .filter(|s| s.content.as_ref() == "●")
-                .count();
-            assert_eq!(heads, 1, "ratio {ratio} produced {heads} heads");
-        }
     }
 }

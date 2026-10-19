@@ -3521,6 +3521,22 @@ impl App {
                             let index = self.pickers.top().map_or(0, |t| t.selected);
                             self.apply_audio_device(index);
                         }
+                        PickerId::ProgressStyle => {
+                            let styles = ProgressStyle::all();
+                            if let Some(top) = self.pickers.top() {
+                                let idx = top.selected.min(styles.len() - 1);
+                                self.progress_style = styles[idx];
+                                save_prefs(&self.current_prefs());
+                                self.notify_typed(
+                                    "System",
+                                    format!("Progress: {}", self.progress_style.name()),
+                                    NotificationKind::Info,
+                                    true,
+                                    NotifType::Playback,
+                                );
+                            }
+                            self.pickers.close_top();
+                        }
                         PickerId::FooterPreset => {
                             if let Some(top) = self.pickers.top() {
                                 let idx = top
@@ -3723,6 +3739,7 @@ impl App {
                                     self.lyrics.pane_focus = true;
                                     self.send_high(TuiCommand::FetchLyrics);
                                 } else if action == "progress style" {
+                                    self.pickers.open(PickerId::ProgressStyle);
                                 } else if action == "visualizer preset" {
                                     self.open_visualizer_picker();
                                 } else if action == "stop" {
@@ -4448,6 +4465,11 @@ impl App {
                     let presets = VisualizerPreset::all();
                     let idx = top.selected.min(presets.len() - 1);
                     self.visualizer.preset = presets[idx];
+                }
+                PickerId::ProgressStyle => {
+                    let styles = ProgressStyle::all();
+                    let idx = top.selected.min(styles.len() - 1);
+                    self.progress_style = styles[idx];
                 }
                 PickerId::FooterPreset => {
                     let idx = top

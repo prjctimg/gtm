@@ -82,6 +82,8 @@ pub struct Prefs {
     #[serde(default = "default_preset_name")]
     pub(crate) footer_preset_name: String,
     #[serde(default)]
+    pub(crate) progress_style: ProgressStyle,
+    #[serde(default)]
     pub(crate) visualizer_preset: VisualizerPreset,
     /// Seconds of keyboard, paste or mouse inactivity before the visualizer
     /// takes over the library view. Zero disables daydreaming.
@@ -268,6 +270,7 @@ impl Default for Prefs {
             reactive_theme: true,
             reactive_theme_intensity: default_reactive_intensity(),
             footer_preset_name: default_preset_name(),
+            progress_style: ProgressStyle::default(),
             visualizer_preset: VisualizerPreset::default(),
             daydream_secs: DEFAULT_DAYDREAM_SECS,
             extensions: ExtensionsConfig::default(),

@@ -2456,15 +2456,17 @@ impl Render {
     /// on first use. Returning a [`Line`] rather than a `String` is forced by
     /// that: a shader frame comes back as per-cell foreground and background
     /// colours, which text cannot carry.
-    pub fn progress_variant(ratio: f64, width: usize, app: &mut App) -> Line<'static> {
-        // The smoother was already advanced once per frame with the real frame
-        // delta, so its value is the ratio to draw. Smoothing here as well would
-        // apply the time constant twice and the bar would lag the position by
-        // roughly double what it is meant to.
-        let _ = ratio;
-        let ratio = app.progress_smoother.value();
-        app.progress_bar
-            .draw(ratio, width, app.theme.secondary_accent, app.theme.fg_dim)
+    pub fn progress_variant(ratio: f64, width: usize, app: &App) -> Line<'static> {
+        let ratio = render_ratio(app.progress_style, ratio, app.progress_smoother.value());
+        let spans = render_progress_styled(
+            ratio,
+            width,
+            app.progress_style,
+            app.theme.secondary_accent,
+            app.theme.fg_bright,
+            app.theme.fg_dim,
+        );
+        Line::from(spans)
     }
 
     pub(crate) fn lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {

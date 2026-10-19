@@ -31,6 +31,7 @@ pub enum PickerId {
     AudioDevice,
     Crossfade,
     VisualizerPreset,
+    ProgressStyle,
     FooterPreset,
     Settings,
     Notifications,

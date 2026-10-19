@@ -217,6 +217,7 @@ impl Pickers {
             PickerId::TrackInfo => Self::render_track_info(f, picker_area, app),
             PickerId::DiscordSetup => Self::render_discord_setup(f, picker_area, app),
             PickerId::VisualizerPreset => Self::render_visualizer_preset(f, picker_area, app),
+            PickerId::ProgressStyle => Self::render_progress_style(f, picker_area, app),
             PickerId::FooterPreset => Self::render_footer_preset(f, picker_area, app),
             PickerId::AudioDevice => Self::render_audio_device(f, picker_area, app),
             PickerId::Settings => Self::render_settings(f, picker_area, app),
