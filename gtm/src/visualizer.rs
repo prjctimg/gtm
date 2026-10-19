@@ -3,11 +3,10 @@
 // Audio visualizer with multiple render presets
 //
 // The spectrum model ports cliamp's log-frequency band layout (20 Hz–20 kHz,
-// 10 bands) with per-column band interpolation, frame-capped easing, and decay
-// to rest while paused. The render presets are Mirror / Gradient / Wave /
-// Stereo / Flame, every one of which has a shader; the cell renderer behind
-// them is the fallback for a machine with no GPU to draw with, not a second
-// set of looks.
+// 10 bands) with per-column band interpolation, frame-capped easing, decay to
+// rest while paused, and per-bar falling peak caps. Render presets add the
+// iconic BarsDot / ClassicPeak / Columns / Wave / Stereo / Retro / Flame
+// modes on top of the original bar modes.
 //
 // This is free software released under the GPL-3.0 license.
 
@@ -18,111 +17,46 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
-use tracing::warn;
 
 use crate::theme::{AppTheme, blend_colors};
 
 // ─── Presets ────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum VisualizerPreset {
     #[default]
+    Braille,
+    Blocks,
     Mirror,
     Gradient,
+    Spectrum,
+    BarsDot,
+    ClassicPeak,
+    Columns,
     Wave,
     Stereo,
+    Retro,
     Flame,
-}
-
-/// Serialise as the lowercase name; read anything back.
-///
-/// Reading is deliberately tolerant. `config.toml` names a preset, and a build
-/// that removed one would otherwise make the *whole file* fail to parse — taking
-/// the queue, the volume, the EQ and the resume position down with it. That is
-/// not hypothetical: `SavedState::load` carries a comment about exactly this for
-/// `scrobble`.
-///
-/// A removed or misspelt name therefore falls back to the default rather than
-/// erroring. A visualizer preset is a display preference — losing it costs
-/// nothing and is visible at once, while a config that will not load costs
-/// everything and is silent.
-impl serde::Serialize for VisualizerPreset {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.name().to_lowercase().as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for VisualizerPreset {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let raw = String::deserialize(d)?;
-        Ok(VisualizerPreset::from_name(&raw))
-    }
 }
 
 impl VisualizerPreset {
     pub fn all() -> &'static [VisualizerPreset] {
         &[
+            VisualizerPreset::Braille,
+            VisualizerPreset::Blocks,
             VisualizerPreset::Mirror,
             VisualizerPreset::Gradient,
+            VisualizerPreset::Spectrum,
+            VisualizerPreset::BarsDot,
+            VisualizerPreset::ClassicPeak,
+            VisualizerPreset::Columns,
             VisualizerPreset::Wave,
             VisualizerPreset::Stereo,
+            VisualizerPreset::Retro,
             VisualizerPreset::Flame,
         ]
     }
-
-    /// The preset a stored name resolves to, defaulting when it names nothing.
-    ///
-    /// Separate from [`Self::all`] so the tolerant read a config file goes
-    /// through is the same resolution the picker uses, and there is only ever
-    /// one list of what a name can mean.
-    ///
-    /// A removed name is warned about rather than remapped quietly. The value
-    /// has to keep resolving — see the `Deserialize` impl for why a failure
-    /// there costs the whole config file — but a setting the user chose
-    /// changing with nothing said is worse than one that visibly reset, so the
-    /// old name and the new value both go to the log.
-    pub fn from_name(name: &str) -> Self {
-        let key = name.trim().to_lowercase();
-        match key.as_str() {
-            "mirror" => Self::Mirror,
-            "gradient" => Self::Gradient,
-            "wave" => Self::Wave,
-            "stereo" => Self::Stereo,
-            "flame" => Self::Flame,
-            other => {
-                let known = Self::REMOVED.iter().any(|(old, _)| *old == other);
-                let gone = other.chars().next().is_some_and(char::is_alphabetic);
-                if known && gone {
-                    warn!(
-                        "visualizer_preset = \"{other}\" was removed; using {} instead",
-                        Self::default().name()
-                    );
-                }
-                Self::default()
-            }
-        }
-    }
-
-    /// Names this build no longer accepts, and what replaced each.
-    ///
-    /// Kept so the deprecation can name the value rather than just complain,
-    /// and so a test can assert that every name here is genuinely gone rather
-    /// than a typo for something that still works.
-    pub const REMOVED: &'static [(&'static str, &'static str)] = &[
-        ("braille", "mirror"),
-        ("blocks", "mirror"),
-        ("spectrum", "mirror"),
-        ("barsdot", "mirror"),
-        ("classicpeak", "mirror"),
-        ("columns", "mirror"),
-        ("retro", "mirror"),
-        // The four progress-bar styles are gone from `config.toml` outright,
-        // listed here only so the log can explain a key that now does nothing.
-        ("seekhead", "the gpu progress bar"),
-        ("classic", "the gpu progress bar"),
-        ("dots", "the gpu progress bar"),
-        ("truegradient", "the gpu progress bar"),
-    ];
 
     pub fn next(&self) -> VisualizerPreset {
         let all = Self::all();
@@ -130,32 +64,19 @@ impl VisualizerPreset {
         all[(idx + 1) % all.len()]
     }
 
-    /// The GPU preset that draws this one.
-    ///
-    /// Infallible: the presets that had no shader were the ones the half-block
-    /// transport could not carry anyway — a braille dot grid is 2 wide by 4 tall
-    /// and comes back as a blur — so removing them left nothing `Option` had
-    /// anything to say about. The cell renderer still stands behind this as the
-    /// fallback when there is no device to draw with, which is the only way a
-    /// frame can still fail to reach a GPU.
-    #[cfg(feature = "shader-viz")]
-    pub fn gpu(self) -> crate::shader::Preset {
-        use crate::shader::Preset;
-        match self {
-            VisualizerPreset::Flame => Preset::Flame,
-            VisualizerPreset::Gradient => Preset::Gradient,
-            VisualizerPreset::Mirror => Preset::Mirror,
-            VisualizerPreset::Wave => Preset::Wave,
-            VisualizerPreset::Stereo => Preset::Stereo,
-        }
-    }
-
     pub fn name(&self) -> &'static str {
         match self {
+            VisualizerPreset::Braille => "Braille",
+            VisualizerPreset::Blocks => "Blocks",
             VisualizerPreset::Mirror => "Mirror",
             VisualizerPreset::Gradient => "Gradient",
+            VisualizerPreset::Spectrum => "Spectrum",
+            VisualizerPreset::BarsDot => "BarsDot",
+            VisualizerPreset::ClassicPeak => "ClassicPeak",
+            VisualizerPreset::Columns => "Columns",
             VisualizerPreset::Wave => "Wave",
             VisualizerPreset::Stereo => "Stereo",
+            VisualizerPreset::Retro => "Retro",
             VisualizerPreset::Flame => "Flame",
         }
     }
@@ -219,24 +140,6 @@ const BLOCKS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█
 /// from one another at one cell per bar.
 const STEP_TINT: f64 = 0.35;
 
-/// Fallback heat palette for Flame.
-fn heat_color(heat: f32, theme: &AppTheme) -> Color {
-    if heat > 0.78 {
-        // Nudging the accent toward cream keeps the "hot" reading while giving
-        // the peak the artwork's hue, the one place at the top of the ramp a
-        // reactive theme reaches.
-        blend_colors(theme.accent, Color::Rgb(255, 250, 200), 0.7)
-    } else if heat > 0.58 {
-        theme.tertiary_accent
-    } else if heat > 0.38 {
-        theme.secondary_accent
-    } else if heat > 0.2 {
-        theme.accent
-    } else {
-        tinted(theme, theme.fg_dim)
-    }
-}
-
 /// A neutral theme step pulled toward the current artwork, preserving its
 /// luminance so ramp ordering survives. Non-RGB themes have nothing to blend
 /// and `blend_colors` hands the step back untouched.
@@ -255,6 +158,172 @@ pub fn amplitude_color(val: f32, theme: &AppTheme) -> Color {
         tinted(theme, theme.fg_dim)
     }
 }
+
+/// Grid layer for the vintage car body in the Retro scene. Distinct from the
+/// sun (3), the wave (2) and the perspective lines (1) so the car can be drawn
+/// after them and stay legible.
+const RETRO_CAR: u8 = 4;
+/// Grid layer for a note drifting out of the car.
+const RETRO_NOTE: u8 = 5;
+
+/// A vintage car's silhouette, in dot rows: roof, cabin, body, then two wheel
+/// pairs cut into the bottom edge. Seven rows is under two Braille cells, which
+/// is what it has to be to sit on the road without pushing into the sun.
+///
+/// Kept as rows of text rather than coordinates because a car is a shape, and a
+/// picture of one is the only honest way to hold it.
+const RETRO_CAR_ART: &[&str] = &[
+    "......######......",
+    "....##########....",
+    "...############...",
+    "..##############..",
+    ".################.",
+    "##.############.##",
+    ".##.##.####.##.##.",
+];
+
+/// Top-left dot the car is drawn at: centred under the sun, sitting on the road
+/// just below the horizon. Returns `None` when the frame is too small for it,
+/// which is the common case on a short pane and must not draw a smear.
+fn retro_car_origin(dot_cols: usize, horizon: usize, floor_rows: usize) -> Option<(usize, usize)> {
+    let w = RETRO_CAR_ART[0].chars().count();
+    let h = RETRO_CAR_ART.len();
+    if dot_cols < w + 2 || floor_rows < h {
+        return None;
+    }
+    let x = (dot_cols - w) / 2;
+    // One row below the horizon line, so the wheels sit on the road rather than
+    // in it.
+    let y = horizon + 1;
+    if y + h > horizon + floor_rows {
+        return None;
+    }
+    Some((x, y))
+}
+
+/// Stamp the car into the grid. Silhouette only, and drawn over whatever the
+/// perspective lines put down there: the car is nearer the viewer than the road
+/// it is on.
+fn retro_car(grid: &mut [u8], dot_rows: usize, dot_cols: usize, origin: Option<(usize, usize)>) {
+    let Some((ox, oy)) = origin else { return };
+    for (dy, row) in RETRO_CAR_ART.iter().enumerate() {
+        let y = oy + dy;
+        if y >= dot_rows {
+            return;
+        }
+        for (dx, ch) in row.chars().enumerate() {
+            if ch == ' ' {
+                continue;
+            }
+            let x = ox + dx;
+            if x < dot_cols {
+                grid[y * dot_cols + x] = RETRO_CAR;
+            }
+        }
+    }
+}
+
+/// A stable pseudo-random number in `[0, 1)` from a seed.
+///
+/// A hash rather than an RNG on purpose. Two reasons: the notes must not jitter
+/// between two identical frames, and nothing in this renderer allocates per
+/// frame, so pulling from a shared generator would need state threaded through
+/// the call. Hashing the note's index and the frame gives each note its own
+/// trajectory that still changes from frame to frame.
+fn retro_jitter(seed: u32) -> f64 {
+    let mut h = seed.wrapping_mul(2_654_435_761).wrapping_add(0x9E37_79B9);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 13;
+    ((h >> 8) as f64) / ((1u32 << 24) as f64)
+}
+
+/// Notes drifting up out of the car: slow, irregular, and louder tracks carry
+/// more of them.
+///
+/// `frame` drives the drift, one dot every [`RETRO_NOTE_RISE`] frames, so the
+/// notes take a couple of seconds to leave the frame rather than streaming off
+/// it. The horizontal wander and the starting height come from
+/// [`retro_jitter`] keyed on the note's index, which is what makes them
+/// irregular rather than evenly spaced.
+fn retro_notes(
+    grid: &mut [u8],
+    dot_rows: usize,
+    dot_cols: usize,
+    origin: Option<(usize, usize)>,
+    frame: u64,
+    level: f32,
+) {
+    let Some((ox, oy)) = origin else { return };
+    // Silence gets no notes at all, which is the point: the car is silent until
+    // there is music to be making noise about.
+    let count = (level.clamp(0.0, 1.0) * RETRO_NOTES_MAX as f32).round() as usize;
+    if count == 0 {
+        return;
+    }
+    let roof = oy.saturating_sub(1);
+    for i in 0..count {
+        let seed = (i as u64).wrapping_mul(0x9E37) as u32;
+        let rise = (frame / RETRO_NOTE_RISE) as f64;
+        // Per-note phase and rate, so two notes never climb in lockstep.
+        let phase = retro_jitter(seed) * 40.0;
+        let rate = 0.6 + retro_jitter(seed ^ 0x5F5F) * 0.8;
+        let travelled = rise * rate + phase;
+        let Some(y) = y_from_height(roof, travelled, dot_rows) else {
+            continue;
+        };
+        // Wander widens as the note rises, the way smoke does.
+        let drift = (retro_jitter(seed ^ 0x1234) - 0.5) * 6.0 * (travelled / 12.0);
+        let base_x = ox as f64 + (RETRO_CAR_ART[0].chars().count() as f64) * 0.5;
+        let x = base_x + drift;
+        for dy in 0..2u8 {
+            let yy = y as isize + dy as isize;
+            if yy < 0 || yy as usize >= dot_rows {
+                break;
+            }
+            let xx = x.round() as isize;
+            if xx < 0 || xx as usize >= dot_cols {
+                break;
+            }
+            grid[yy as usize * dot_cols + xx as usize] = RETRO_NOTE;
+        }
+    }
+}
+
+/// Rows a note has risen, converted to a row, or `None` once it has left the
+/// top of the frame.
+fn y_from_height(roof: usize, travelled: f64, dot_rows: usize) -> Option<usize> {
+    let y = roof as f64 - travelled;
+    if y < 0.0 {
+        return None;
+    }
+    let y = y as usize;
+    if y >= dot_rows { None } else { Some(y) }
+}
+
+/// Frames a note takes to rise one dot. Slow on purpose.
+const RETRO_NOTE_RISE: u64 = 9;
+/// Notes at full scale. Few, because a car is not a music visualiser.
+const RETRO_NOTES_MAX: usize = 7;
+
+/// Fallback heat palette for Flame/Retro warm hues.
+fn heat_color(heat: f32, theme: &AppTheme) -> Color {
+    if heat > 0.78 {
+        // Nudging the accent toward cream keeps the "hot" reading while giving
+        // the peak the artwork's hue, the one place at the top of the ramp a
+        // reactive theme reaches.
+        blend_colors(theme.accent, Color::Rgb(255, 250, 200), 0.7)
+    } else if heat > 0.58 {
+        theme.tertiary_accent
+    } else if heat > 0.38 {
+        theme.secondary_accent
+    } else if heat > 0.2 {
+        theme.accent
+    } else {
+        tinted(theme, theme.fg_dim)
+    }
+}
+
 // ─── Band helpers ───────────────────────────────────────────────────────────
 
 /// Map an Hz edge onto the log-spaced index space of the analyzer's bins.
@@ -340,8 +409,6 @@ pub struct AudioVisualizer {
     /// The headless GPU device, brought up on the first Flame frame and `None`
     /// on any machine that cannot provide one. Lazily created so a user who
     /// never reaches Flame never pays for the device.
-    #[cfg(feature = "shader-viz")]
-    gpu: Option<crate::shader::Shader>,
     // Column bar model (one level per terminal column)
     bars: Vec<f32>,
     target_cols: Vec<f32>,
@@ -376,8 +443,6 @@ impl AudioVisualizer {
     pub fn new() -> Self {
         Self {
             preset: VisualizerPreset::default(),
-            #[cfg(feature = "shader-viz")]
-            gpu: None,
             bars: vec![0.0; 32],
             target_cols: vec![0.0; 32],
             peaks: vec![0.0; 32],
@@ -667,13 +732,111 @@ impl AudioVisualizer {
         let num_bars = num_bars.max(1);
 
         Some(match self.preset {
+            VisualizerPreset::Braille => self.render_braille(num_bars, h, theme),
+            VisualizerPreset::Blocks => self.render_blocks(num_bars, h, theme),
             VisualizerPreset::Mirror => self.render_mirror(num_bars, h, theme),
             VisualizerPreset::Gradient => self.render_gradient(num_bars, h, theme),
+            VisualizerPreset::Spectrum => self.render_spectrum(num_bars, h, theme),
+            VisualizerPreset::BarsDot => self.render_bars_dot(num_bars, h, theme),
+            VisualizerPreset::ClassicPeak => self.render_classic_peak(num_bars, h, theme),
+            VisualizerPreset::Columns => self.render_columns(num_bars, h, theme),
             VisualizerPreset::Wave => self.render_wave(num_bars, h, theme),
             VisualizerPreset::Stereo => self.render_stereo(num_bars, h, theme),
+            VisualizerPreset::Retro => self.render_retro(num_bars, h, theme),
             VisualizerPreset::Flame => self.render_flame(num_bars, h, theme),
         })
     }
+
+    /// Braille-stippled bars: each cell maps to a 4×2 dot grid filled from the
+    /// bottom to the bar level (cliamp renderBarsDot).
+    fn render_bars_dot(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
+        let dot_rows = height * 4;
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for row in 0..height {
+            let base = row * 4;
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for i in 0..num_bars {
+                let val = *self.bars.get(i).unwrap_or(&0.0);
+                let mut braille: u32 = 0x2800;
+                for (dr, bits) in BRAILLE_BIT.iter().enumerate() {
+                    let dot_y = (dot_rows - 1) as f64 - (base + dr) as f64;
+                    let norm = dot_y / (dot_rows - 1).max(1) as f64;
+                    if norm < val as f64 {
+                        braille |= bits[0] | bits[1];
+                    }
+                }
+                let ch = char::from_u32(braille).unwrap_or('⠀');
+                spans.push(Span::styled(
+                    ch.to_string(),
+                    Style::default().fg(amplitude_color(val, theme)),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+        Lines(lines)
+    }
+
+    /// Classic falling peak caps over thin columns, with launch/gravity/cap
+    /// physics (cliamp rendering: cap glyphs `⎺⎻⎼⎽` above `▏` bodies).
+    fn render_classic_peak(
+        &self,
+        num_bars: usize,
+        height: usize,
+        theme: &AppTheme,
+    ) -> Lines<'static> {
+        let peak_glyphs: [&str; 4] = ["⎺", "⎻", "⎼", "⎽"];
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for row in 0..height {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let row_from_top = height - 1 - row;
+            for i in 0..num_bars {
+                let val = *self.bars.get(i).unwrap_or(&0.0);
+                let cap = *self.peak_pos.get(i).unwrap_or(&0.0);
+                let filled = (val * height as f32).floor() as usize;
+                let cap_row = (cap * height as f32).floor() as usize;
+                let (glyph, color) = if row_from_top < filled {
+                    ("█", amplitude_color(val, theme))
+                } else if cap > val + 0.005 && cap_row == row_from_top && cap_row < height {
+                    let idx = if self.peak_vel[i] > 0.2 {
+                        0
+                    } else if self.peak_hold[i] > 0.0 {
+                        1
+                    } else {
+                        3
+                    };
+                    (peak_glyphs[idx], theme.accent)
+                } else {
+                    (" ", theme.bg)
+                };
+                spans.push(Span::styled(glyph, Style::default().fg(color)));
+            }
+            lines.push(Line::from(spans));
+        }
+        Lines(lines)
+    }
+
+    /// Dense thin interpolated columns (cliamp renderColumns): one solid glyph
+    /// per terminal column with subtle per-column variation.
+    fn render_columns(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for row in 0..height {
+            let row_from_top = height - 1 - row;
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for i in 0..num_bars {
+                let val = *self.bars.get(i).unwrap_or(&0.0);
+                let filled = (val * height as f32).floor() as usize;
+                let (glyph, color) = if row_from_top < filled {
+                    ("█", amplitude_color(val, theme))
+                } else {
+                    (" ", theme.bg)
+                };
+                spans.push(Span::styled(glyph, Style::default().fg(color)));
+            }
+            lines.push(Line::from(spans));
+        }
+        Lines(lines)
+    }
+
     /// Braille oscilloscope over the decimated waveform ring (cliamp
     /// renderWave). No samples means no wave: the ring is only filled while
     /// playing, so a stopped pane stays empty instead of drawing a sweep.
@@ -787,6 +950,174 @@ impl AudioVisualizer {
         }
         Lines(lines)
     }
+
+    /// 80s synthwave scene: striped sun, horizon, scrolling perspective grid
+    /// and an audio-reactive wave, rendered through Braille cells (cliamp
+    /// renderRetro).
+    fn render_retro(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
+        let char_cols = num_bars;
+        let dot_rows = height * 4;
+        let dot_cols = char_cols * 2;
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        if dot_rows < 4 {
+            return lines_empty(height);
+        }
+        let horizon = (dot_rows * 2 / 5).max(2);
+        let floor_rows = dot_rows.saturating_sub(horizon).max(1);
+        let center_x = (dot_cols.saturating_sub(1) as f64) / 2.0;
+        let mut grid = vec![0u8; dot_rows * dot_cols];
+
+        // Striped setting sun.
+        let sun_r = horizon as f64 * 0.85;
+        for dy in 0..horizon {
+            let row_dist = (horizon - dy) as f64;
+            if row_dist > sun_r {
+                continue;
+            }
+            let half_w = (sun_r * sun_r - row_dist * row_dist).sqrt();
+            if row_dist < sun_r * 0.5 {
+                let sw = (sun_r * 0.15).max(1.0) as usize;
+                if ((row_dist as usize) / sw) % 2 == 1 {
+                    continue;
+                }
+            }
+            let left = ((center_x - half_w) as isize).max(0) as usize;
+            let right = ((center_x + half_w) as usize).min(dot_cols - 1);
+            for dx in left..=right {
+                grid[dy * dot_cols + dx] = 3;
+            }
+        }
+        // Horizon line.
+        for dx in 0..dot_cols {
+            grid[horizon * dot_cols + dx] = 1;
+        }
+        // Perspective vertical lines converging to the vanishing point.
+        const NVL: usize = 18;
+        for i in 0..=NVL {
+            let bottom_x = i as f64 * (dot_cols.saturating_sub(1) as f64) / NVL as f64;
+            for dy in (horizon + 1)..dot_rows {
+                let t = (dy - horizon) as f64 / (floor_rows - 1) as f64;
+                let sx = (center_x + (bottom_x - center_x) * t).round() as isize;
+                if sx >= 0 && (sx as usize) < dot_cols {
+                    grid[dy * dot_cols + sx as usize] = 1;
+                }
+            }
+        }
+        // Scrolling horizontal lines (quadratic perspective).
+        let scroll = (self.frame as f64 * 0.08) % 1.0;
+        const NHL: usize = 10;
+        for i in 0..NHL {
+            let mut z = (i as f64 + scroll) / NHL as f64;
+            if z > 1.0 {
+                z -= 1.0;
+            }
+            let dy = horizon + 1 + (z * z * (floor_rows.saturating_sub(2).max(1) as f64)) as usize;
+            if dy > horizon && dy < dot_rows {
+                for dx in 0..dot_cols {
+                    grid[dy * dot_cols + dx] = 1;
+                }
+            }
+        }
+        // Audio-reactive wave riding the horizon.
+        let max_wave = horizon as f64 * 0.85;
+        let band_last = (BAND_COUNT - 1) as f64;
+        let mut wave_y = vec![0usize; dot_cols];
+        for (dx, slot) in wave_y.iter_mut().enumerate() {
+            let bf = dx as f64 / (dot_cols.saturating_sub(1).max(1) as f64) * band_last;
+            let bi = (bf as usize).min(BAND_COUNT - 1);
+            let frac = bf - bi as f64;
+            let level = if bi >= BAND_COUNT - 1 {
+                self.bands[BAND_COUNT - 1] as f64
+            } else {
+                let t = (1.0 - (frac * std::f64::consts::PI).cos()) / 2.0;
+                self.bands[bi] as f64 * (1.0 - t) + self.bands[bi + 1] as f64 * t
+            };
+            let level = level.max(0.03);
+            let wy = (horizon as f64 - level * max_wave).round() as isize;
+            *slot = wy.clamp(0, (dot_rows - 1) as isize) as usize;
+        }
+        for (dx, &y) in wave_y.iter().enumerate() {
+            grid[y * dot_cols + dx] = 2;
+            if dx > 0 {
+                let (lo, hi) = (y.min(wave_y[dx - 1]), y.max(wave_y[dx - 1]));
+                for fy in lo..=hi {
+                    grid[fy * dot_cols + dx] = 2;
+                }
+            }
+        }
+
+        // The car, out on the road and away from the grid drawing order, so it
+        // reads as being in front of the perspective lines rather than part of
+        // them.
+        let car_origin = retro_car_origin(dot_cols, horizon, floor_rows);
+        retro_car(&mut grid, dot_rows, dot_cols, car_origin);
+
+        // Notes out of the exhaust. Drawn last so they are never clipped by the
+        // car they left, and so a note crossing the horizon is still a note
+        // rather than a grid line.
+        let level = self.bands.iter().copied().fold(0.0f32, f32::max);
+        retro_notes(&mut grid, dot_rows, dot_cols, car_origin, self.frame, level);
+
+        // Render braille cells; colour priority: wave > sun > car > notes > grid.
+        for row in 0..height {
+            let base = row * 4;
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for ch in 0..char_cols {
+                let mut braille: u32 = 0x2800;
+                let mut has_wave = false;
+                let mut has_sun = false;
+                let mut has_car = false;
+                let mut has_note = false;
+                for (dr, bits) in BRAILLE_BIT.iter().enumerate() {
+                    let dy = base + dr;
+                    for (dc, bit) in bits.iter().enumerate() {
+                        let dx = ch * 2 + dc;
+                        if dy >= dot_rows || dx >= dot_cols {
+                            continue;
+                        }
+                        match grid[dy * dot_cols + dx] {
+                            1 => braille |= *bit,
+                            2 => {
+                                braille |= *bit;
+                                has_wave = true;
+                            }
+                            3 => {
+                                braille |= *bit;
+                                has_sun = true;
+                            }
+                            4 => {
+                                braille |= *bit;
+                                has_car = true;
+                            }
+                            5 => {
+                                braille |= *bit;
+                                has_note = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let color = if has_wave {
+                    theme.secondary_accent
+                } else if has_sun {
+                    theme.accent
+                } else if has_car {
+                    // Cream rather than the accent the sun uses, so the two
+                    // brightest things in the frame do not read as one shape.
+                    blend_colors(theme.accent, Color::Rgb(255, 238, 205), 0.75)
+                } else if has_note {
+                    theme.tertiary_accent
+                } else {
+                    tinted(theme, theme.fg_dim)
+                };
+                let glyph = char::from_u32(braille).unwrap_or('⠀');
+                spans.push(Span::styled(glyph.to_string(), Style::default().fg(color)));
+            }
+            lines.push(Line::from(spans));
+        }
+        Lines(lines)
+    }
+
     /// Doom-fire heat field rendered through Braille cells, coloured by heat
     /// (cliamp vis_flame). The simulation runs in `tick`; this only rasterises.
     fn render_flame(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
@@ -846,6 +1177,62 @@ impl AudioVisualizer {
         }
         Lines(lines)
     }
+
+    /// Log-mapped spectrum bars with peak-hold caps. Distinct from Blocks
+    /// (fractional smooth columns): solid columns plus a falling `▔` marker
+    /// per bar. Glyphs are `&'static str` — no per-frame allocation.
+    fn render_spectrum(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for row_from_top in (0..height).rev() {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for i in 0..num_bars {
+                let val = *self.bars.get(i).unwrap_or(&0.0);
+                let peak = *self.peaks.get(i).unwrap_or(&0.0);
+                let filled_rows = (val * height as f32).floor() as usize;
+                let peak_row = ((peak * height as f32).floor() as usize).min(height);
+                let (glyph, color) = if row_from_top < filled_rows {
+                    ("█", amplitude_color(val, theme))
+                } else if peak > 0.0 && row_from_top == peak_row && peak_row < height {
+                    ("▔", theme.accent)
+                } else {
+                    (" ", theme.bg)
+                };
+                spans.push(Span::styled(glyph, Style::default().fg(color)));
+            }
+            lines.push(Line::from(spans));
+        }
+        Lines(lines)
+    }
+
+    /// Block columns with fine fractional heights (`▁…█`).
+    fn render_blocks(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for row_from_top in (0..height).rev() {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for i in 0..num_bars {
+                let val = *self.bars.get(i).unwrap_or(&0.0);
+                let filled = val * height as f32;
+                let full_rows = filled.floor() as usize;
+                let frac = filled - filled.floor();
+                let glyph = if row_from_top < full_rows {
+                    BLOCKS[7]
+                } else if row_from_top == full_rows && frac > 0.0 && full_rows < height {
+                    BLOCKS[((frac * 8.0) as usize).min(7)]
+                } else {
+                    " "
+                };
+                let color = if glyph == " " {
+                    theme.bg
+                } else {
+                    amplitude_color(val, theme)
+                };
+                spans.push(Span::styled(glyph, Style::default().fg(color)));
+            }
+            lines.push(Line::from(spans));
+        }
+        Lines(lines)
+    }
+
     /// Center-symmetric bars blooming outward from the middle axis.
     fn render_mirror(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
         let half = height as f32 / 2.0;
@@ -900,6 +1287,12 @@ impl AudioVisualizer {
         // second copy of it here is a second answer to "how bright is a value
         // of 0.6", and the two would drift.
         self.render_braille_grid(num_bars, height, theme, amplitude_color)
+    }
+
+    fn render_braille(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
+        self.render_braille_grid(num_bars, height, theme, |val, theme| {
+            amplitude_color(val, theme)
+        })
     }
 }
 
@@ -1111,29 +1504,10 @@ impl Visualizer for AudioVisualizer {
         if w < 4 || h < 3 || (!self.playing && self.resting) {
             return Frame::Cells(Lines(Vec::new()));
         }
-        // The GPU path first for every preset, and the cell renderer when there
-        // is no device to draw with. `Shader::draw` answers `None` on the very
-        // first call by design — a device that exists still has a frame in
-        // flight — so `None` means "cells this frame", not "give up on the GPU".
-        #[cfg(feature = "shader-viz")]
-        {
-            let preset = self.preset.gpu();
-            if self.gpu.is_none()
-                && let Some(gpu) = crate::shader::Shader::new()
-            {
-                self.gpu = Some(gpu);
-            }
-            // Built before the borrow: the job reads the band and waveform
-            // models, which `gpu.draw` needs `&mut` for.
-            if let Some(job) = self.shader_job(preset, frame)
-                && let Some(gpu) = self.gpu.as_mut()
-                && let Some(img) = gpu.draw(job)
-            {
-                return Frame::Pixels(img);
-            }
-        }
-        // Flame still has a CPU heat field behind the shader, so a machine with
-        // no device keeps the effect rather than losing the preset.
+        // Flame runs a CPU heat field and comes back as an image, which is
+        // sampled into half-blocks by the same transport as everything else --
+        // `Frame::Pixels` is not the GPU path, it is the cell path with more
+        // colours than a glyph can carry.
         if self.preset == VisualizerPreset::Flame && self.heat_rows > 0 && self.heat_cols > 0 {
             return Frame::Pixels(self.flame_image(frame.theme));
         }
@@ -1144,63 +1518,9 @@ impl Visualizer for AudioVisualizer {
     }
 }
 
-impl AudioVisualizer {
-    /// The GPU preset that draws `self.preset`, or `None` when it has none.
-    ///
-    /// Only presets whose look survives the trip through a terminal cell go
-    /// here. The frame is read back and printed with `▀`, which resolves one
-    /// horizontal and two vertical samples per cell — so a bar grid, a trace and
-    /// a meter are exact, while a braille dot grid (2 wide by 4 tall) and a
-    /// four-wide dot bar cannot be drawn at all through it and would come back
-    /// as a blur of half-blocks. Those stay on the cell renderer, where the
-    /// glyph is the whole point.
-    /// The work item for one GPU frame.
-    ///
-    /// Built from the same smoothed bands, the same waveform and the same theme
-    /// ramp the cell renderer uses, so the two paths cannot drift apart: the GPU
-    /// changes how the levels become pixels, not what the levels are.
-    #[cfg(feature = "shader-viz")]
-    fn shader_job(
-        &self,
-        preset: crate::shader::Preset,
-        frame: &AudioFrame,
-    ) -> Option<crate::shader::Draw> {
-        let cols = self.heat_cols.clamp(1, 64);
-        let bands = resample_bands_linear(&self.bands, cols);
-        // The waveform is decimated to the pane's own width, which is what the
-        // trace reads; resampling a longer ring would only add jitter.
-        let wave: Vec<f32> = frame
-            .wave
-            .iter()
-            .copied()
-            .filter(|v| v.is_finite())
-            .take(64)
-            .collect();
-        let t = frame.theme;
-        Some(crate::shader::Draw {
-            // The visualizer never draws a progress bar; the bar has its own
-            // call into the same pipeline and carries the ratio there.
-            progress: 0.0,
-            preset,
-            playing: self.playing,
-            dt: frame.dt as f32,
-            bands: std::array::from_fn(|i| bands.get(i).copied().unwrap_or(0.0)),
-            band_count: bands.len().min(64) as u32,
-            wave: std::array::from_fn(|i| wave.get(i).copied().unwrap_or(0.0)),
-            wave_count: wave.len().min(64) as u32,
-            stereo: [
-                self.stereo_level[0],
-                self.stereo_level[1],
-                self.stereo_peak[0],
-                self.stereo_peak[1],
-            ],
-            cells: frame.size,
-            cool: rgb_of(t.fg_dim),
-            warm: rgb_of(t.accent),
-            peak: rgb_of(t.secondary_accent),
-        })
-    }
+impl AudioVisualizer {}
 
+impl AudioVisualizer {
     /// Rasterise the flame heat field to pixels. `draw` reaches this so Flame
     /// travels the `Frame::Pixels` route with no GPU at all: the same heat
     /// model, a different last step.
@@ -1231,139 +1551,45 @@ impl AudioVisualizer {
 mod tests {
     use super::*;
 
-    /// The surviving set, in cycle order.
-    ///
-    /// Spelled out rather than derived from `all()` so adding a preset has to
-    /// be a decision here, and so a preset that vanished from the enum without
-    /// anyone noticing fails here first.
     #[test]
     fn preset_cycles_wrap() {
-        let names: Vec<&str> = VisualizerPreset::all().iter().map(|x| x.name()).collect();
-        assert_eq!(names, vec!["Mirror", "Gradient", "Wave", "Stereo", "Flame"]);
-
         let mut p = VisualizerPreset::default();
-        for _ in 0..VisualizerPreset::all().len() {
-            p = p.next();
-        }
-        assert_eq!(p, VisualizerPreset::default());
-    }
-
-    /// Every preset has a shader, which is why `gpu_preset` is infallible.
-    ///
-    /// The property the removal bought: if a preset without a shader is ever
-    /// added back, the cell renderer would be the only thing drawing it, and
-    /// `gpu_preset` would have to become fallible again.
-    #[cfg(feature = "shader-viz")]
-    #[test]
-    fn every_preset_maps_to_a_shader() {
-        for p in VisualizerPreset::all() {
-            let mapped = p.gpu();
-            assert!(
-                crate::shader::Preset::ALL.contains(&mapped),
-                "{p:?} has no shader"
-            );
-        }
-    }
-
-    /// Every removed name is genuinely gone.
-    ///
-    /// The list is what the deprecation log reads, so a typo in it would tell a
-    /// user their working setting was removed. It is checked against the live
-    /// table rather than trusted.
-    #[test]
-    fn every_removed_name_really_is_removed() {
-        for (old, _) in VisualizerPreset::REMOVED {
-            assert_eq!(
-                VisualizerPreset::from_name(old),
-                VisualizerPreset::default(),
-                "{old} still resolves to a preset of its own"
-            );
-            // And no removed name collides with a live one, in either case.
-            assert!(
-                !VisualizerPreset::all()
-                    .iter()
-                    .any(|p| p.name().eq_ignore_ascii_case(old)),
-                "{old} is in both the live set and the removed set"
-            );
-        }
-    }
-
-    /// The list does not grow by accident, and keeps the four progress styles
-    /// documented here even though they live in a different config field.
-    #[test]
-    fn the_removed_set_is_the_one_that_went() {
-        let names: Vec<&str> = VisualizerPreset::REMOVED.iter().map(|(n, _)| *n).collect();
+        assert_eq!(p, VisualizerPreset::Braille);
+        let names: Vec<&str> = VisualizerPreset::all().iter().map(|x| x.name()).collect();
         assert_eq!(
             names,
             vec![
-                "braille",
-                "blocks",
-                "spectrum",
-                "barsdot",
-                "classicpeak",
-                "columns",
-                "retro",
-                "seekhead",
-                "classic",
-                "dots",
-                "truegradient",
+                "Braille",
+                "Blocks",
+                "Mirror",
+                "Gradient",
+                "Spectrum",
+                "BarsDot",
+                "ClassicPeak",
+                "Columns",
+                "Wave",
+                "Stereo",
+                "Retro",
+                "Flame",
             ]
         );
+        for _ in 0..VisualizerPreset::all().len() {
+            p = p.next();
+        }
+        assert_eq!(p, VisualizerPreset::Braille);
     }
 
     #[test]
     fn preset_roundtrip() {
-        let p = serde_json::from_str::<VisualizerPreset>("\"wave\"").unwrap();
-        assert_eq!(p, VisualizerPreset::Wave);
+        let p = serde_json::from_str::<VisualizerPreset>("\"spectrum\"").unwrap();
+        assert_eq!(p, VisualizerPreset::Spectrum);
         assert_eq!(
-            serde_json::to_string(&VisualizerPreset::Gradient).unwrap(),
-            "\"gradient\""
-        );
-    }
-
-    /// A name this build does not have resolves to the default, not an error.
-    ///
-    /// The removed presets are the point: `config.toml` on a user's disk still
-    /// says `visualizer_preset = "braille"`, and if that failed to parse, the
-    /// whole file would be dropped — queue, volume, EQ and resume position
-    /// included. Covered for a name that never existed as well, because a typo
-    /// is the same failure.
-    #[test]
-    fn an_unknown_preset_name_falls_back_instead_of_failing() {
-        for name in [
-            "braille",
-            "blocks",
-            "spectrum",
-            "barsdot",
-            "classicpeak",
-            "columns",
-            "retro",
-            "nonsense",
-            "",
-            "  Flame  ",
-        ] {
-            let parsed = serde_json::from_str::<VisualizerPreset>(&format!("\"{name}\""));
-            let got = parsed.unwrap_or_else(|e| panic!("{name:?} failed to parse: {e}"));
-            if name.trim().eq_ignore_ascii_case("flame") {
-                assert_eq!(got, VisualizerPreset::Flame, "{name:?}");
-            } else {
-                assert_eq!(got, VisualizerPreset::default(), "{name:?}");
-            }
-        }
-    }
-
-    /// Reading is case- and space-tolerant, because a hand-edited config has
-    /// both and there is no reason to drop the file over either.
-    #[test]
-    fn names_resolve_leniently() {
-        assert_eq!(VisualizerPreset::from_name("WAVE"), VisualizerPreset::Wave);
-        assert_eq!(
-            VisualizerPreset::from_name("  stereo "),
-            VisualizerPreset::Stereo
+            serde_json::to_string(&VisualizerPreset::BarsDot).unwrap(),
+            "\"barsdot\""
         );
         assert_eq!(
-            VisualizerPreset::from_name("MIRROR"),
-            VisualizerPreset::Mirror
+            serde_json::to_string(&VisualizerPreset::Blocks).unwrap(),
+            "\"blocks\""
         );
     }
 

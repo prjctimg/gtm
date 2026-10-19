@@ -26,8 +26,6 @@ pub mod picker;
 pub mod progress;
 pub mod providers;
 pub mod reactive;
-#[cfg(feature = "shader-viz")]
-pub mod shader;
 pub mod theme;
 pub mod ui;
 pub mod visualizer;
