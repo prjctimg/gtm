@@ -3813,7 +3813,10 @@ fn daydreaming_never_seizes_a_screen_it_cannot_draw() {
         "&& !self.zen",
         "&& !self.pickers.is_open()",
     ] {
-        assert!(gate.contains(want), "the daydream gate lost `{want}`: {gate}");
+        assert!(
+            gate.contains(want),
+            "the daydream gate lost `{want}`: {gate}"
+        );
     }
 }
 
