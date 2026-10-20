@@ -1951,8 +1951,18 @@ impl App {
             // own choosing, and something they are actively looking at, and
             // daydreaming must not overwrite either. Cleared the instant
             // anything is touched again, so it never lingers behind a keypress.
+            //
+            // Two more gates than "long enough". `daydream_secs == 0` is the
+            // Off row of the System settings, and `idle >= 0` is always true —
+            // without the explicit check, Off meant *constant* daydreaming.
+            // And the takeover is the visualizer's, so it only happens when
+            // the visualizer has something to draw: with playback stopped the
+            // model rests within seconds and draws an empty pane, which was a
+            // full-screen blank wherever it fired.
             let idle = self.last_input.elapsed();
-            self.daydreaming = idle >= Duration::from_secs(self.daydream_secs)
+            self.daydreaming = self.daydream_secs > 0
+                && idle >= Duration::from_secs(self.daydream_secs)
+                && playing
                 && !self.zen
                 && !self.pickers.is_open()
                 && self.extensions.is_enabled(ExtensionId::Visualizer);

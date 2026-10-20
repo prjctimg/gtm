@@ -60,14 +60,16 @@ impl Pickers {
             // under the whole block as a picker hint, which put "press s to star"
             // below the copyright and below the site — the one line the window
             // exists to prompt with, filed at the bottom next to legal text.
-            Line::from(Span::styled("Press s to star on GitHub", hint)),
             // The mark rides at the end of the sentence rather than on a row of
             // its own: it is the logo for the link the sentence names, so it
             // reads as part of it.
-            Line::from(Span::styled(
-                format!("           {}", crate::ui::bigtext::mark(&app.icon_style)),
-                hint,
-            )),
+            Line::from(vec![
+                Span::styled("Press s to star", hint),
+                Span::styled(
+                    format!(" {}", crate::ui::bigtext::mark(&app.icon_style)),
+                    dim,
+                ),
+            ]),
             // Under the mark rather than welded to it: the name says what this
             // is, the numbers say which one.
             Line::from(Span::styled(

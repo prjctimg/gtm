@@ -40,7 +40,7 @@ pub(crate) const SITE: &str = "gtmd.dev";
 /// rather than a line of its own: it is one key, and a welcome that spends a
 /// whole row on "star us" next to a row saying "press any key" is two paragraphs
 /// saying one thing.
-const HINT: &str = "Press s to star on GitHub";
+const HINT: &str = "Press s to star";
 
 /// The way out of the pane for good, on the same row as the call to action.
 ///
@@ -265,7 +265,26 @@ fn providers(app: &App, frame: usize, w: u16) -> Line<'static> {
         Style::default().fg(app.theme.accent),
         Style::default().fg(app.theme.fg_dim),
     );
-    let spans = provider_spans(&all, glyph, name);
+    provider_row(&all, glyph, name, frame, w)
+}
+
+/// The `w`-cell window of the provider row at marquee tick `frame`, wrapping
+/// forever.
+///
+/// The seam deserves its own note because it was the one pair with nothing
+/// between it: the row is a ring, so the last name meets the first glyph at a
+/// boundary like any other, and [`provider_spans`] only puts a gap *before*
+/// each item. Without a trailing gap the marquee wrapped `Local` straight into
+/// `Spotify` — the divider is appended on the marching path alone so the
+/// static row keeps no trailing whitespace to centre against.
+fn provider_row(
+    all: &[(&'static str, &'static str)],
+    glyph: Style,
+    name: Style,
+    frame: usize,
+    w: u16,
+) -> Line<'static> {
+    let mut spans = provider_spans(all, glyph, name);
     let total = Line::from(spans.clone()).width() as u16;
     if total <= w {
         return Line::from(spans);
@@ -280,6 +299,8 @@ fn providers(app: &App, frame: usize, w: u16) -> Line<'static> {
     // a name before it could be read, which trades the old stall for a blur. A
     // single cell per step — never several — is what makes it read as sliding
     // rather than as a jump.
+    spans.push(Span::styled(PROVIDER_GAP.to_string(), glyph));
+    let total = Line::from(spans.clone()).width() as u16;
     Line::from(slice(&spans, march(frame, total as usize), w as usize))
 }
 
@@ -700,6 +721,36 @@ mod tests {
             "a name butted straight into the next glyph: {row}"
         );
         assert!(row.contains("Name  ·  B"), "spacing changed shape: {row}");
+    }
+
+    /// The wrap seam carries the same divider every interior pair gets.
+    ///
+    /// The row is a ring: the window slides off the tail and back onto the
+    /// head, so the last name meets the first glyph at a boundary the per-item
+    /// gap never covered — the one place in the row where two names could butt
+    /// together (`Local` and `Spotify`, since they are the ends of the list).
+    #[test]
+    fn the_marquee_seam_has_a_divider_too() {
+        let all = crate::ui::providers("mdi");
+        let (glyph, name) = (Style::default(), Style::default());
+        let total = Line::from(provider_spans(&all, glyph, name)).width();
+        let w = 40u16;
+        assert!(total > w as usize, "fixture must march to reach the seam");
+        let last = format!(" {}", all.last().expect("providers is never empty").1);
+        let first = format!(" {}", all.first().expect("providers is never empty").1);
+        // A window starting exactly on the last name: it runs through the tail,
+        // across the appended seam, and on into the head of the row.
+        let skip = total - Line::from(last.as_str()).width();
+        let row = provider_row(&all, glyph, name, skip * MARCH, w);
+        let text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.starts_with(&format!("{last}{PROVIDER_GAP}")),
+            "the seam lost the divider: {text:?}"
+        );
+        assert!(
+            text.contains(&first),
+            "the window never reached the head of the row: {text:?}"
+        );
     }
 
     /// Styles survive the scroll, or the accent on the glyphs is lost.

@@ -337,7 +337,16 @@ impl Cover {
         if artist.trim().is_empty() && title.trim().is_empty() {
             return None;
         }
-        let query = format!("{artist} - {title}");
+        // A station that publishes no separate artist field still gets a
+        // well-formed query. `" - Title"` is not one, and Deezer is being asked
+        // for a dash — the same shape `RadioTrack::query()` builds on the TUI
+        // side, so the cache key and the search agree.
+        let (artist, title) = (artist.trim(), title.trim());
+        let query = match (artist.is_empty(), title.is_empty()) {
+            (true, _) => title.to_string(),
+            (_, true) => artist.to_string(),
+            _ => format!("{artist} - {title}"),
+        };
         let provider = inner.effective_cover_provider().await;
         let mut guard = inner.cover_cache().await;
         let cache = guard.as_mut()?;

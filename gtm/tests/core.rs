@@ -3787,6 +3787,36 @@ fn the_visualizer_has_no_toggle() {
     );
 }
 
+/// Daydreaming is opt-in, silent while paused, and never over Zen.
+///
+/// Three separate ways the takeover produced a screen the user did not ask
+/// for: on by default, on with `daydream_secs = 0` (`idle >= 0` is always
+/// true, so the Off row of the System settings daydreamed *constantly*), and
+/// on over the fullscreen surfaces — with playback stopped the visualizer
+/// model rests and draws an empty pane, which was a full-screen blank.
+#[test]
+fn daydreaming_never_seizes_a_screen_it_cannot_draw() {
+    let run = include_str!("../src/app/run.rs");
+    let prefs = include_str!("../src/app/prefs.rs");
+
+    assert!(
+        prefs.contains("const DEFAULT_DAYDREAM_SECS: u64 = 0"),
+        "daydreaming is back on by default"
+    );
+    let at = run
+        .find("self.daydreaming = ")
+        .expect("the frame loop no longer derives daydreaming");
+    let gate = &run[at..run[at..].find(';').expect("unterminated assignment") + at + 1];
+    for want in [
+        "self.daydream_secs > 0",
+        "&& playing",
+        "&& !self.zen",
+        "&& !self.pickers.is_open()",
+    ] {
+        assert!(gate.contains(want), "the daydream gate lost `{want}`: {gate}");
+    }
+}
+
 /// Zen has three surfaces again, and the lyrics are one of them.
 #[test]
 fn zen_cycles_now_playing_lyrics_and_the_visualizer() {
@@ -4715,7 +4745,7 @@ fn about_shares_the_welcome_wordmark() {
     // not a picker hint strip. It sat under the copyright and under the site
     // before, which filed the one line this window prompts with next to the
     // legal text.
-    let star = about.find("Press s to star on GitHub");
+    let star = about.find("Press s to star");
     let version_at = about.find("{version} ({:.7}{})");
     assert!(
         star.is_some() && version_at.is_some(),

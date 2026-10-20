@@ -558,7 +558,30 @@ impl Render {
         app.visualizer.update(&audio);
         match app.visualizer.draw(&audio) {
             Frame::Cells(lines) => {
-                f.render_widget(lines, inner);
+                if lines.0.is_empty() {
+                    // Nothing to draw: the model rests when playback stops.
+                    // A fullscreen surface that paints only its background
+                    // reads as a hang rather than as silence, so the surface
+                    // says the quiet in the same words the now-playing pane
+                    // uses instead of inventing a second phrase — or, as it
+                    // did, saying nothing at all.
+                    let mid = Rect {
+                        x: inner.x,
+                        y: inner.y + inner.height.saturating_sub(1) / 2,
+                        width: inner.width,
+                        height: 1,
+                    };
+                    f.render_widget(
+                        Paragraph::new(Line::from(Span::styled(
+                            "It's awfully quiet here…",
+                            Style::default().fg(app.theme.fg_dim),
+                        )))
+                        .alignment(Alignment::Center),
+                        mid,
+                    );
+                } else {
+                    f.render_widget(lines, inner);
+                }
             }
             Frame::Pixels(img) => {
                 f.render_widget(pixels_to_lines(&img, inner.width, inner.height), inner);

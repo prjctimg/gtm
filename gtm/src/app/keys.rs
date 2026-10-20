@@ -11,6 +11,20 @@ pub(crate) fn overlay_extension(id: PickerId) -> Option<ExtensionId> {
     })
 }
 
+/// The onboard pane's "never show again" claim: `H`, however the terminal
+/// spells the shift.
+///
+/// A terminal delivers shift+H as an already-uppercase `Char('H')` with the
+/// SHIFT modifier still on the event — the same quirk `key_matches` in the
+/// keymap calls fuzzy — so requiring no modifiers at all made the claim
+/// silently miss. The splash still dismissed on the press that came before it,
+/// but the flag was never written, so the welcome returned on the next launch
+/// while the key label kept promising otherwise.
+pub(crate) fn is_onboard_hide(key: &event::KeyEvent) -> bool {
+    key.code == KeyCode::Char('H')
+        && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
+}
+
 pub(crate) fn build_keybindings(
     overrides: &std::collections::HashMap<String, String>,
 ) -> Keybindings {
@@ -104,7 +118,7 @@ impl App {
             // so it cannot fall through to whatever `H` means in the list
             // behind the pane -- `Alt+H` is the health check, plain `H` was
             // unclaimed.
-            if key.code == KeyCode::Char('H') && key.modifiers.is_empty() {
+            if is_onboard_hide(&key) {
                 self.onboard_hidden = true;
                 self.show_welcome = false;
                 save_prefs(&self.current_prefs());
@@ -4481,5 +4495,42 @@ impl App {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The claim fires for both spellings a terminal sends — no modifiers, or
+    /// the SHIFT that comes with an uppercase char — and for nothing else.
+    ///
+    /// The SHIFT case is the bug: requiring `modifiers.is_empty()` meant the
+    /// documented `H: never show again` never wrote the flag on the terminals
+    /// that report shift for a capital letter.
+    #[test]
+    fn onboard_hide_claims_h_whether_or_not_shift_is_reported() {
+        assert!(is_onboard_hide(&event::KeyEvent::new(
+            KeyCode::Char('H'),
+            KeyModifiers::NONE
+        )));
+        assert!(is_onboard_hide(&event::KeyEvent::new(
+            KeyCode::Char('H'),
+            KeyModifiers::SHIFT
+        )));
+        // Chords belong to other bindings — Alt+H is the health check — and a
+        // lowercase `h` is not the labelled key at all.
+        assert!(!is_onboard_hide(&event::KeyEvent::new(
+            KeyCode::Char('H'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!is_onboard_hide(&event::KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::NONE
+        )));
+        assert!(!is_onboard_hide(&event::KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE
+        )));
     }
 }

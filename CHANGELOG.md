@@ -16,8 +16,39 @@
   Rust block is parsed against the shader module — with naga, the same parser
   the pipeline is built from — and a device is refused if they disagree. The
   pane draws with cells instead. The layout is also pinned at compile time.
+- **The welcome window's `H` never stuck.** A terminal delivers shift+H as an
+  already-uppercase `Char('H')` with the SHIFT modifier still on the event, so
+  requiring no modifiers at all made the claim miss: the splash dismissed on
+  the press, but the flag was never written and the welcome came back on the
+  next launch.
+- **The provider marquee wrapped with no divider.** The row is a ring, so the
+  last name meets the first glyph at a boundary like any other — but the gap
+  was only drawn *before* each item, and `Local` ran straight into `Spotify`,
+  the one pair in the row with nothing between them. The marching path now
+  carries a trailing gap at the seam.
+- **The station tracklist's up-next sleeve rarely drew.** Its strip was sized
+  against whatever slack the list happened to leave (`panel height - total`):
+  zero for any tracklist at least as tall as the panel, which is the common
+  case for a station that publishes its history. The strip is reserved under
+  the list now, and the list scrolls in what is left — the sleeve and the
+  Deezer cover fetch behind it draw for every station.
+- **A named-track cover query began with a dash.** A station that publishes no
+  separate artist field sent `" - Title"` to Deezer. The daemon asks for the
+  title alone now, the same shape `RadioTrack::query()` builds.
+- **Daydreaming could seize a screen it could not draw.** It fired with
+  playback stopped, where the visualizer model rests within seconds and draws
+  an empty pane: a full-screen blank. It only fires while something is
+  playing, and the Zen visualizer says "It's awfully quiet here…" instead of
+  painting background when it has nothing to draw.
 
 ### Changed
+- **Daydreaming is off by default.** A preview nobody asked for is the wrong
+  first impression; the System row still steps to it. `daydream_secs = 0`
+  now disables daydreaming as documented — `idle >= 0` is always true, so Off
+  used to daydream *constantly*.
+- **The star hint no longer names GitHub.** Both the welcome and the About
+  window say "Press s to star" with the GitHub mark riding beside the
+  sentence it is the logo for.
 - **A removed `visualizer_preset` is logged, not silently remapped.** The value
   and what replaced it both go to the log. It still resolves, because a config
   file that fails to parse is discarded whole and one stale key would take the

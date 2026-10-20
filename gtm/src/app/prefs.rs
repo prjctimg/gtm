@@ -161,9 +161,11 @@ pub(crate) fn default_cover_provider() -> String {
     "auto".into()
 }
 
-/// Seconds of inactivity before the visualizer takes over. Long enough to be an
-/// absence rather than a pause.
-pub(crate) const DEFAULT_DAYDREAM_SECS: u64 = 60;
+/// Seconds of inactivity before the visualizer takes over. Zero, by default:
+/// a preview nobody asked for is the wrong first impression, so daydreaming is
+/// something a user turns on (the System row steps to it) rather than
+/// something the TUI does to them.
+pub(crate) const DEFAULT_DAYDREAM_SECS: u64 = 0;
 
 pub(crate) fn default_daydream_secs() -> u64 {
     DEFAULT_DAYDREAM_SECS
@@ -305,5 +307,24 @@ pub(crate) fn load_prefs() -> Prefs {
 pub(crate) fn save_prefs(prefs: &Prefs) {
     if let Ok(s) = toml::to_string(prefs) {
         let _ = std::fs::write(prefs_path(), s);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Daydreaming is opt-in, from the default and from a config written
+    /// before the field existed.
+    ///
+    /// A missing `daydream_secs` resolves through `default_daydream_secs`, so
+    /// both paths have to land on Off — the takeover is a thing a user turns
+    /// on, not the first impression of a fresh install.
+    #[test]
+    fn daydreaming_is_off_by_default() {
+        assert_eq!(default_daydream_secs(), 0);
+        assert_eq!(Prefs::default().daydream_secs, 0);
+        let legacy: Prefs = toml::from_str("").expect("every field has a serde default");
+        assert_eq!(legacy.daydream_secs, 0);
     }
 }

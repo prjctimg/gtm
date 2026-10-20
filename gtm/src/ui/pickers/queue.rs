@@ -170,7 +170,30 @@ impl Pickers {
         let total = app.live_queue().len();
         let on_air = app.state.radio_tracks.at;
         let now = app.state.radio_tracks.at_time;
-        let visible = inner.height as usize;
+        // The sleeve is asked for before the viewport is measured, so the
+        // strip it will occupy is reserved first and the list sizes itself
+        // against what is left. The strip used to be sized against whatever
+        // slack the list happened to leave (`inner.height - total`) — zero for
+        // any tracklist at least as tall as the panel, which is the common
+        // case for a station that publishes its history — so the sleeve, and
+        // the cover fetch it exists for, never drew at all.
+        let next = app
+            .state
+            .radio_tracks
+            .tracks
+            .get(on_air + 1)
+            .map(|t| t.query());
+        app.fetch_up_next_cover();
+        let strip_h = if next.is_some() {
+            up_next_strip_h(inner.height)
+        } else {
+            0
+        };
+        let list_rect = Rect {
+            height: inner.height.saturating_sub(strip_h),
+            ..inner
+        };
+        let visible = list_rect.height as usize;
         let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top_mut() {
             let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
             top.viewport_offset = s;
@@ -232,32 +255,24 @@ impl Pickers {
             };
             app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
         }
-        f.render_widget(Paragraph::new(lines), inner);
+        f.render_widget(Paragraph::new(lines), list_rect);
 
-        // A sleeve for what plays next, in the slack under the list.
+        // A sleeve for what plays next, in the strip reserved under the list.
         //
         // The on-air row needs no artwork: it already has the one the now
         // playing pane is showing. The row *after* it is the one with nothing --
         // a station publishes no artwork, so the only way to know what the next
         // cover will be is to look the name up. Drawing it under the list costs
-        // no row from the list itself, which is why this is in the slack rather
-        // than in a column beside the rows.
-        let next = app
-            .state
-            .radio_tracks
-            .tracks
-            .get(on_air + 1)
-            .map(|t| t.query());
-        app.fetch_up_next_cover();
+        // no row from the list itself, which is why this is in the reserved
+        // strip rather than in a column beside the rows.
         let Some(next) = next else { return };
         let Some(art) = app.up_next_cover_stateful.as_mut() else {
             return;
         };
-        let strip_h = 10u16.min(inner.height.saturating_sub(total as u16));
         if strip_h < 4 {
             return;
         }
-        let y = inner.y + inner.height.saturating_sub(strip_h);
+        let y = list_rect.y + list_rect.height;
         // Two cells wide per row of art, so a sleeve of `strip_h` rows is also
         // `strip_h * 2` columns and reads as a square.
         let art_w = (strip_h * 2).min(inner.width.saturating_sub(4));
@@ -459,5 +474,45 @@ impl Pickers {
             app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
         }
         f.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+/// Rows reserved under the radio tracklist for the up-next sleeve.
+///
+/// Sized against the panel alone, because the slack the list leaves behind
+/// (`panel_h - total`) was the wrong quantity: it is zero for any tracklist
+/// at least as tall as the panel, which is the common case for a station
+/// that publishes its history — so the strip, the sleeve, and the cover
+/// fetch behind it never appeared for exactly the users who wanted them.
+/// The list now takes whatever is left after this strip; a panel too short
+/// to lose one gives nothing back, so the tracklist stays readable.
+fn up_next_strip_h(panel_h: u16) -> u16 {
+    const WANT: u16 = 10;
+    const MIN_LIST: u16 = 6;
+    const MIN_STRIP: u16 = 4;
+    if panel_h < MIN_LIST + MIN_STRIP {
+        return 0;
+    }
+    WANT.min(panel_h - MIN_LIST)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tracklist as tall as the panel leaves no slack, and that was the
+    /// common case — the sleeve has to take its strip regardless of how many
+    /// tracks the station publishes.
+    #[test]
+    fn the_up_next_strip_is_sized_against_the_panel() {
+        assert_eq!(up_next_strip_h(30), 10);
+        assert_eq!(up_next_strip_h(16), 10);
+        // A short panel gives what it can spare, as long as both halves stay
+        // usable — the sleeve draws nothing below four rows.
+        assert_eq!(up_next_strip_h(14), 8);
+        assert_eq!(up_next_strip_h(10), 4);
+        // Too short for both: the tracklist wins the whole panel.
+        assert_eq!(up_next_strip_h(9), 0);
+        assert_eq!(up_next_strip_h(3), 0);
     }
 }

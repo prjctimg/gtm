@@ -59,10 +59,12 @@ synced*.
 
 ## Daydreaming
 
-With no keypress, paste or click for **daydream_secs** (default 60) the TUI
+With no keypress, paste or click for **daydream_secs** (default off) the TUI
 shows the audio visualizer full screen, over the library view. Any input ends
-it immediately. It is suppressed while **z** Zen is up, while a picker is open,
-and when the `visualizer` extension is disabled.
+it immediately. It only fires while something is playing — with playback
+stopped the visualizer has nothing to draw — and it is suppressed while **z**
+Zen is up, while a picker is open, and when the `visualizer` extension is
+disabled.
 
 Zen (**z**) and daydreaming are the same renderer: Zen on whichever of its
 three surfaces was last selected, daydreaming always on the visualizer. **Tab**
