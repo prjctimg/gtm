@@ -342,6 +342,4 @@ impl CommandPalette {
 /// The counts are a prefix sum the renderer walks, so they are checked against
 /// the table rather than trusted: a command past the last count is a row the
 /// palette never draws.
-pub const COMMAND_GROUPS: &[(&str, usize)] = &[
-    ("Playback", 21),
-];
+pub const COMMAND_GROUPS: &[(&str, usize)] = &[("Playback", 21)];
