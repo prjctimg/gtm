@@ -343,8 +343,5 @@ impl CommandPalette {
 /// the table rather than trusted: a command past the last count is a row the
 /// palette never draws.
 pub const COMMAND_GROUPS: &[(&str, usize)] = &[
-    ("Playback", 14),
-    ("Library & Queue", 25),
-    ("View & Overlays", 15),
-    ("System", 8),
+    ("Playback", 21),
 ];
