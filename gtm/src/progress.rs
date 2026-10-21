@@ -130,7 +130,7 @@ pub fn render_progress_styled<'a>(
     secondary: Color,
     tertiary: Color,
 ) -> Vec<Span<'a>> {
-    let inner_w = width.saturating_sub(2).max(4);
+    let inner_w = width.saturating_sub(2).max(1);
 
     match style {
         ProgressStyle::TrueGradient => {
@@ -188,7 +188,14 @@ pub fn render_progress_styled<'a>(
 }
 
 pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String {
-    let inner_w = width.saturating_sub(2).max(4);
+    // The padded styles draw a one-cell cushion either side; Classic owns the
+    // full run. The cushion is part of the requested width, not added to it —
+    // the bar is drawn into a fixed row and every cell is accounted for.
+    let pad = match style {
+        ProgressStyle::Classic => 0,
+        _ => 2,
+    };
+    let inner_w = width.saturating_sub(pad).max(1);
     let filled = (ratio.clamp(0.0, 1.0) * inner_w as f64).round() as usize;
     let mut line = String::with_capacity(width);
     match style {
@@ -262,19 +269,40 @@ mod tests {
         }
     }
 
-    /// Every style fills proportionally, so switching between them shows the
-    /// same position rather than a different one.
+    /// Every style communicates the same position, so switching between them
+    /// shows the same spot on the bar rather than a different one.
+    ///
+    /// The styles say the position differently — Classic and Dots fill up to
+    /// it, SeekHead and TrueGradient park a head on it — so the test reads
+    /// each style its own way and compares proportions, not counts.
     #[test]
     fn every_style_agrees_on_the_fill() {
-        for style in ProgressStyle::all() {
-            for (ratio, lo, hi) in [(0.0, 0, 1), (0.5, 3, 7), (1.0, 15, 20)] {
-                let bar = render_progress(ratio, 22, *style);
-                let filled = bar.chars().filter(|c| matches!(c, '━' | '●')).count();
-                assert!(
-                    (lo..=hi).contains(&filled),
-                    "{:?} at {ratio}: {filled} filled, want {lo}..={hi} in {bar:?}",
-                    style
-                );
+        for width in [22usize, 40] {
+            for ratio in [0.0f64, 0.25, 0.5, 0.75, 1.0] {
+                for style in ProgressStyle::all() {
+                    let bar = render_progress(ratio, width, *style);
+                    let chars: Vec<char> = bar.chars().collect();
+                    let pos = match style {
+                        ProgressStyle::Classic | ProgressStyle::Dots => {
+                            let filled = chars
+                                .iter()
+                                .filter(|c| matches!(**c, '━' | '●'))
+                                .count();
+                            filled as f64 / chars.len() as f64
+                        }
+                        _ => {
+                            let head = chars
+                                .iter()
+                                .position(|c| *c == '●')
+                                .unwrap_or(0) as f64;
+                            head / (chars.len().saturating_sub(1)).max(1) as f64
+                        }
+                    };
+                    assert!(
+                        (pos - ratio).abs() < 0.15,
+                        "{style:?} at {ratio} width {width}: position {pos:.2} in {bar:?}"
+                    );
+                }
             }
         }
     }

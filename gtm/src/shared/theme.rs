@@ -116,11 +116,10 @@ const LIGHT_SURFACE: [([u8; 3], f32); 4] = [
 ///   dominant colour is frequently near-white or near-black, and a near-white
 ///   accent on a dark surface is invisible and a near-black one on a light
 ///   surface is worse. The pull is bounded, so a mid-tone artwork is left alone.
-/// - **Syntax and semantic roles are fixed-hue, not artwork-driven.** They are
-///   diagnostics, and a diagnostic that changes colour with the album art is one
-///   the eye cannot learn. They are tinted toward the artwork slightly and no
-///   further. This is a deliberate refusal of "more reactive", stated in §9 of
-///   the spec.
+/// - **Semantic roles take no tint at all.** They are diagnostics, and a
+///   diagnostic that moves with the album art is one the eye cannot learn.
+///   Syntax roles keep their slight tint; diagnostics get none. This is a
+///   deliberate refusal of "more reactive", stated in §9 of the spec.
 pub fn derive(pal: &ReactivePalette, dark: bool) -> Roles {
     let surface = if dark { &DARK_SURFACE } else { &LIGHT_SURFACE };
     let accent = adjust(pal.primary, dark);
@@ -151,8 +150,7 @@ pub fn derive(pal: &ReactivePalette, dark: bool) -> Roles {
     let cursor_line = mix(bg0, pal.primary, if dark { 0.10 } else { 0.08 });
     let cursor_line_nr = mix(surface[0].0, pal.primary, if dark { 0.06 } else { 0.05 });
 
-    // Fixed diagnostic hues, nudged toward the artwork only enough that the
-    // palette does not read as foreign next to them.
+    // Fixed diagnostic hues, with no tint: the artwork must not reach them.
     let tint = |base: [u8; 3]| -> [u8; 3] { mix(base, pal.primary, 0.12) };
 
     let mut r: Roles = Roles::new();
@@ -307,11 +305,11 @@ pub fn derive(pal: &ReactivePalette, dark: bool) -> Roles {
     );
 
     // Semantic
-    set("error", tint([0xf0, 0x6a, 0x6a]));
-    set("warning", tint([0xe0, 0xa0, 0x40]));
-    set("info", tint([0x70, 0xb0, 0xf0]));
-    set("hint", tint([0x70, 0xd0, 0xa0]));
-    set("success", tint([0x80, 0xc8, 0x70]));
+    set("error", [0xf0, 0x6a, 0x6a]);
+    set("warning", [0xe0, 0xa0, 0x40]);
+    set("info", [0x70, 0xb0, 0xf0]);
+    set("hint", [0x70, 0xd0, 0xa0]);
+    set("success", [0x80, 0xc8, 0x70]);
 
     // Diff
     set(

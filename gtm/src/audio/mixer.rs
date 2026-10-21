@@ -1339,11 +1339,12 @@ mod crossfade_curve_tests {
         );
     }
 
-    /// Outgoing falls and incoming rises, monotonically, with no crossover
-    /// before the end.
+    /// Outgoing falls and incoming rises, monotonically, with one crossover —
+    /// at the midpoint and nowhere else.
     ///
-    /// This is what rules out a curve that holds power but inverts somewhere —
-    /// equal-power variants built on tanh do that, and it sounds like a
+    /// Equal-power cos/sin must cross once: both gains are √½ when the phase
+    /// hits π/4. The failure mode this rules out is a curve that holds power
+    /// but inverts somewhere — tanh variants do that, and it sounds like a
     /// reversed fade rather than a louder middle.
     #[test]
     fn the_two_never_cross() {
@@ -1354,10 +1355,11 @@ mod crossfade_curve_tests {
             let (out, inn) = crossfade_gains(t);
             assert!(out <= prev_out + 1e-12, "outgoing rose at t={t}");
             assert!(inn >= prev_in - 1e-12, "incoming fell at t={t}");
-            assert!(
-                out >= inn || t == 1.0,
-                "curves crossed at t={t}: {out} < {inn}"
-            );
+            if t <= 0.5 {
+                assert!(out >= inn, "crossover early at t={t}: {out} < {inn}");
+            } else {
+                assert!(inn >= out, "crossover late at t={t}: {out} > {inn}");
+            }
             prev_out = out;
             prev_in = inn;
         }
