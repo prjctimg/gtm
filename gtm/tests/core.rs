@@ -4070,9 +4070,7 @@ fn charts_and_radio_rows_all_describe_themselves() {
     assert!(cover.contains(
         "TrackInfoKind::ChartTrack => { let url = clean(self.charts.chart_tracks.get(pos)?.cover_url.clone())?; Some((pos, url)) }"
     ));
-    assert!(cover.contains(
-        "pub(crate) fn fetch_url_cover(&mut self, url: Option<String>) {"
-    ));
+    assert!(cover.contains("pub(crate) fn fetch_url_cover(&mut self, url: Option<String>) {"));
     // A URL-keyed fetch has to dedup like every other one, or a cursor move
     // re-claims the slot and discards the reply it was waiting for.
     assert!(
