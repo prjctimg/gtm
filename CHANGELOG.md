@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.2.95] - 2026-10-21
+
+### Fixed
+- **The progress bar ignored its width.** The padded styles drew two cushion
+  cells on top of the requested width and `Classic` fell two cells short of
+  it, so at narrow widths the bar crowded the times beside it and `Classic`
+  left the row ragged. The cushion is now part of the width, per style.
+- **`Alt+P` opened nothing.** The palette and help both advertise the
+  progress-style picker on `Alt+P`, and only its lowercase neighbour reached
+  the table: `Alt+p` was given to Podcasts, and the style picker's chord never
+  landed behind the advertisement. It opens the picker now.
+
+### Changed
+- **Diagnostic roles take no tint at all.** The reactive theme's semantic
+  colours (error, warning, info, hint, success) were nudged toward the
+  artwork's dominant hue, which is exactly the movement a diagnostic cannot
+  have. They are constant now; syntax roles keep their slight tint.
+
 ### Fixed
 - **The client crashed on the first GPU visualizer frame.** The uniform block
   the Rust side wrote and the one the WGSL declared disagreed by 16 bytes: the
