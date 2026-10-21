@@ -284,17 +284,11 @@ mod tests {
                     let chars: Vec<char> = bar.chars().collect();
                     let pos = match style {
                         ProgressStyle::Classic | ProgressStyle::Dots => {
-                            let filled = chars
-                                .iter()
-                                .filter(|c| matches!(**c, '━' | '●'))
-                                .count();
+                            let filled = chars.iter().filter(|c| matches!(**c, '━' | '●')).count();
                             filled as f64 / chars.len() as f64
                         }
                         _ => {
-                            let head = chars
-                                .iter()
-                                .position(|c| *c == '●')
-                                .unwrap_or(0) as f64;
+                            let head = chars.iter().position(|c| *c == '●').unwrap_or(0) as f64;
                             head / (chars.len().saturating_sub(1)).max(1) as f64
                         }
                     };
