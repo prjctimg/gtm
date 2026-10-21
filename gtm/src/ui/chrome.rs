@@ -299,8 +299,24 @@ impl Render {
         track: &TrackInfo,
         area: Rect,
     ) {
+        // A live stream's synthesised track carries only the station name. The
+        // header is the place the on-air song belongs, so it reads through
+        // `live_track` — the queue row when the stream's title matches one,
+        // the ICY string when it does not — and falls back to the track's own
+        // naming for every other source.
+        let (title, artist) = match app.live_track() {
+            Some((t, a)) => (t, a),
+            None => (
+                track.display_title(),
+                if track.artist.is_empty() {
+                    " ".to_string()
+                } else {
+                    track.artist.clone()
+                },
+            ),
+        };
         let title = Paragraph::new(Line::from(Span::styled(
-            track.display_title(),
+            title,
             Style::default()
                 .fg(app.theme.secondary_accent)
                 .add_modifier(Modifier::BOLD),
@@ -310,23 +326,20 @@ impl Render {
         if area.height < 2 {
             return;
         }
-        if track.artist.is_empty() {
+        if artist.trim().is_empty() {
             return;
         }
         let artist = Paragraph::new(Line::from({
-            let mut spans = vec![Span::styled(
-                track.artist.clone(),
-                Style::default().fg(app.theme.fg),
-            )];
+            let mut spans = Vec::new();
             // Same marker as the now-playing panel: it leads the artist so it
             // is always visible instead of trailing the end of a scrolling line.
             if let Some(marker) = source_marker(app) {
                 spans.push(marker);
             }
-            spans.extend(vec![Span::styled(
-                track.artist.clone(),
+            spans.push(Span::styled(
+                artist,
                 Style::default().fg(app.theme.fg),
-            )]);
+            ));
             spans
         }))
         .alignment(Alignment::Center);
@@ -3468,7 +3481,9 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     // The surface fill comes first and covers every mode, so a fullscreen
     // surface cannot paint over a previous frame: ratatui does not clear
     // between frames, it diffs, and a reactive theme change only reaches the
-    // screen through a repainted background.
+    // screen through a repainted background. The fill is painted every frame
+    // in Zen to avoid tearing and to guarantee no terminal background leaks
+    // through unless transparent_bg is explicitly on.
     //
     // Zen gets its own fill, lifted off the app surface out of the reactive
     // palette: see `App::zen_bg`. On the app surface, a fullscreen surface with

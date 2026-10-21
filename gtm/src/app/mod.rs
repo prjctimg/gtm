@@ -1242,14 +1242,40 @@ impl App {
     /// The track on air for a live stream, as `(title, artist)`, or `None` for
     /// anything else so callers fall back to the ordinary track metadata.
     ///
-    /// The daemon synthesises only the station name for a `radio://` track, so
-    /// the real title comes from the stream's ICY `StreamTitle` and the artist
+    /// The daemon synthesises only the station name for a `radio://` track. The
+    /// real title comes from the stream's ICY `StreamTitle`, and the artist
     /// from the station's tracklist — the only place the two are published
-    /// separately.
+    /// separately. When the on-air title matches a row of that tracklist, the
+    /// row itself is preferred: ICY packs `"Artist - Title"` into one string
+    /// and the queue row carries the halves already split (and the words
+    /// spelled the way the station's own list spells them, which is what the
+    /// cover lookup is keyed on).
     pub fn live_track(&self) -> Option<(String, String)> {
         let track = self.state.current_track.as_ref()?;
         if !is_live_stream(&track.path) {
             return None;
+        }
+        let now = self
+            .state
+            .radio_title
+            .as_deref()
+            .filter(|t| !t.is_empty());
+        if let Some(now) = now {
+            if let Some(row) = self
+                .state
+                .radio_tracks
+                .tracks
+                .iter()
+                .find(|t| t.same_as(now))
+                && !row.title.is_empty()
+            {
+                let artist = if row.artist.is_empty() {
+                    " ".to_string()
+                } else {
+                    row.artist.clone()
+                };
+                return Some((row.title.clone(), artist));
+            }
         }
         let title = self
             .state

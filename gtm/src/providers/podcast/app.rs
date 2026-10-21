@@ -44,7 +44,18 @@ impl App {
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            match c.podcast().discover(&term, "us").await {
+            // The empty term is the picker's opening window: "what is popular
+            // now". That is an ranked phrase — Apple publishes a list — so it
+            // asks the charts endpoint, which resolves the top-25 to
+            // subscribable feeds, rather than the directory search whose
+            // no-term page is relevance-ranked and drifts with iTunes' own
+            // idea of an ordering.
+            let res = if directory {
+                c.podcast().charts("us", "").await
+            } else {
+                c.podcast().discover(&term, "us").await
+            };
+            match res {
                 Ok(results) => {
                     let _ = ipc_tx.send(IpcResult::PodcastSearch(results));
                 }

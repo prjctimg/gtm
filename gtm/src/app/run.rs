@@ -798,7 +798,12 @@ impl App {
                 // each reply was orphaned by the next. The cover then stayed
                 // the placeholder for the whole track, in this pane and in Zen
                 // alike, because both read the same `np_cover`.
-                if self.np_cover.track_path != cur_path {
+                let live = self
+                    .state
+                    .current_track
+                    .as_ref()
+                    .is_some_and(|t| crate::footer::is_live_stream(&t.path));
+                if self.np_cover.track_path != cur_path || (live && live_advanced) {
                     self.np_cover.image = None;
                     self.np_cover.stateful = None;
                     // Invalidate the pending fetch so a stale response cannot
@@ -1930,8 +1935,15 @@ impl App {
             // which is why it read as frozen rather than as slow. A screen
             // that is animating has to be redrawn every tick, or it is not.
             let animating_surface = animating || self.onboard;
+            // Zen must repaint every frame with no skipping: skipping every other
+            // frame while playing produces visible tearing on the animated
+            // surfaces and lets stale cells show through when the theme/reactive
+            // wash changes. The full-surface background fill also needs every
+            // frame to guarantee the terminal background never leaks unless
+            // transparent mode is explicitly enabled.
             let mut force_render = pos_changed
-                || (playing && frame_count.is_multiple_of(2))
+                || (playing && !self.zen && frame_count.is_multiple_of(2))
+                || self.zen
                 || animating_surface
                 || !self.notifications.is_empty()
                 || frame_count.is_multiple_of(10)
