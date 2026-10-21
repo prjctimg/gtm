@@ -343,6 +343,15 @@ pub fn default_keybindings() -> Keybindings {
                 KeyboardAction::CheckHealth,
                 NORMAL
             ),
+            // The progress-style picker's own chord, next to its lowercase
+            // neighbour: `Alt+p` opens Podcasts, `Alt+P` styles the bar. The
+            // palette advertised both since the styles returned, but only the
+            // lowercase binding made it into this table.
+            b!(
+                KeyEvent::new(KeyCode::Char('P'), KeyModifiers::ALT),
+                KeyboardAction::OpenOverlay(PickerId::ProgressStyle),
+                NORMAL
+            ),
             b!(
                 KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT),
                 KeyboardAction::OpenOverlay(PickerId::SleepTimer),

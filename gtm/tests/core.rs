@@ -4062,15 +4062,17 @@ fn charts_and_radio_rows_all_describe_themselves() {
     //
     // The chart *list* reads its own url, then the one remembered from the
     // tracks that chart loaded: iTunes publishes no artwork for a ranking, so
-    // without the fallback every chart row is a blank card.
-    assert!(squish(cover).contains(&squish("TrackInfoKind::Chart => own(pos),")));
+    // without the fallback every chart row is a blank card. The lookup lives
+    // in `chart_row_art`, one reader for the card and the popup card.
     assert!(squish(cover).contains(&squish(
-        ".and_then(|c| c.cover_url.clone()) .or_else(|| self.charts.cover_of(i))"
+        "TrackInfoKind::Chart => { let chart = self.charts.charts.get(pos)?; let url = clean(chart.cover_url.clone()).or_else(|| self.charts.cover_of(pos))?; Some((pos, url)) }"
     )));
     assert!(cover.contains(
-        "TrackInfoKind::ChartTrack => self.charts.chart_tracks.get(pos)?.cover_url.clone(),"
+        "TrackInfoKind::ChartTrack => { let url = clean(self.charts.chart_tracks.get(pos)?.cover_url.clone())?; Some((pos, url)) }"
     ));
-    assert!(cover.contains("pub(crate) fn fetch_url_cover(&mut self, url: Option<String>) {"));
+    assert!(cover.contains(
+        "pub(crate) fn fetch_url_cover(&mut self, url: Option<String>) {"
+    ));
     // A URL-keyed fetch has to dedup like every other one, or a cursor move
     // re-claims the slot and discards the reply it was waiting for.
     assert!(
@@ -4559,67 +4561,59 @@ fn the_left_pane_keeps_both_the_list_and_the_card() {
 /// card silently vanished below roughly thirty rows of pane, which is most
 /// terminals — the user saw a left pane with a category list and nothing under
 /// it, with nothing on screen to say the art was missing rather than unrendered.
-/// The picker hint must spend its width on the keys that cannot be guessed.
+/// The picker hints are gone, and a picker cannot quietly grow one back.
 ///
-/// Every picker funnels its hint through one filter, so a picker cannot
-/// reintroduce a line of "Enter: open" by accident. What survives is the part a
-/// new user cannot infer from the screen: modifier combos, bare letter verbs,
-/// vim motions and steppers.
+/// Every picker used to carry a strip of "Enter: play  Ctrl+D: download" under
+/// it. The filter left exactly the non-obvious entries, which is the
+/// definition of clutter, so the strips were removed outright and each hint's
+/// key moved into the title bar where it is always seen. The guard is here
+/// because the strips' removal is a design decision a convenient `format!`
+/// could undo.
 #[test]
-fn picker_hints_drop_only_the_obvious() {
+fn picker_hints_stay_gone() {
     let mod_src = include_str!("../src/ui/pickers/mod.rs");
-    let at = mod_src
-        .find("fn filter_hint(")
-        .expect("the hint filter moved");
-    let body = &mod_src[at..(at + 1200).min(mod_src.len())];
-
-    // The split is on the separator, never on whitespace: the description of an
-    // entry contains spaces, and splitting on those turned "Ctrl+D: download"
-    // into the orphan words "download".
     assert!(
-        body.contains(r#"split("   ")"#),
-        "the hint is split on whitespace, so entries lose their key"
+        !mod_src.contains("fn filter_hint(") && !mod_src.contains("OBVIOUS"),
+        "the hint filter is back"
     );
+    let radio = include_str!("../src/providers/radio/picker.rs");
     assert!(
-        body.contains("u{b7}"),
-        "the separator form used by the radio and podcast hints is not handled"
+        !radio.contains("Enter: play"),
+        "the radio picker grew a hint strip again"
     );
-
-    // And it tests the key, which is what separates an obvious binding from one
-    // that only looks similar. Asserted on the halves rather than the whole
-    // chain, because rustfmt decides where the line breaks and a test that
-    // pins formatting fails on a reformat rather than on a behaviour change.
-    assert!(
-        body.contains(".split(':')") && body.contains("OBVIOUS.contains"),
-        "the filter matches whole entries, so Ctrl+Enter would be dropped with Enter"
-    );
-
-    for key in ["esc", "enter", "tab", "↑/↓", "←/→"] {
-        assert!(
-            mod_src.contains(&format!("\"{key}\"")),
-            "an obvious binding is missing from the filter: {key}"
-        )
-    }
 }
 
-/// The hint must be copyable, because the alternate screen cannot be selected.
+/// The clipboard must be reachable from the alternate screen.
+///
+/// Everything on the TUI is text this program drew into the alternate screen,
+/// where a selection tool cannot reach. The one copy path is OSC 52, which
+/// works over ssh and on a headless box; the notifications picker's `y` is the
+/// key that uses it, because the error on screen is the one thing the user
+/// cannot retype. (The old hint-strip copy is gone with the strips, which is
+/// what freed `y` to type `y` into search boxes.)
 #[test]
-fn the_picker_hint_is_copyable() {
+fn the_alternate_screen_can_copy_its_text() {
     let app_src = include_str!("../src/app/mod.rs");
     assert!(
         app_src.contains("]52;c;"),
         "no OSC 52, so the clipboard cannot be set over ssh or on a headless box"
     );
     assert!(app_src.contains("fn osc52("), "the OSC 52 writer is gone");
+    assert!(
+        app_src.contains("fn copy_to_clipboard("),
+        "the clipboard ladder that OSC 52 leads is gone"
+    );
+    // The strips are gone and with them the strip-copy path; what remains must
+    // not grow a copy branch keyed on anything but the record on screen.
     let mod_src = include_str!("../src/ui/pickers/mod.rs");
     assert!(
-        mod_src.contains("fn hint_text("),
-        "nothing reads back the hint that was rendered"
+        !mod_src.contains("fn filter_hint(") && !mod_src.contains("fn hint_text("),
+        "the picker hint strips came back"
     );
     let keys = include_str!("../src/app/keys.rs");
     assert!(
-        keys.contains("crate::ui::pickers::hint_text(self)"),
-        "no key copies the picker hint"
+        keys.contains("Notification copied to clipboard"),
+        "y no longer copies the notification record"
     );
 }
 
@@ -4814,18 +4808,12 @@ fn the_radio_picker_matches_the_spotify_picker() {
         block.contains("scroll_text(&text, avail, app.footer_title_scroll, i == sel)"),
         "a long station name is truncated where the Spotify picker scrolls it"
     );
-    // The hint was written for a panel up to 100 wide and ran off the bottom of
-    // a 60-column one.
-    // The hint was written for a panel up to 100 columns wide and ran off the
-    // bottom of a 60-column one. All five keys still fit, so nothing was lost
-    // but the spacing.
+    // The hint strip is gone (the strip's keys live in the picker's title bar
+    // now); what must not come back is a strip sized for the old 100-column
+    // panel.
     assert!(
         !radio.contains("Tab: filter {}   Enter: play   s: save   x: remove   r: refresh"),
         "the radio hint is longer than the 56 columns the panel now has"
-    );
-    assert!(
-        radio.contains("s: save \\u{b7} x: remove \\u{b7} r: refresh"),
-        "the radio hint dropped a key it still has room for"
     );
 }
 
