@@ -1255,11 +1255,7 @@ impl App {
         if !is_live_stream(&track.path) {
             return None;
         }
-        let now = self
-            .state
-            .radio_title
-            .as_deref()
-            .filter(|t| !t.is_empty());
+        let now = self.state.radio_title.as_deref().filter(|t| !t.is_empty());
         if let Some(row) = now
             .and_then(|now| {
                 self.state
