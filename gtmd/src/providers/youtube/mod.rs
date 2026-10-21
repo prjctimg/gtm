@@ -256,8 +256,13 @@ impl YoutubeManager {
         let (results_tx, results_rx) = mpsc::unbounded_channel();
         let (download_progress_tx, download_progress_rx) = mpsc::unbounded_channel();
         let (playlist_tx, playlist_rx) = mpsc::unbounded_channel();
-        let download_dir = dirs::audio_dir()
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+        let download_dir = dirs::data_local_dir()
+            .or_else(dirs::cache_dir)
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".cache")
+            })
             .join("gtm")
             .join("downloads");
         let _ = std::fs::create_dir_all(&download_dir);
