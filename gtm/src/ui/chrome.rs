@@ -336,10 +336,7 @@ impl Render {
             if let Some(marker) = source_marker(app) {
                 spans.push(marker);
             }
-            spans.push(Span::styled(
-                artist,
-                Style::default().fg(app.theme.fg),
-            ));
+            spans.push(Span::styled(artist, Style::default().fg(app.theme.fg)));
             spans
         }))
         .alignment(Alignment::Center);

@@ -1255,27 +1255,22 @@ impl App {
         if !is_live_stream(&track.path) {
             return None;
         }
-        let now = self
-            .state
-            .radio_title
-            .as_deref()
-            .filter(|t| !t.is_empty());
-        if let Some(now) = now {
-            if let Some(row) = self
+        let now = self.state.radio_title.as_deref().filter(|t| !t.is_empty());
+        if let Some(now) = now
+            && let Some(row) = self
                 .state
                 .radio_tracks
                 .tracks
                 .iter()
                 .find(|t| t.same_as(now))
-                && !row.title.is_empty()
-            {
-                let artist = if row.artist.is_empty() {
-                    " ".to_string()
-                } else {
-                    row.artist.clone()
-                };
-                return Some((row.title.clone(), artist));
-            }
+            && !row.title.is_empty()
+        {
+            let artist = if row.artist.is_empty() {
+                " ".to_string()
+            } else {
+                row.artist.clone()
+            };
+            return Some((row.title.clone(), artist));
         }
         let title = self
             .state
