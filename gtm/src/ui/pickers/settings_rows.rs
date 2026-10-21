@@ -49,6 +49,7 @@ pub(crate) const PLAYBACK_ROWS: SettingsRows = &[
 pub(crate) const SYSTEM_ROWS: SettingsRows = &[
     ("Theme", RowKind::Chooser),
     ("Theme Mode", RowKind::Cycle),
+    ("Audio Output", RowKind::Chooser),
     ("Transparent BG", RowKind::Toggle),
     ("Transparent Pickers", RowKind::Toggle),
     ("Hide Footer", RowKind::Toggle),
@@ -133,7 +134,7 @@ mod tests {
     #[test]
     fn row_counts_match_the_declared_lists() {
         assert_eq!(rows_for(0).len(), 8);
-        assert_eq!(rows_for(1).len(), 18);
+        assert_eq!(rows_for(1).len(), 19);
         // Status, Link Account, Unlink.
         assert_eq!(rows_for(2).len(), 3);
         for cat in 0..3 {

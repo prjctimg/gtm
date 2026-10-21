@@ -91,23 +91,23 @@ impl App {
                 _ => {}
             },
             1 => match opt {
-                2 => {
+                3 => {
                     self.transparent_bg = !self.transparent_bg;
                     save_prefs(&self.current_prefs());
                 }
-                3 => {
+                4 => {
                     self.transparent_pickers = !self.transparent_pickers;
                     save_prefs(&self.current_prefs());
                 }
-                4 => self.toggle_hide_footer(),
-                5 => self.toggle_reactive_theme(),
-                6 => self.cycle_reactive_intensity(),
-                16 => {
+                5 => self.toggle_hide_footer(),
+                6 => self.toggle_reactive_theme(),
+                7 => self.cycle_reactive_intensity(),
+                17 => {
                     self.show_welcome = !self.show_welcome;
                     self.onboard_hidden = !self.show_welcome;
                     save_prefs(&self.current_prefs());
                 }
-                17 => {
+                18 => {
                     self.resume_on_start = !self.resume_on_start;
                     save_prefs(&self.current_prefs());
                 }
@@ -149,40 +149,41 @@ impl App {
             1 => match opt {
                 0 => self.pickers.open(PickerId::ThemePicker),
                 1 => self.cycle_theme_mode(),
-                2 => {
+                2 => self.open_audio_picker(),
+                3 => {
                     self.transparent_bg = !self.transparent_bg;
                     save_prefs(&self.current_prefs());
                 }
-                3 => {
+                4 => {
                     self.transparent_pickers = !self.transparent_pickers;
                     save_prefs(&self.current_prefs());
                 }
-                4 => self.toggle_hide_footer(),
-                5 => self.toggle_reactive_theme(),
-                6 => self.cycle_reactive_intensity(),
-                7 => self.pickers.open(PickerId::VisualizerPreset),
-                8 => self.cycle_daydream(),
-                9 => self.pickers.open(PickerId::FooterPreset),
-                10 => sync_and_wait(
+                5 => self.toggle_hide_footer(),
+                6 => self.toggle_reactive_theme(),
+                7 => self.cycle_reactive_intensity(),
+                8 => self.pickers.open(PickerId::VisualizerPreset),
+                9 => self.cycle_daydream(),
+                10 => self.pickers.open(PickerId::FooterPreset),
+                11 => sync_and_wait(
                     self.client.clone(),
                     SyncKind::Covers,
                     "Covers",
                     self.ipc_tx.clone(),
                 ),
-                11 => sync_and_wait(
+                12 => sync_and_wait(
                     self.client.clone(),
                     SyncKind::Lyrics,
                     "Lyrics",
                     self.ipc_tx.clone(),
                 ),
-                12 => sync_and_wait(
+                13 => sync_and_wait(
                     self.client.clone(),
                     SyncKind::Metadata,
                     "Metadata",
                     self.ipc_tx.clone(),
                 ),
-                13 | 14 => {
-                    let (what, label) = if opt == 13 {
+                14 | 15 => {
+                    let (what, label) = if opt == 14 {
                         (CacheKind::Lyrics, "lyrics")
                     } else {
                         (CacheKind::Covers, "cover art")
@@ -206,10 +207,10 @@ impl App {
                         }
                     });
                 }
-                15 => self.open_settings_overlay(),
+                16 => self.open_settings_overlay(),
                 // Both are toggles, so Enter reaches them here too rather than
                 // doing nothing on a row that visibly carries a value.
-                16 | 17 => self.settings_adjust(opt, tx),
+                17 | 18 => self.settings_adjust(opt, tx),
                 _ => {}
             },
             2 => match opt {
