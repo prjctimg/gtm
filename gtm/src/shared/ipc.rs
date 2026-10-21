@@ -829,6 +829,30 @@ impl DaemonReq {
             "podcast_feeds" => DaemonReq::PodcastFeeds,
             "podcast_status" => DaemonReq::PodcastStatus,
             "charts_sources" => DaemonReq::ChartsSources,
+            "charts_sleeve" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    source_id: String,
+                    chart_id: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::ChartsSleeve {
+                    source_id: x.source_id,
+                    chart_id: x.chart_id,
+                }
+            }
+            "radio_track_cover" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    artist: String,
+                    title: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::RadioTrackCover {
+                    artist: x.artist,
+                    title: x.title,
+                }
+            }
             "get_status" => DaemonReq::GetStatus,
             "get_status_lite" => DaemonReq::GetStatusLite,
             "check_health" => DaemonReq::CheckHealth,
