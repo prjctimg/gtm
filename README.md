@@ -3,22 +3,19 @@
 # [📻️ gtm(d)](https://gtmd.dev)
 
 <p align="center">
- <a href="https://gtmd.dev"> <img src="./logo.png" alt="Logo"></a>
-  <br>
-
-<p align="center">
-    A reimagined audio player built for terminal enthusiasts.
-    <br />
-    <a href="#about">About</a>
-    ·
-    <a href="#download">Download</a>
-    ·
-    <a href="https://gtmd.dev/docs">Documentation</a>
-    ·
-    <a href="CONTRIBUTING.md">Contributing</a>
-    ·
-    <a href="#acknowledgements">Acknowledgements</a>
-  </p>
+  <a href="https://gtmd.dev"><img src="./logo.png" alt="Logo"></a>
+  <br />
+  A reimagined audio player built for terminal enthusiasts.
+  <br />
+  <a href="#features">Features</a>
+  ·
+  <a href="#download">Download</a>
+  ·
+  <a href="https://gtmd.dev/docs">Documentation</a>
+  ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+  ·
+  <a href="#acknowledgements">Acknowledgements</a>
 </p>
 
 <p align="center">
@@ -148,11 +145,11 @@ This project wouldn't be possible without the amazing open source community!
 - [Myx](https://github.com/HaseebKhalid1507/Myx)
 - [spotify-player](https://github.com/aome510/spotify-player)
 
-<a href="https://www.star-history.com/?repos=prjctimg%2Fgtm&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=prjctimg%2Fgtm&amp;type=date&amp;legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=prjctimg/gtm&type=date&theme=auto&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=prjctimg/gtm&type=date&theme=auto&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=prjctimg/gtm&type=date&theme=auto&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=prjctimg/gtm&amp;type=date&amp;theme=auto&amp;legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=prjctimg/gtm&amp;type=date&amp;theme=auto&amp;legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=prjctimg/gtm&amp;type=date&amp;theme=auto&amp;legend=top-left" />
  </picture>
 </a>
 
