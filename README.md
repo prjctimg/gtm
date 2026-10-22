@@ -25,28 +25,47 @@
 
 ![](./screenshots/1.png)
 
-## About
+## Features
 
-- **[Background playback](https://gtmd.dev/docs/daemon)**: reattach to the client from anywhere in the terminal
-- **YouTube & Spotify**: search & download from [YouTube](https://gtmd.dev/docs/youtube) and sync [Spotify](https://gtmd.dev/docs/spotify).
-- **Offline playback**: Resolve Spotify tracks via yt-dlp for [downloading](https://gtmd.dev/docs/youtube).
-- **[Internet radio](https://gtmd.dev/docs/radio)**: browse the Radio Browser directory and stream any station
-- **[Podcasts](https://gtmd.dev/docs/podcasts)**: subscribe to RSS/Atom feeds and play episodes in order
-- **[Top charts](https://gtmd.dev/docs/library)**: Spotify, Apple and community charts, browsable as a tree
-- **[Crossfade](https://gtmd.dev/docs/crossfade)**: gapless-ish transitions with a configurable duration.
-- **[Lyrics](https://gtmd.dev/docs/lyrics)**: automatic fetch from LRCLIB (default provider)
-- **[Metadata sync](https://gtmd.dev/docs/metadata-sources)**: backfill missing tags, cover art, and lyrics for local files
-- **[Last.fm](https://gtmd.dev/docs/metadata-sources)**: scrobbling, love and now-playing
+- **[Background playback](https://gtmd.dev/docs/daemon)**: reattach to the
+  client from anywhere in the terminal
+- **YouTube & Spotify**: search & download from
+  [YouTube](https://gtmd.dev/docs/youtube) and sync
+  [Spotify](https://gtmd.dev/docs/spotify).
+- **Offline playback**: Resolve Spotify tracks via yt-dlp for
+  [downloading](https://gtmd.dev/docs/youtube).
+- **[Internet radio](https://gtmd.dev/docs/radio)**: browse the Radio Browser
+  directory and stream any station
+- **[Podcasts](https://gtmd.dev/docs/podcasts)**: subscribe to RSS/Atom feeds
+  and play episodes in order
+- **[Top charts](https://gtmd.dev/docs/library)**: Spotify, Apple and community
+  charts, browsable as a tree
+- **[Crossfade](https://gtmd.dev/docs/crossfade)**: gapless-ish transitions with
+  a configurable duration.
+- **[Lyrics](https://gtmd.dev/docs/lyrics)**: automatic fetch from LRCLIB
+  (default provider)
+- **[Metadata sync](https://gtmd.dev/docs/metadata-sources)**: backfill missing
+  tags, cover art, and lyrics for local files
+- **[Last.fm](https://gtmd.dev/docs/metadata-sources)**: scrobbling, love and
+  now-playing
 - **[Equalizer](https://gtmd.dev/docs/audio)**: 16 presets
 - **[Visualizer](https://gtmd.dev/docs/audio)**: 12 spectrum presets
-- **[Command palette](https://gtmd.dev/docs/tui)**: fuzzy-finder over every TUI action
-- **[Extensions](https://gtmd.dev/docs/configuration)**: toggle optional surfaces per session
-- **[Playlist management](https://gtmd.dev/docs/library)**: Import/export `m3u8` playlists
+- **[Command palette](https://gtmd.dev/docs/tui)**: fuzzy-finder over every TUI
+  action
+- **[Extensions](https://gtmd.dev/docs/configuration)**: toggle optional
+  surfaces per session
+- **[Playlist management](https://gtmd.dev/docs/library)**: Import/export `m3u8`
+  playlists
 - **[Sleep timer](https://gtmd.dev/docs/playback)**
-- **[Cover art support](https://gtmd.dev/docs/cover-art)**: rendered inline via the kitty/terminal image protocol
-- **[Zero configuration](https://gtmd.dev/docs/configuration)**: sane defaults, fully customizable via TOML
-- **[Progress styles](https://gtmd.dev/docs/theming)**: four indicators for the playback position
-- **[Theming](https://gtmd.dev/docs/theming)**: accent colors extracted from the current track cover (reactive theming), transparent mode and 16 built-in themes
+- **[Cover art support](https://gtmd.dev/docs/cover-art)**: rendered inline via
+  the kitty/terminal image protocol
+- **[Zero configuration](https://gtmd.dev/docs/configuration)**: sane defaults,
+  fully customizable via TOML
+- **[Progress styles](https://gtmd.dev/docs/theming)**: four indicators for the
+  playback position
+- **[Theming](https://gtmd.dev/docs/theming)**: accent colors extracted from the
+  current track cover (reactive theming), transparent mode and 16 built-in
+  themes
 - **[MPRIS](https://gtmd.dev/docs/mpris)**: media player controls via D-Bus
 
 ## Download
@@ -63,29 +82,33 @@ For `nightly` builds (released on every push to `dev`):
 curl -fsSL https://gtmd.dev/install.sh | bash -s -- --nightly
 ```
 
-Or grab an archive [releases page](https://github.com/prjctimg/gtm/releases/latest), extract it, and run the `./install.sh` in its directory
+Or grab an archive
+[releases page](https://github.com/prjctimg/gtm/releases/latest), extract it,
+and run the `./install.sh` in its directory
 
-See [CONTRIBUTING](./CONTRIBUTING.md#build-from-source) for more installation routes.
+See [CONTRIBUTING](./CONTRIBUTING.md#build-from-source) for more installation
+routes.
 
 ### Install via AUR
 
-`gtm` is now available in the AUR as `gtm-player` (Compiles it) and `gtm-player-bin` (Binary/No compilation):
+`gtm` is available in the AUR as `gtm-player` and `gtm-player-bin` (binaries, no
+compilation step):
 
 ```bash
-# Using yay
+# yay
 yay -S gtm-player
 
-# Using paru
+# paru
 paru -S gtm-player
 ```
 
 You can also install the binary directly instead of the above:
 
 ```bash
-# Using yay
+# yay
 yay -S gtm-player-bin
 
-# Using paru
+# paru
 paru -S gtm-player-bin
 ```
 
@@ -99,9 +122,10 @@ paru -S gtm-player-bin
 - [gtmd(1)](docs/man/gtmd.1.md)
 - [gtmd-ipc(1)](docs/man/gtmd-ipc.1.md)
 
-## Contributing and Developing
+## Contributing
 
-See [the contributing guide](CONTRIBUTING.md) and [the Code of Conduct](CODE_OF_CONDUCT.md) first.
+See [the contributing guide](CONTRIBUTING.md) and
+[the Code of Conduct](CODE_OF_CONDUCT.md) first.
 
 ## Acknowledgements
 
