@@ -185,11 +185,7 @@ impl Pickers {
         let row_w = inner.width;
         for (row, verb) in actions[scroll_start..scroll_end].iter().enumerate() {
             let is_sel = scroll_start + row == sel;
-            let label = format!(
-                "{} {}",
-                if is_sel { ">" } else { " " },
-                verb.label()
-            );
+            let label = format!("{} {}", if is_sel { ">" } else { " " }, verb.label());
             let style = if is_sel {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())

@@ -8,6 +8,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use crate::audio::eq::{PRE_GAIN_MAX_DB, PRE_GAIN_MIN_DB};
+use crate::providers::playlist::{
+    NewPlaylist, PlaylistId, PlaylistItem, PlaylistSlot, PlaylistSource,
+};
 use crate::shared::client::{DaemonClient, LastfmStatus};
 use crate::shared::daemon::ensure_daemon_running;
 use crate::shared::global::{PlaybackStatus, RepeatMode};
@@ -21,7 +24,6 @@ use crate::shared::secret::{
 };
 use crate::shared::spotify::SpotifyStatus;
 use crate::shared::track::{LrcData, TrackInfo};
-use crate::providers::playlist::{NewPlaylist, PlaylistId, PlaylistItem, PlaylistSlot, PlaylistSource};
 use clap::{Parser, Subcommand};
 
 use crate::app::{Prefs, ensure_prefs_file};
@@ -646,25 +648,20 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
-            CliCommand::Volume { volume } => {
-                match volume {
-                    Some(v) => {
-                        client
-                            .set_volume(*v)
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        if verbose {
-                            Ok(format!("Volume: {}%", v))
-                        } else {
-                            Ok("ok".to_string())
-                        }
-                    }
-                    None => {
-                        let v = client.get_volume().await.map_err(|e| e.to_string())?;
-                        Ok(format!("{v}"))
+            CliCommand::Volume { volume } => match volume {
+                Some(v) => {
+                    client.set_volume(*v).await.map_err(|e| e.to_string())?;
+                    if verbose {
+                        Ok(format!("Volume: {}%", v))
+                    } else {
+                        Ok("ok".to_string())
                     }
                 }
-            }
+                None => {
+                    let v = client.get_volume().await.map_err(|e| e.to_string())?;
+                    Ok(format!("{v}"))
+                }
+            },
             CliCommand::EqPresets => {
                 let presets = client.list_eq_presets().await.map_err(|e| e.to_string())?;
                 if json {
@@ -1402,7 +1399,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     } else {
                         Ok(sources
                             .iter()
-                            .map(|s| format_playlist_source(s))
+                            .map(format_playlist_source)
                             .collect::<Vec<_>>()
                             .join("\n"))
                     }
