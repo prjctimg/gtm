@@ -1,10 +1,10 @@
 <!-- LOGO -->
-<h1>
+
 <p align="center">
-  <img src="./logo.png" alt="Logo">
-  <br><a href="https://gtmd.dev">gtm 📻️</a>
-</h1>
-  <p align="center">
+ <a href="https://gtmd.dev"> <img src="./logo.png" alt="Logo"></a>
+  <br>
+
+<p align="center">
     A reimagined audio player built for terminal enthusiasts.
     <br />
     <a href="#about">About</a>
