@@ -12,6 +12,10 @@ pub(crate) use std::path::Path;
 pub(crate) use std::pin::Pin;
 pub(crate) use std::time::Duration;
 
+pub(crate) use crate::providers::playlist::{
+    SPOTIFY_SOURCE, NewPlaylist, PlaylistCaps, PlaylistId, PlaylistNameWrite, PlaylistSource,
+    PlaylistWrite, Verb,
+};
 pub(crate) use crate::providers::spotify::SpotifyRemote;
 pub(crate) use crate::shared::client::{DaemonClient, LastfmStatus};
 pub(crate) use crate::shared::custom::CustomRadioStation;
@@ -658,6 +662,14 @@ pub struct App {
     pub playlist_creating: bool,
     /// Playlist being renamed via the PlaylistSelect name input, if any.
     pub renaming_playlist: Option<i64>,
+    /// The provider playlist the playlist-actions picker is acting on.
+    pub provider_playlist: Option<PlaylistId>,
+    /// The verbs that provider offers, fetched from the daemon's registry when
+    /// the picker opens.
+    pub provider_playlist_caps: Option<PlaylistCaps>,
+    /// The provider-playlist write waiting for a name typed into the
+    /// PlaylistSelect input.
+    pub provider_playlist_name: Option<PlaylistNameWrite>,
     pub metadata: MetadataEditState,
     pub pending_quit: bool,
     /// Clickable row rectangles rebuilt every frame by `ui::render`
@@ -850,6 +862,8 @@ pub(crate) enum IpcResult {
     CoverCacheStat(u64),
     /// OS audio output devices reported by the daemon, for the device picker.
     AudioDevices(Vec<String>),
+    /// The verbs a playlist provider offers, for the playlist-actions picker.
+    ProviderPlaylistCaps(PlaylistCaps),
 }
 /// Send a background-task error into the TUI event stream as an Error
 /// (surfaced in the notification history).
@@ -1634,6 +1648,9 @@ impl App {
             live_uri: None,
             playlist_creating: false,
             renaming_playlist: None,
+            provider_playlist: None,
+            provider_playlist_caps: None,
+            provider_playlist_name: None,
             metadata: MetadataEditState {
                 edit_track_ids: Vec::new(),
                 fields: Default::default(),
@@ -2002,6 +2019,7 @@ impl App {
             PickerId::Notifications => self.notification_history.len().saturating_sub(1),
             PickerId::NotificationSettings => NotifType::ALL.len().saturating_sub(1),
             PickerId::PlaylistSelect => self.playlist_cache.len(),
+            PickerId::PlaylistActions => self.provider_playlist_actions().len().saturating_sub(1),
             PickerId::PlaylistTrackSelect => self.tracks_cache.len().saturating_sub(1),
             PickerId::ThemePicker => self
                 .themes
@@ -2051,6 +2069,7 @@ impl App {
             PickerId::Notifications => self.notification_history.len(),
             PickerId::NotificationSettings => NotifType::ALL.len(),
             PickerId::PlaylistSelect => self.playlist_cache.len() + 1,
+            PickerId::PlaylistActions => self.provider_playlist_actions().len(),
             PickerId::PlaylistTrackSelect => self.tracks_cache.len(),
             PickerId::ThemePicker => self
                 .themes
@@ -2231,6 +2250,12 @@ impl App {
                 PickerId::PlaylistSelect => {
                     self.playlist_creating = false;
                     self.renaming_playlist = None;
+                    self.provider_playlist_name = None;
+                    self.provider_playlist = None;
+                }
+                PickerId::PlaylistActions => {
+                    self.provider_playlist_caps = None;
+                    self.provider_playlist = None;
                 }
                 PickerId::SpotifyDest => {
                     self.live_dests.clear();

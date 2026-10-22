@@ -156,6 +156,8 @@ pub struct PendingPrompt {
 pub enum PromptType {
     DeleteTrack(i64),
     DeletePlaylist(i64),
+    /// Delete a provider playlist, with the name to show in the prompt.
+    DeleteProviderPlaylist(PlaylistId, String),
     MultiselectDelete(Vec<i64>),
     MultiselectAddToQueue,
     MultiselectAddToPlaylist,

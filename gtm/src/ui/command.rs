@@ -214,6 +214,11 @@ impl CommandPalette {
                 hint: "delete from list",
             },
             Command {
+                label: "Playlist Actions",
+                keys: "",
+                hint: "playlist actions",
+            },
+            Command {
                 label: "Jump to End",
                 keys: "G",
                 hint: "jump to end",
@@ -344,7 +349,7 @@ impl CommandPalette {
 /// palette never draws.
 pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("Playback", 14),
-    ("Library & Queue", 25),
+    ("Library & Queue", 26),
     ("View & Overlays", 15),
     ("System", 7),
 ];

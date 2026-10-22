@@ -15,7 +15,7 @@ use tracing::warn;
 
 use gtm::providers::playlist::{
     NewPlaylist, PlaylistCaps, PlaylistError, PlaylistId, PlaylistItem, PlaylistProvider,
-    PlaylistSlot,
+    PlaylistSlot, SPOTIFY_SOURCE,
 };
 
 use crate::daemon::DaemonInner;
@@ -57,7 +57,7 @@ impl SpotifyPlaylists {
     /// The provider's own id, checked against the source so a playlist id from
     /// another provider is refused rather than sent to Spotify.
     fn split<'a>(id: &'a PlaylistId) -> Result<SpotifyPlaylistId<'a>, PlaylistError> {
-        if id.source != "spotify" {
+        if id.source != SPOTIFY_SOURCE {
             return Err(PlaylistError::NotPermitted(format!(
                 "{} is not a spotify playlist",
                 id.source
@@ -120,13 +120,13 @@ fn playable<'a>(item: &'a PlaylistItem) -> Result<PlayableId<'a>, PlaylistError>
 }
 
 fn full_to_id(full: FullPlaylist) -> Result<PlaylistId, PlaylistError> {
-    Ok(PlaylistId::new("spotify", full.id.to_string()))
+    Ok(PlaylistId::new(SPOTIFY_SOURCE, full.id.to_string()))
 }
 
 #[async_trait::async_trait]
 impl PlaylistProvider for SpotifyPlaylists {
     fn source_id(&self) -> &str {
-        "spotify"
+        SPOTIFY_SOURCE
     }
 
     fn display_name(&self) -> &str {
@@ -309,7 +309,7 @@ impl PlaylistProvider for SpotifyPlaylists {
                 .await
                 .map_err(classify)?;
         }
-        let out = PlaylistId::new("spotify", made.id.to_string());
+        let out = PlaylistId::new(SPOTIFY_SOURCE, made.id.to_string());
         self.after_write().await;
         Ok(out)
     }

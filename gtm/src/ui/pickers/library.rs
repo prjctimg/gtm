@@ -5,6 +5,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use crate::providers::playlist::PlaylistNameWrite;
 use crate::ui::*;
 
 impl Pickers {
@@ -131,12 +132,108 @@ impl Pickers {
         }
     }
 
-    pub(crate) fn render_playlist_select(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Select Playlist ");
+    /// The provider-playlist verbs for the highlighted playlist.
+    ///
+    /// The rows are the verbs the provider's capability bits say it accepts,
+    /// so the picker offers what the provider will do rather than what the
+    /// registry happens to implement. A verb the provider would refuse is left
+    /// out rather than offered and failed.
+    pub(crate) fn render_playlist_actions(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " Playlist Actions ");
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        if app.playlist_creating {
+        let actions = app.provider_playlist_actions();
+        if app.provider_playlist_caps.is_none() {
+            f.render_widget(
+                Paragraph::new(empty_hint_lines(
+                    app,
+                    "Asking the provider what it can do",
+                    "Hint: Esc to close",
+                )),
+                inner,
+            );
+            return;
+        }
+        if actions.is_empty() {
+            f.render_widget(
+                Paragraph::new(empty_hint_lines(
+                    app,
+                    "This provider offers no playlist actions",
+                    "Hint: Esc to close",
+                )),
+                inner,
+            );
+            return;
+        }
+
+        let total = actions.len();
+        let sel = app
+            .pickers
+            .top()
+            .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
+        let visible = inner.height as usize;
+        let (scroll_start, scroll_end) = match app.pickers.top_mut() {
+            Some(top) => {
+                let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
+                top.viewport_offset = s;
+                (s, e)
+            }
+            None => (0, total),
+        };
+
+        let row_w = inner.width;
+        for (row, verb) in actions[scroll_start..scroll_end].iter().enumerate() {
+            let is_sel = scroll_start + row == sel;
+            let label = format!(
+                "{} {}",
+                if is_sel { ">" } else { " " },
+                verb.label()
+            );
+            let style = if is_sel {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            let pad = if is_sel { row_pad(&label, row_w) } else { 0 };
+            let line_idx = row as u16;
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("{label}{}", " ".repeat(pad)),
+                    style,
+                ))),
+                Rect {
+                    x: inner.x,
+                    y: inner.y + line_idx,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
+            app.mouse_map.register(
+                Rect {
+                    x: inner.x,
+                    y: inner.y + line_idx,
+                    width: inner.width,
+                    height: 1,
+                },
+                MouseZone::PickerItem(scroll_start + row),
+            );
+        }
+    }
+
+    pub(crate) fn render_playlist_select(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let title = match app.provider_playlist_name {
+            Some(PlaylistNameWrite::Rename) => " Rename Playlist ",
+            Some(PlaylistNameWrite::Copy) => " Copy Playlist ",
+            None => " Select Playlist ",
+        };
+        let block = Self::picker_panel(app, title);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        if app.playlist_creating || app.provider_playlist_name.is_some() {
             let cursor_style = cursor_span_style(app);
             let para = Paragraph::new(Line::from(vec![
                 Span::styled(" Name: ", Style::default().fg(app.theme.fg_dim)),

@@ -333,6 +333,122 @@ impl App {
             .get(self.list_pos().saturating_sub(Self::SPOTIFY_PLAYLIST_ROWS))
     }
 
+    /// The provider-playlist verbs the actions picker offers for the playlist
+    /// it is acting on.
+    ///
+    /// Gated on the provider's own capability bits, so the picker lists what
+    /// the provider will do and leaves out what it would refuse. The list is
+    /// the same one the renderer draws and the key handler acts on, so a verb
+    /// cannot be shown without being reachable.
+    pub fn provider_playlist_actions(&self) -> Vec<Verb> {
+        let Some(caps) = self.provider_playlist_caps else {
+            return Vec::new();
+        };
+        [
+            (Verb::Rename, caps.rename),
+            (Verb::Copy, caps.copy),
+            (Verb::Delete, caps.delete),
+        ]
+        .into_iter()
+        .filter(|(_, on)| *on)
+        .map(|(verb, _)| verb)
+        .collect()
+    }
+
+    /// The provider playlist the actions picker is acting on, taken from the
+    /// highlighted row of the playlist list.
+    ///
+    /// `None` when the list is not the one being shown or the cursor is not on
+    /// a playlist, so the picker has nothing to act on and does not open.
+    pub fn highlighted_provider_playlist(&self) -> Option<PlaylistId> {
+        let playlist = self.highlighted_playlist()?;
+        Some(PlaylistId::new(SPOTIFY_SOURCE, playlist.id))
+    }
+
+    /// Run a provider-playlist write and report the outcome.
+    ///
+    /// The provider refreshes its own list on the daemon side, so the client
+    /// re-pulls it afterwards: a write that succeeds while the list stays as
+    /// it was reads as a write that did nothing.
+    pub(crate) fn provider_playlist_write(&self, write: PlaylistWrite, label: String) {
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            let c = client.clone();
+            let result = match write {
+                PlaylistWrite::Rename { id, name } => {
+                    let spec = NewPlaylist {
+                        name: Some(name),
+                        ..Default::default()
+                    };
+                    c.playlists().rename(id, spec).await.map(|_| ())
+                }
+                PlaylistWrite::Copy { id, name } => {
+                    c.playlists().copy(id, name.as_deref()).await.map(|_| ())
+                }
+                PlaylistWrite::Delete { id } => c.playlists().delete(id).await,
+            };
+            match result {
+                Ok(()) => {
+                    if let Ok(playlists) = client.spotify().playlists().await {
+                        let _ = ipc_tx.send(IpcResult::SpotifyPlaylists(playlists));
+                    }
+                    let _ = ipc_tx.send(IpcResult::Notification(
+                        "Playlist".to_string(),
+                        label,
+                        NotificationKind::Success,
+                        NotifType::NowPlaying,
+                    ));
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!("Playlist: {e}")));
+                }
+            }
+        });
+    }
+
+    /// Open the provider-playlist actions picker for the highlighted playlist.
+    ///
+    /// The verbs it lists come from the provider's own capability bits, so they
+    /// are fetched from the daemon's registry rather than assumed here.
+    pub(crate) fn open_provider_playlist_actions(&mut self) {
+        let Some(id) = self.highlighted_provider_playlist() else {
+            self.notify_typed(
+                "Playlist",
+                "Highlight a playlist first",
+                NotificationKind::Info,
+                true,
+                NotifType::NowPlaying,
+            );
+            return;
+        };
+        self.provider_playlist = Some(id.clone());
+        self.provider_playlist_caps = None;
+        self.pickers.open(PickerId::PlaylistActions);
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            let caps = match client.playlists().sources().await {
+                Ok(sources) => sources
+                    .iter()
+                    .find(|s| s.source_id == id.source)
+                    .map(|s| s.caps)
+                    .unwrap_or_default(),
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!("Playlist registry: {e}")));
+                    PlaylistCaps::default()
+                }
+            };
+            let _ = ipc_tx.send(IpcResult::ProviderPlaylistCaps(caps));
+        });
+    }
+
+    /// The name of the highlighted playlist, for prompts that name what they
+    /// are about to remove.
+    pub fn highlighted_provider_playlist_name(&self) -> Option<String> {
+        self.highlighted_playlist().map(|p| p.name)
+    }
+
     /// Fetch the lyrics of the Spotify drill-down row under the cursor.
     ///
     /// Lazy by design: one row at a time, on the row the user is actually

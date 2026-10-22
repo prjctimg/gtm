@@ -7,6 +7,13 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+/// The source id of the Spotify playlist provider.
+///
+/// Shared so the client and the daemon agree on the string a playlist id is
+/// routed by: an id whose source does not match is refused rather than sent
+/// to the wrong provider.
+pub const SPOTIFY_SOURCE: &str = "spotify";
+
 /// A provider that owns playlists and can be asked to change them.
 ///
 /// The read half is deliberately *not* on this trait. A playlist is a list of
@@ -147,6 +154,19 @@ impl Verb {
     pub fn unsupported(verb: Verb) -> PlaylistError {
         PlaylistError::Unsupported(verb)
     }
+
+    /// What the UI calls this verb.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Verb::Create => "Create",
+            Verb::Rename => "Rename",
+            Verb::Add => "Add tracks",
+            Verb::Remove => "Remove tracks",
+            Verb::Delete => "Delete",
+            Verb::Subscribe => "Follow",
+            Verb::Copy => "Copy",
+        }
+    }
 }
 
 /// Names a playlist at a provider. Every field is optional so one shape covers
@@ -179,6 +199,28 @@ impl PlaylistId {
             id: id.into(),
         }
     }
+}
+
+/// Which provider-playlist write is waiting for a name to be typed in.
+///
+/// Rename and copy both need a name, and both end in the same name input, so
+/// the input has to know which write it is collecting a name for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaylistNameWrite {
+    Rename,
+    Copy,
+}
+
+/// A provider-playlist write, named rather than passed as a closure.
+///
+/// The actions picker hands the whole write to a background task, and a
+/// closure over the picker's state would borrow it for the length of the
+/// request.
+#[derive(Debug, Clone)]
+pub enum PlaylistWrite {
+    Rename { id: PlaylistId, name: String },
+    Copy { id: PlaylistId, name: Option<String> },
+    Delete { id: PlaylistId },
 }
 
 /// One item to add to a playlist.

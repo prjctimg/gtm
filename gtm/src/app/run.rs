@@ -1608,6 +1608,18 @@ impl App {
                         }
                         self.spotify.sync_pending = false;
                     }
+                    IpcResult::ProviderPlaylistCaps(caps) => {
+                        // Only while the picker is open: a reply that lands
+                        // after it closed would leave the state describing a
+                        // picker that is gone.
+                        if self
+                            .pickers
+                            .top()
+                            .is_some_and(|o| o.id == PickerId::PlaylistActions)
+                        {
+                            self.provider_playlist_caps = Some(caps);
+                        }
+                    }
                     IpcResult::SpotifyTracks(t) => {
                         // The drill-down may have been closed while this was in
                         // flight; adopting the rows then would leave a stale

@@ -22,6 +22,8 @@ pub enum PickerId {
     ThemePicker,
     Help,
     PlaylistSelect,
+    /// The verbs the provider registry offers for the highlighted playlist.
+    PlaylistActions,
     /// Multi-select track list shown after creating a new playlist, so tracks
     /// can be picked (persistently highlighted) before Ctrl+Enter commits them.
     PlaylistTrackSelect,

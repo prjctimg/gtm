@@ -21,6 +21,7 @@ use crate::shared::secret::{
 };
 use crate::shared::spotify::SpotifyStatus;
 use crate::shared::track::{LrcData, TrackInfo};
+use crate::providers::playlist::{NewPlaylist, PlaylistId, PlaylistItem, PlaylistSlot, PlaylistSource};
 use clap::{Parser, Subcommand};
 
 use crate::app::{Prefs, ensure_prefs_file};
@@ -95,8 +96,13 @@ pub enum CliCommand {
     Prev,
     /// Seek to a position in seconds
     Seek { position_secs: f64 },
-    /// Set volume (0-100)
-    Volume { volume: u8 },
+    /// Get or set the volume (0-100)
+    Volume {
+        /// Volume percentage; omit to read the current volume
+        volume: Option<u8>,
+    },
+    /// List the equalizer presets the daemon offers
+    EqPresets,
     /// Toggle shuffle
     Shuffle,
     /// Set repeat mode (off, one, all)
@@ -268,6 +274,9 @@ pub enum CliCommand {
     /// Spotify integration commands
     Spotify(SpotifyAction),
     #[command(subcommand)]
+    /// Provider playlist commands (Spotify and any other registered source)
+    Playlist(ProviderPlaylist),
+    #[command(subcommand)]
     /// Podcast subscriptions (RSS/Atom)
     Podcast(PodcastAction),
     #[command(subcommand)]
@@ -342,6 +351,96 @@ pub enum PodcastAction {
     },
     /// Show podcast plugin status
     Status,
+}
+
+/// Provider playlist commands. These go through the daemon's provider
+/// registry, so `--source` picks the provider and the verbs it refuses are
+/// reported rather than attempted.
+#[derive(Subcommand)]
+pub enum ProviderPlaylist {
+    /// List the registered playlist providers and the verbs they offer
+    Sources,
+    /// Create a playlist
+    Create {
+        #[arg(long, value_name = "SOURCE")]
+        source: String,
+        #[arg(long, value_name = "NAME")]
+        name: String,
+        #[arg(long, value_name = "DESCRIPTION")]
+        description: Option<String>,
+        /// Make the playlist public
+        #[arg(long)]
+        public: bool,
+    },
+    /// Rename a playlist
+    Rename {
+        #[arg(long, value_name = "SOURCE")]
+        source: String,
+        #[arg(long, value_name = "ID")]
+        id: String,
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+        #[arg(long, value_name = "DESCRIPTION")]
+        description: Option<String>,
+        /// Make the playlist public
+        #[arg(long)]
+        public: bool,
+        /// Make the playlist private
+        #[arg(long)]
+        private: bool,
+    },
+    /// Add tracks to a playlist
+    Add {
+        #[arg(long, value_name = "SOURCE")]
+        source: String,
+        #[arg(long, value_name = "ID")]
+        id: String,
+        /// Provider-native track reference (e.g. `spotify:track:...`)
+        #[arg(long, value_name = "TRACK", num_args = 1..)]
+        track: Vec<String>,
+        /// Insert at this position instead of appending
+        #[arg(long, value_name = "POSITION")]
+        at: Option<u32>,
+    },
+    /// Remove tracks from a playlist
+    Remove {
+        #[arg(long, value_name = "SOURCE")]
+        source: String,
+        #[arg(long, value_name = "ID")]
+        id: String,
+        /// Provider-native track reference (e.g. `spotify:track:...`)
+        #[arg(long, value_name = "TRACK", num_args = 1..)]
+        track: Vec<String>,
+        /// Position of the occurrence to remove; repeatable
+        #[arg(long, value_name = "POSITION")]
+        position: Vec<u32>,
+    },
+    /// Delete a playlist
+    Delete {
+        #[arg(long, value_name = "SOURCE")]
+        source: String,
+        #[arg(long, value_name = "ID")]
+        id: String,
+    },
+    /// Follow or unfollow a playlist
+    Subscribe {
+        #[arg(long, value_name = "SOURCE")]
+        source: String,
+        #[arg(long, value_name = "ID")]
+        id: String,
+        /// Unfollow instead of follow
+        #[arg(long)]
+        off: bool,
+    },
+    /// Copy a playlist into one the account owns
+    Copy {
+        #[arg(long, value_name = "SOURCE")]
+        source: String,
+        #[arg(long, value_name = "ID")]
+        id: String,
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -548,14 +647,30 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Volume { volume } => {
-                client
-                    .set_volume(*volume)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                if verbose {
-                    Ok(format!("Volume: {}%", volume))
+                match volume {
+                    Some(v) => {
+                        client
+                            .set_volume(*v)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        if verbose {
+                            Ok(format!("Volume: {}%", v))
+                        } else {
+                            Ok("ok".to_string())
+                        }
+                    }
+                    None => {
+                        let v = client.get_volume().await.map_err(|e| e.to_string())?;
+                        Ok(format!("{v}"))
+                    }
+                }
+            }
+            CliCommand::EqPresets => {
+                let presets = client.list_eq_presets().await.map_err(|e| e.to_string())?;
+                if json {
+                    serde_json::to_string_pretty(&presets).map_err(|e| e.to_string())
                 } else {
-                    Ok("ok".to_string())
+                    Ok(presets.join("\n"))
                 }
             }
             CliCommand::Shuffle => client
@@ -1275,6 +1390,137 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     .map(|()| "spotify playlists synced".to_string())
                     .map_err(|e| e.to_string()),
             },
+            CliCommand::Playlist(action) => match action {
+                ProviderPlaylist::Sources => {
+                    let sources = client
+                        .playlists()
+                        .sources()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if json {
+                        serde_json::to_string_pretty(&sources).map_err(|e| e.to_string())
+                    } else {
+                        Ok(sources
+                            .iter()
+                            .map(|s| format_playlist_source(s))
+                            .collect::<Vec<_>>()
+                            .join("\n"))
+                    }
+                }
+                ProviderPlaylist::Create {
+                    source,
+                    name,
+                    description,
+                    public,
+                } => {
+                    let spec = NewPlaylist {
+                        name: Some(name.clone()),
+                        description: description.clone(),
+                        public: public.then_some(true),
+                    };
+                    let id = client
+                        .playlists()
+                        .create(source, spec)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok(id.unwrap_or_default())
+                }
+                ProviderPlaylist::Rename {
+                    source,
+                    id,
+                    name,
+                    description,
+                    public,
+                    private,
+                } => {
+                    let spec = NewPlaylist {
+                        name: name.clone(),
+                        description: description.clone(),
+                        public: if *public {
+                            Some(true)
+                        } else if *private {
+                            Some(false)
+                        } else {
+                            None
+                        },
+                    };
+                    client
+                        .playlists()
+                        .rename(PlaylistId::new(source, id.clone()), spec)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok("ok".to_string())
+                }
+                ProviderPlaylist::Add {
+                    source,
+                    id,
+                    track,
+                    at,
+                } => {
+                    let items = track
+                        .iter()
+                        .map(|t| PlaylistItem {
+                            item: t.clone(),
+                            title: None,
+                            artist: None,
+                        })
+                        .collect();
+                    client
+                        .playlists()
+                        .add(PlaylistId::new(source, id.clone()), items, *at)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok("ok".to_string())
+                }
+                ProviderPlaylist::Remove {
+                    source,
+                    id,
+                    track,
+                    position,
+                } => {
+                    let slots = track
+                        .iter()
+                        .map(|t| PlaylistSlot {
+                            item: PlaylistItem {
+                                item: t.clone(),
+                                title: None,
+                                artist: None,
+                            },
+                            positions: position.clone(),
+                        })
+                        .collect();
+                    client
+                        .playlists()
+                        .remove(PlaylistId::new(source, id.clone()), slots)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok("ok".to_string())
+                }
+                ProviderPlaylist::Delete { source, id } => {
+                    client
+                        .playlists()
+                        .delete(PlaylistId::new(source, id.clone()))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok("ok".to_string())
+                }
+                ProviderPlaylist::Subscribe { source, id, off } => {
+                    client
+                        .playlists()
+                        .subscribe(PlaylistId::new(source, id.clone()), !off)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok("ok".to_string())
+                }
+                ProviderPlaylist::Copy { source, id, name } => {
+                    let copied = client
+                        .playlists()
+                        .copy(PlaylistId::new(source, id.clone()), name.as_deref())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok(copied.unwrap_or_default())
+                }
+            },
             CliCommand::Podcast(action) => match action {
                 PodcastAction::Add { url } => {
                     let feeds = client
@@ -1542,6 +1788,32 @@ fn format_spotify_status(st: &SpotifyStatus) -> String {
     }
     if let Some(e) = st.error.as_deref() {
         out += &format!(" | error: {e}");
+    }
+    out
+}
+
+/// One registered provider, with the verbs it actually offers.
+fn format_playlist_source(s: &PlaylistSource) -> String {
+    let mut out = format!("{}\t{}", s.source_id, s.display_name);
+    match &s.unavailable {
+        Some(why) => out += &format!("\tunavailable: {why}"),
+        None => {
+            let verbs = [
+                ("create", s.caps.create),
+                ("rename", s.caps.rename),
+                ("add", s.caps.add),
+                ("remove", s.caps.remove),
+                ("delete", s.caps.delete),
+                ("subscribe", s.caps.subscribe),
+                ("copy", s.caps.copy),
+            ]
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(",");
+            out += &format!("\t{verbs}");
+        }
     }
     out
 }

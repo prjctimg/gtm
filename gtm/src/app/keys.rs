@@ -278,6 +278,12 @@ impl App {
                                     }
                                 }));
                             }
+                            PromptType::DeleteProviderPlaylist(id, name) => {
+                                self.provider_playlist_write(
+                                    PlaylistWrite::Delete { id },
+                                    format!("Deleted playlist — {name}"),
+                                );
+                            }
                             PromptType::MultiselectAddToQueue => {
                                 // Resolve the selection against the current
                                 // pane so a shifted list can't queue the
@@ -3898,6 +3904,14 @@ impl App {
                                             );
                                         }
                                     }
+                                } else if action == "playlist actions" {
+                                    // Close the palette rather than leaving it
+                                    // under the actions picker: this flow opens
+                                    // a name input after it, and a palette
+                                    // surfacing between the two reads as a
+                                    // command that did nothing.
+                                    self.pickers.close_top();
+                                    self.open_provider_playlist_actions();
                                 } else if action == "delete from list" {
                                     if !self.needs_list("Delete from List") {
                                         if self.library_category == LIB_CHARTS {
@@ -4005,7 +4019,32 @@ impl App {
                             }
                         }
                         PickerId::PlaylistSelect => {
-                            if self.playlist_creating {
+                            if let Some(write) = self.provider_playlist_name.take() {
+                                let name = top.query.trim().to_string();
+                                if name.is_empty() {
+                                    // Keep the name input open until a name is given.
+                                    self.provider_playlist_name = Some(write);
+                                } else if let Some(id) = self.provider_playlist.take() {
+                                    let (write, label) = match write {
+                                        PlaylistNameWrite::Rename => (
+                                            PlaylistWrite::Rename {
+                                                id,
+                                                name: name.clone(),
+                                            },
+                                            format!("Renamed playlist — {name}"),
+                                        ),
+                                        PlaylistNameWrite::Copy => (
+                                            PlaylistWrite::Copy {
+                                                id,
+                                                name: Some(name.clone()),
+                                            },
+                                            format!("Copied playlist — {name}"),
+                                        ),
+                                    };
+                                    self.provider_playlist_write(write, label);
+                                    self.close_picker();
+                                }
+                            } else if self.playlist_creating {
                                 let name = top.query.trim().to_string();
                                 if name.is_empty() {
                                     // Keep the name input open until a name is given.
@@ -4107,6 +4146,52 @@ impl App {
                                     }
                                     self.close_picker();
                                 }
+                            }
+                        }
+                        PickerId::PlaylistActions => {
+                            let actions = self.provider_playlist_actions();
+                            let Some(verb) = actions.get(top.selected).copied() else {
+                                return;
+                            };
+                            let Some(id) = self.provider_playlist.clone() else {
+                                return;
+                            };
+                            match verb {
+                                Verb::Rename | Verb::Copy => {
+                                    self.provider_playlist_name = Some(if verb == Verb::Rename {
+                                        PlaylistNameWrite::Rename
+                                    } else {
+                                        PlaylistNameWrite::Copy
+                                    });
+                                    // The actions picker closes but the target
+                                    // stays: the name input it hands over to
+                                    // still needs to know which playlist it is
+                                    // renaming.
+                                    self.pickers.close_top();
+                                    self.pickers.open(PickerId::PlaylistSelect);
+                                }
+                                Verb::Delete => {
+                                    let name = self
+                                        .highlighted_provider_playlist_name()
+                                        .unwrap_or_else(|| id.id.clone());
+                                    self.close_picker();
+                                    self.pending_prompt = Some(PendingPrompt {
+                                        message: format!("Delete playlist \"{name}\"? [y/N]"),
+                                        confirm_keys: vec![
+                                            KeyCode::Char('y'),
+                                            KeyCode::Char('Y'),
+                                            KeyCode::Enter,
+                                        ],
+                                        cancel_keys: vec![
+                                            KeyCode::Char('n'),
+                                            KeyCode::Char('N'),
+                                            KeyCode::Esc,
+                                            KeyCode::Char('q'),
+                                        ],
+                                        prompt_type: PromptType::DeleteProviderPlaylist(id, name),
+                                    });
+                                }
+                                _ => {}
                             }
                         }
                         PickerId::Equalizer => {
@@ -4383,7 +4468,9 @@ impl App {
                             // previous state of the field.
                             self.spotify.oauth_form_error = None;
                         }
-                        PickerId::PlaylistSelect if self.playlist_creating => {
+                        PickerId::PlaylistSelect
+                            if self.playlist_creating || self.provider_playlist_name.is_some() =>
+                        {
                             top.query.push(c);
                         }
                         PickerId::PlaylistSelect if c == 'n' || c == 'N' => {
@@ -4443,7 +4530,9 @@ impl App {
                             }
                             self.spotify.oauth_form_error = None;
                         }
-                        PickerId::PlaylistSelect if self.playlist_creating => {
+                        PickerId::PlaylistSelect
+                            if self.playlist_creating || self.provider_playlist_name.is_some() =>
+                        {
                             top.query.pop();
                         }
                         _ => {
