@@ -25,8 +25,6 @@ Commands are dispatched by the `cmd` string. Parameters are the remaining keys o
 the same object: there is no `params` wrapper on the wire, even though the
 internal representation has one. Command and field names are `snake_case`.
 
-The wire version is **3** (`gtm/src/shared/ipc.rs`).
-
 | Socket | Path | Carries |
 |--------|------|---------|
 | Command | `$XDG_RUNTIME_DIR/gtm/gtmd.sock` | Commands, responses, JSON events |
@@ -134,8 +132,6 @@ unknown action is a request error, but an unrecognised *response shape* is a
 successful response with an unexamined payload.
 
 # COMMAND REFERENCE
-# COMMAND REFERENCE
-
 
 ### Playback
 
@@ -157,8 +153,6 @@ Every command is a control call on the current session and returns as soon as th
 | `cycle_repeat` | `mode` : RepeatMode | — | `repeat_mode_changed` |
 | `toggle_mute` | — | — | `volume_changed` |
 | `set_mono` | `enabled` : bool | — | — |
-| `quit` | — | — | — |
-| `ping` | — | — | — |
 
 ### Queue
 
@@ -174,7 +168,19 @@ One `cmd` with an `action` discriminator, and the one group where several action
 
 | Command | Request | Response | Emits |
 |---------|---------|----------|-------|
-| `library` | `action` : LibraryAction | `removed` | `metadata_changed` (the three `sync_*` actions), `library_organized` (`organize`) |
+| `library` | `action` : LibraryAction | `removed` | `custom` with `name` `sync_done` (the three `sync_*` actions), `library_changed` (a track is gone from disk) |
+
+### Playlist providers
+
+Playlist writes that are not specific to one service. Like `queue` and `library` this is one `cmd` with an `action` discriminator, but the target is a `PlaylistId` — a `source` plus the provider's own id — so a request names which registered provider should carry it. `sources` is the read: it lists what every provider offers and which are usable right now, and a client should check the capability bits before offering a verb rather than sending it and reporting the refusal.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `playlist` | `action` : PlaylistAction | depends on the action — see below | — |
+
+`create` mints a playlist on `source` and answers with `playlist_id`; `copy`
+answers the same way. `rename`, `add`, `remove`, `delete` and `subscribe` answer
+with no payload.
 
 ### Search and favourites
 
@@ -186,6 +192,7 @@ Synchronous reads against the local index. `search` accepts `query` and nothing 
 | `get_favourites` | — | `tracks` | — |
 | `add_favourite` | `track_id` : i64 | — | — |
 | `remove_favourite` | `track_id` : i64 | — | — |
+| `toggle_fav_uri` | `track` : TrackInfo | — | — |
 
 ### Cover art and lyrics
 
@@ -195,11 +202,11 @@ Both are cache-backed reads that may touch the network on a miss, and both can b
 |---------|---------|----------|-------|
 | `get_cover_art` | `track_id` : i64, `path` : string | `data` | — |
 | `artist_cover_art` | `artist` : string | `data` | — |
+| `get_image_cover` | `url` : string | `data` | — |
 | `get_lyrics` | `track_id` : i64, `path` : string | `lyrics` | — |
-| `lyrics_search` | `artist` : string, `title` : string, `album` : string, `duration` : float | `stations` | — |
-| `get_cover_cache_stat` | — | `stat`, `disk_bytes`, `mem_bytes`, `cap_bytes` | — |
+| `lyrics_search` | `artist` : string, `title` : string, `album` : string, `duration` : float | `lyrics` | — |
+| `cover_cache_stat` | — | `disk_bytes`, `mem_bytes`, `cap_bytes` | — |
 | `set_cover_provider` | `provider` : string | — | — |
-| `set_cover_cache` | `bytes` : uint64 | — | — |
 | `clear_cache` | `what` : CacheKind | — | — |
 
 ### Audio processing
@@ -213,7 +220,6 @@ DSP configuration. Every setter is acknowledged with no payload and reports the 
 | `list_eq_presets` | — | `presets` | — |
 | `set_reverb` | `enabled` : bool, `room_size` : float | — | `reverb_changed` |
 | `crossfade` | `enabled` : bool, `duration_secs` : u8 | — | `crossfade_changed` |
-| `set_dynamic_mode` | `enabled` : bool, `min_queue_remaining` : uint32, `max_history` : uint32 | — | `dynamic_mode_changed` |
 | `set_pre_gain` | `pre_gain_db` : float | — | `pre_gain_changed` |
 | `set_audio_device` | `name` : string | — | — |
 | `list_audio_devices` | — | `devices` | — |
@@ -231,6 +237,7 @@ Directory lookups against radio-browser.info, plus playback and tracklist reads.
 | `radio_countries` | `limit` : uint16 | `countries` | — |
 | `radio_bycountry` | `country` : string, `limit` : uint16 | `stations` | — |
 | `radio_tracklist` | `station_id` : string | `list` | — |
+| `radio_track_cover` | `artist` : string, `title` : string | `data` | — |
 | `radio_play` | `station_id` : string, `station_name` : string | — | `playback_started`, `radio_title_changed` |
 
 ### Spotify
@@ -241,7 +248,7 @@ The client id matters: rate limits are keyed per Spotify app, not per user, so a
 
 | Command | Request | Response | Emits |
 |---------|---------|----------|-------|
-| `spotify_status` | — | `enabled`, `api_key`, `session_token`, `ready`, `loved`, `error` | — |
+| `spotify_status` | — | `linked`, `user`, `premium`, `playing`, `device`, `device_id`, `shuffle`, `repeat`, `playlists`, `tracks`, `needs_relink`, `needs_play_link`, `error` | — |
 | `spotify_oauth_start` | `port` : uint16, `client_id` : string | `url` | — |
 | `spotify_cancel_oauth` | — | — | — |
 | `spotify_set_token` | `token` : string | `status` | — |
@@ -267,13 +274,12 @@ The client id matters: rate limits are keyed per Spotify app, not per user, so a
 
 ### Last.fm
 
-Scrobbling only — there is no playback control in this group. The flow is the same two-step shape as Spotify's: start the flow to get a URL a browser can visit, then hand the resulting session key back with `lastfm_authenticate`. `lastfm_status` reports `ready` and the last `error`, and is the right thing to poll after starting a flow.
+Scrobbling only — there is no playback control in this group. `lastfm_oauth_start` returns a URL a browser can visit; the daemon keeps polling Last.fm for the grant itself and stores the session key when the user approves, so there is no second call to hand a token back. `lastfm_status` reports `ready` and the last `error`, and is the right thing to poll after starting a flow.
 
 | Command | Request | Response | Emits |
 |---------|---------|----------|-------|
 | `lastfm_status` | — | `enabled`, `api_key`, `session_token`, `ready`, `loved`, `error` | — |
-| `lastfm_oauth_start` | — | `url` | — |
-| `lastfm_authenticate` | `token` : string | — | — |
+| `lastfm_oauth_start` | — | `url` | `lastfm_status_changed` |
 | `lastfm_clear` | — | — | — |
 | `lastfm_set_config` | `enabled` : bool, `api_key` : string, `api_secret` : string, `session_key` : string, `min_play_secs` : uint32, `min_play_pct` : float | — | `scrobble_config_changed` |
 | `lastfm_love` | — | — | — |
@@ -281,13 +287,16 @@ Scrobbling only — there is no playback control in this group. The flow is the 
 
 ### Podcasts
 
-Subscriptions are per-daemon and held in the config directory; there is no account. Feeds are read one level down: list feeds, then list episodes for a `feed_id`. `podcast_play` takes an episode index rather than an id, so a client that reorders a feed between listing and playing will play the wrong episode — resolve the index from the same response it displayed.
+Subscriptions are per-daemon and held in the config directory; there is no account. Feeds are read one level down: list feeds, then list episodes for a `feed_id`. `podcast_search` and `podcast_charts` query the public directory rather than the subscriptions: both answer with `results` rows that each carry the feed url `podcast_add_feed` takes. `podcast_play` takes an episode index rather than an id, so a client that reorders a feed between listing and playing will play the wrong episode — resolve the index from the same response it displayed.
 
 | Command | Request | Response | Emits |
 |---------|---------|----------|-------|
 | `podcast_status` | — | `status` | — |
 | `podcast_feeds` | — | `feeds` | — |
 | `podcast_episodes` | `feed_id` : string | `feed_id`, `feed_title`, `episodes` | — |
+| `podcast_search` | `term` : string, `country` : string | `results` | — |
+| `podcast_charts` | `country` : string, `genre` : string | `results` | — |
+| `podcast_transcript` | `feed_id` : string, `episode_index` : int | `feed_id`, `episode_index`, `lyrics` | — |
 | `podcast_add_feed` | `url` : string | `feeds` | — |
 | `podcast_remove_feed` | `feed_id` : string | — | — |
 | `podcast_refresh` | `feed_id` : string | `refreshed` | — |
@@ -302,6 +311,7 @@ A cross-provider view. `charts_list` enumerates the registered providers, and th
 | `charts_list` | `source_id` : string | `charts` | — |
 | `charts_sources` | — | `sources` | — |
 | `charts_tracks` | `source_id` : string, `chart_id` : string | `tracks` | — |
+| `charts_sleeve` | `source_id` : string, `chart_id` : string | `chart_id`, `cover` | — |
 
 ### YouTube
 
@@ -309,26 +319,21 @@ Search and download are asynchronous and use the poll pattern throughout: start 
 
 | Command | Request | Response | Emits |
 |---------|---------|----------|-------|
-| `yt_search` | `query` : string, `filter` : YTFilter | `stations` | `custom` with `name` `yt_search_partial` / `yt_search_done` |
+| `yt_search` | `query` : string, `filter` : YTFilter | — | — |
 | `yt_search_poll` | — | `query`, `results` | — |
-| `yt_search_cancel` | — | — | — |
-| `yt_resolve_stream` | `url` : string | `info` | — |
-| `yt_fetch_playlist` | `url` : string | — | — |
-| `yt_playlist_poll` | — | `query`, `results` | — |
 | `yt_download` | `url` : string, `title` : string, `channel` : string | — | — |
 | `yt_download_poll` | — | `id`, `url`, `title`, `progress`, `status`, `error`, `file_path`, `downloaded_bytes`, `total_bytes`, `rate_bps`, `eta_secs` | — |
-| `yt_cancel_download` | `url` : string | — | — |
+| `yt_cancel_download` | — | — | — |
 | `yt_set_config` | `cookie_source` : string, `cookie_file` : string, `js_runtime` : string, `download_dir` : string, `max_concurrent` : uint32 | — | — |
 
-### Sleep timer and scrobbling
+### Sleep timer
 
-The sleep timer counts down on the daemon and emits a tick every second, so a client rendering a countdown should follow `sleep_timer_tick` rather than decrementing locally — the two drift apart the moment a client is paused or reconnects. Scrobbling configuration is global to the daemon, not per-listener.
+The sleep timer counts down on the daemon and emits a tick every second, so a client rendering a countdown should follow `sleep_timer_tick` rather than decrementing locally — the two drift apart the moment a client is paused or reconnects.
 
 | Command | Request | Response | Emits |
 |---------|---------|----------|-------|
 | `set_sleep_timer` | `minutes` : uint32, `stop_immediately` : bool | — | `sleep_timer_tick`, `sleep_timer_expired` |
 | `cancel_sleep_timer` | — | — | — |
-| `set_scrobble` | `enabled` : bool, `api_key` : string, `session_token` : string, `min_play_secs` : uint32, `min_play_pct` : float | — | `scrobble_config_changed` |
 
 ### System
 
@@ -346,9 +351,9 @@ Introspection and lifecycle. `get_status` and `get_status_lite` differ only in h
 
 # NESTED ACTION ENVELOPES
 
-`queue` and `library` are single `cmd` values whose `action` field selects a
-variant of a tagged enum. The variant's own fields sit alongside `action` in the
-same object — there is no extra nesting level:
+`queue`, `library` and `playlist` are single `cmd` values whose `action` field
+selects a variant of a tagged enum. The variant's own fields sit alongside
+`action` in the same object — there is no extra nesting level:
 
 ```json
 {"id": 5, "cmd": "library", "action": "add_to_playlist", "playlist_id": 1, "track_ids": [4, 5]}
@@ -368,12 +373,14 @@ so a client should treat it as a hard error and not retry it unchanged.
 | `remove` | `index` : uint64 |
 | `move` | `from` : uint64, `to` : uint64 |
 | `add` | `paths` : list, `position` : uint64 (optional) |
-| `set` | `paths` : list |
+| `set` | `tracks` : list of TrackInfo |
 
 `list` is the only read and the only one with a payload. `add` appends unless
 `position` is given, in which case it inserts at that index; `set` replaces the
-whole queue, which is the usual way to hand a finished playlist to the daemon in
-one call. `set` does not start playback — pair it with `play` for that.
+whole queue with whole rows rather than paths, because a caller that already
+holds the title, artist and cover needs no second lookup to label them. It is
+the usual way to hand a finished playlist to the daemon in one call, and it does
+not start playback — pair it with `play` for that.
 
 ## library actions
 
@@ -419,6 +426,34 @@ With a `path` it processes just that track.
 that is absent is left alone, so a client must not send the field it does not
 mean to change.
 
+## playlist actions
+
+### playlist
+
+| Action | Fields |
+|--------|--------|
+| `sources` | — |
+| `create` | `source` : string, `spec` : NewPlaylist (optional) |
+| `rename` | `id` : PlaylistId, `spec` : NewPlaylist |
+| `add` | `id` : PlaylistId, `items` : list of PlaylistItem, `at` : uint32 (optional) |
+| `remove` | `id` : PlaylistId, `slots` : list of PlaylistSlot |
+| `delete` | `id` : PlaylistId |
+| `subscribe` | `id` : PlaylistId, `on` : bool |
+| `copy` | `id` : PlaylistId, `name` : string (optional) |
+
+A `PlaylistId` is `{"source": string, "id": string}`. `NewPlaylist` carries
+`name`, `description` and `public`, all optional — `public` as `null` leaves the
+existing privacy alone rather than defaulting it to private. A `PlaylistItem` is
+`item` (an opaque provider reference) plus optional `title` and `artist`; a
+`PlaylistSlot` is one `PlaylistItem` plus the `positions` to remove, because the
+same track can legitimately appear more than once.
+
+`sources` is the only read, and the only action that answers when no provider is
+usable: each entry carries `source_id`, `display_name`, `caps` and `unavailable`.
+`caps` is the set of verbs the provider implements (`create`, `rename`, `add`,
+`remove`, `delete`, `subscribe`, `copy`), so a client can grey out what the
+provider would refuse.
+
 # EVENTS
 
 Events are unsolicited. A client is expected to read them continuously and
@@ -436,14 +471,12 @@ the rest are state transitions.
 | `duration_changed` | `duration` |
 | `volume_changed` | `volume` |
 | `mono_changed` | `enabled` |
-| `metadata_changed` | `detail` |
+| `mute_changed` | `mute` |
 | `queue_changed` | `queue`, `cursor` |
-| `queue_index_changed` | `index` |
 | `repeat_mode_changed` | `mode` |
 | `shuffle_changed` | `enabled` |
 | `crossfade_changed` | `enabled`, `duration_secs` |
 | `pre_gain_changed` | `pre_gain_db` |
-| `dynamic_mode_changed` | `enabled`, `min_queue_remaining`, `max_history` |
 | `scrobble_config_changed` | `enabled` |
 | `sleep_timer_tick` | `remaining_secs` |
 | `sleep_timer_expired` | — |
@@ -468,8 +501,8 @@ the rest are state transitions.
 Under `custom`, the `name` field selects a sub-type whose remaining fields
 vary. `custom` names observed in the daemon: `daemon_quitting`, `backend_error`,
 `audio_error`, `audio_backend`, `sync_done`, `library_scan`, `library_changed`,
-`cover_art`, `lyrics`, `sleep_timer_deferred`, `youtube_search`, `event_channel`,
-`gtm`. The set is open — a client must ignore names it does not know rather than
+`cover_art`, `lyrics`, `sleep_timer_deferred`, `youtube_search`,
+`event_channel`. The set is open — a client must ignore names it does not know
 treating one as an error, since new sub-types are added without a protocol bump.
 `gtm/src/shared/ipc.rs` is the only complete list.
 

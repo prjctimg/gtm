@@ -28,7 +28,7 @@ available and **[** / **]** cycle between them.
 
 ## Library
 
-Browse tracks through the sidebar: Library, Liked, Playlists, Spotify, Radio,
+Browse tracks through the sidebar: Library, Playlists, Spotify, Radio,
 Top Charts, Podcasts. The left pane selects the view, the centre pane lists its
 contents. **Library** is the whole library and every synced playlist in one
 list, grouped five ways: **]** / **[** step between Tracks, Albums, Artists,
@@ -42,7 +42,7 @@ or play), **/** (contextual search), **Alt+S** (cycle sort in the List context).
 
 Settings is a floating picker opened with **Alt+,**, not a tab. The left pane
 selects a category, the right pane shows its options. Keys: **j**/**k**
-(navigate), **Enter** (toggle/select). The System category renders 17 rows,
+(navigate), **Enter** (toggle/select). The System category renders 19 rows,
 including **Daydream** — how long the TUI must be idle before the visualizer
 takes over (see *Daydreaming*).
 
@@ -169,8 +169,14 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 **seek** *position_secs*
 :   Seek to a specific position in the current track (in seconds).
 
-**volume** *volume*
-:   Set the playback volume (0-100).
+**volume** [*volume*]
+:   Set the playback volume (0-100). Omit the argument to print the current
+    volume as a bare number, which is what a script polling it wants.
+
+**eq-presets**
+:   List the equalizer presets by name, in the order the picker steps through
+    them. They are compiled in rather than read from config, so the list is the
+    same on every install.
 
 **mute**
 :   Toggle mute.
@@ -284,6 +290,44 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 
 **check-health**
 :   Check daemon connectivity and return version info.
+
+## Playlists
+
+Provider-owned playlists, as opposed to the library playlists above. These go
+through the daemon's provider registry, so `--source` picks the provider and a
+verb that provider refuses is reported rather than attempted.
+**playlist sources** is the read that says which providers are registered,
+what each calls itself, and which verbs it offers.
+
+**playlist sources**
+:   List the registered providers with their `source_id`, display name and
+    supported verbs. A provider that is registered but unusable carries the
+    reason.
+
+**playlist create** `--source` *source* `--name` *name* [`--description` *text*] [`--public`]
+:   Create a playlist and print its id.
+
+**playlist rename** `--source` *source* `--id` *id* [`--name` *name*] [`--description` *text*] [`--public`|`--private`]
+:   Change a playlist's details. Anything omitted is left alone, including
+    privacy: with neither `--public` nor `--private` the playlist keeps the
+    visibility it had.
+
+**playlist add** `--source` *source* `--id` *id* `--track` *ref*... [`--at` *position*]
+:   Add tracks by provider-native reference (`spotify:track:...`). Appends
+    unless `--at` gives an insertion position.
+
+**playlist remove** `--source` *source* `--id` *id* `--track` *ref*... [`--position` *index*...]
+:   Remove tracks. Positions matter because the same track can appear in a
+    playlist more than once; repeat `--position` to remove several occurrences.
+
+**playlist delete** `--source` *source* `--id` *id*
+:   Delete a playlist the account owns.
+
+**playlist subscribe** `--source` *source* `--id` *id* [`--off`]
+:   Follow a playlist, or unfollow it with `--off`.
+
+**playlist copy** `--source` *source* `--id` *id* [`--name` *name*]
+:   Copy a readable playlist into one the account owns.
 
 ## Favourites
 
@@ -424,17 +468,11 @@ daemon and prints the result. Use **\--json** for machine-readable output.
     discarded and defaults are used, silently. Validate before relying on a
     hand-edited file.
 
-    Keys this build no longer has are ignored, and a key it still has but with
-    values it dropped is resolved to the default and logged rather than
-    rejected. `visualizer_preset` is the one such key: `braille`, `blocks`,
-    `spectrum`, `barsdot`, `classicpeak`, `columns` and `retro` were removed
-    when the presets without a shader went, and reading one logs the name and
-    the value used instead.
-
-    The alternative — erroring — was rejected deliberately. A config file that
-    fails to parse is discarded whole, so one stale key costs the queue, the
-    volume, the EQ and the resume position. A visualizer preset costs nothing
-    and is visible immediately.
+    Keys this build no longer has are ignored rather than rejected. Values it
+    dropped are not: `visualizer_preset` takes all twelve presets — `braille`,
+    `blocks`, `mirror`, `gradient`, `spectrum`, `barsdot`, `classicpeak`,
+    `columns`, `wave`, `stereo`, `retro` and `flame` — and a value that is none
+    of them discards the file like any other invalid value.
 
 **sleep-timer** *minutes*
 :   Set the sleep timer (minutes until playback fades out and stops).

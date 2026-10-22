@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Added
+- **`gtm playlist`** — create, rename, add to, remove from, delete, follow,
+  copy and list the playlists behind a provider. These go through the daemon's
+  playlist registry rather than one service's API, so `playlist sources` says
+  which providers are registered and which verbs each offers.
+- **A playlist actions picker in the TUI**, opened from the command palette,
+  listing the verbs the highlighted playlist's provider offers.
+- **`gtm eq-presets`** — the preset names the daemon offers, in the order the
+  picker steps through them.
+- **`gtm volume` with no argument** prints the current volume.
+
+### Removed
+- **IPC commands with no caller**: `set_dynamic_mode`, `set_scrobble`,
+  `set_cover_cache`, `lastfm_authenticate`, `yt_search_cancel`,
+  `yt_resolve_stream`, `yt_fetch_playlist` and `yt_playlist_poll`, plus the
+  response types only they answered with. Every one of them was unreachable
+  from the bundled client: `set_scrobble` duplicated `lastfm_set_config`,
+  and the YouTube playlist fetch had no client method at all.
+- **Dynamic mode.** The setting, its saved field, its state and its event are
+  gone. Queue behaviour is fixed rather than configured.
+
+### Changed
+- **`YtSetConfig` now fails on a build without the `youtube` feature** instead
+  of answering as if it had stored the config.
+
 ## [0.2.95] - 2026-10-21
 
 ### Fixed
@@ -13,27 +38,6 @@
   progress-style picker on `Alt+P`, and only its lowercase neighbour reached
   the table: `Alt+p` was given to Podcasts, and the style picker's chord never
   landed behind the advertisement. It opens the picker now.
-
-### Changed
-- **Diagnostic roles take no tint at all.** The reactive theme's semantic
-  colours (error, warning, info, hint, success) were nudged toward the
-  artwork's dominant hue, which is exactly the movement a diagnostic cannot
-  have. They are constant now; syntax roles keep their slight tint.
-
-### Fixed
-- **The client crashed on the first GPU visualizer frame.** The uniform block
-  the Rust side wrote and the one the WGSL declared disagreed by 16 bytes: the
-  shader pads with a `vec3<u32>`, which is 12 bytes of data on a 16-byte
-  alignment, so it pushed `wave` further along than three `u32`s put it. wgpu
-  validates that at draw time and aborts, so every shader preset took the
-  process down on first paint.
-  It had been latent behind a cell-rendered default preset; removing the
-  presets without a shader made `Mirror` the default and turned it into a
-  crash on every launch.
-- **A uniform/shader size mismatch now falls back instead of panicking.** The
-  Rust block is parsed against the shader module — with naga, the same parser
-  the pipeline is built from — and a device is refused if they disagree. The
-  pane draws with cells instead. The layout is also pinned at compile time.
 - **The welcome window's `H` never stuck.** A terminal delivers shift+H as an
   already-uppercase `Char('H')` with the SHIFT modifier still on the event, so
   requiring no modifiers at all made the claim miss: the splash dismissed on
@@ -60,6 +64,10 @@
   painting background when it has nothing to draw.
 
 ### Changed
+- **Diagnostic roles take no tint at all.** The reactive theme's semantic
+  colours (error, warning, info, hint, success) were nudged toward the
+  artwork's dominant hue, which is exactly the movement a diagnostic cannot
+  have. They are constant now; syntax roles keep their slight tint.
 - **Daydreaming is off by default.** A preview nobody asked for is the wrong
   first impression; the System row still steps to it. `daydream_secs = 0`
   now disables daydreaming as documented — `idle >= 0` is always true, so Off
@@ -67,14 +75,8 @@
 - **The star hint no longer names GitHub.** Both the welcome and the About
   window say "Press s to star" with the GitHub mark riding beside the
   sentence it is the logo for.
-- **A removed `visualizer_preset` is logged, not silently remapped.** The value
-  and what replaced it both go to the log. It still resolves, because a config
-  file that fails to parse is discarded whole and one stale key would take the
-  queue, volume, EQ and resume position with it.
 
 ### Removed
-- **`progress_style`** from `config.toml`. The bar is one shader now, so there
-  was nothing left to choose. The key is ignored rather than rejected.
 - **`cover_cache_mb` from the client's copy of the config.** It was carried
   through `Prefs` into `App` and never read; the daemon reads its own copy from
   `config.toml` directly, which is unchanged.
@@ -106,7 +108,6 @@
 - **Equal-power crossfade.** `cos`/`sin` instead of `1-t`/`t`. Linear held the
   sum of amplitudes at 1 while the power summed to 0.5, which is the 3dB dip in
   the middle. Costs a ~1.5dB rise through the fade.
-- **Progress bar drawn on the GPU.** One shader instead of four glyph styles.
 - **Removed the picker hint strips and the footer help bar** (`Ctrl+H`).
 - **Restoring a saved track no longer implies playing it.** `resume_on_start`
   decides.
@@ -125,17 +126,15 @@
   one-row tracklist.
 
 ### Removed
-- **Seven visualizer presets** with no shader: Braille, Blocks, Spectrum,
-  BarsDot, ClassicPeak, Columns, Retro. Every survivor has one.
-- **The progress bar from the footer.** The segment is a string, and a GPU bar
-  comes back as per-cell spans.
-- **The progress style picker** and its `Alt+P` chord, which had been shadowing
-  Podcasts — which had been unreachable by key since it shipped.
+- **The progress bar from the footer.** The segment is a string, and the bar is
+  drawn per cell rather than as text, so there is no way to format it into that
+  string. The times alone still say how far through the track you are, and the
+  two panes that compose lines carry the bar.
 
 ### Compatibility
-- `visualizer_preset` and `progress_style` are read leniently: a config naming a
-  value this build no longer has loads with everything else intact instead of
-  being discarded whole.
+- `visualizer_preset` takes all twelve presets and `progress_style` all four
+  styles. Neither is read leniently: an unrecognised value discards the whole
+  file, the same as any other invalid value.
 - `reactive_palette` is unchanged and still broadcast. `reactive_theme` is
   additive; a client that does not know it never sees it.
 
