@@ -496,14 +496,6 @@ impl App {
                         self.dismiss_track_popup();
                         self.on_picker_opened(id);
                     }
-                    Some(KeyboardAction::ToggleHelp) => {
-                        if self.pickers.top().is_some_and(|o| o.id == PickerId::Help) {
-                            self.pickers.close_top();
-                        } else {
-                            self.pickers.open(PickerId::Help);
-                            self.dismiss_track_popup();
-                        }
-                    }
                     Some(KeyboardAction::PlayPause) => {
                         self.set_last_action("Play/Pause", &key);
                         match self.state.status {
@@ -3045,7 +3037,6 @@ impl App {
         }
 
         let top_id = self.pickers.top().map(|o| o.id);
-        let is_help = top_id == Some(PickerId::Help);
         let ctrl_or_alt = key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
@@ -3068,42 +3059,6 @@ impl App {
                         | Some(PickerId::PlaylistSelect)
                 ) {
                     self.close_picker();
-                }
-            }
-            // Help picker vim motions
-            KeyCode::Char('g') if key.modifiers == KeyModifiers::CONTROL && is_help => {
-                if let Some(top) = self.pickers.top_mut() {
-                    top.selected = 0;
-                }
-            }
-            KeyCode::Char('G') if is_help && !ctrl_or_alt => {
-                let total = self.help_picker_total();
-                if let Some(top) = self.pickers.top_mut() {
-                    top.selected = total.saturating_sub(1);
-                }
-            }
-            KeyCode::Char('0') if is_help && !ctrl_or_alt => {
-                if let Some(top) = self.pickers.top_mut() {
-                    top.selected = 0;
-                }
-            }
-            KeyCode::Char('$') if is_help && !ctrl_or_alt => {
-                let total = self.help_picker_total();
-                if let Some(top) = self.pickers.top_mut() {
-                    top.selected = total.saturating_sub(1);
-                }
-            }
-            KeyCode::Char('n') if is_help && !ctrl_or_alt => {
-                let total = self.help_picker_total();
-                if let Some(top) = self.pickers.top_mut()
-                    && total > 0
-                {
-                    top.selected = (top.selected + 1).min(total - 1);
-                }
-            }
-            KeyCode::Char('N') if is_help && !ctrl_or_alt => {
-                if let Some(top) = self.pickers.top_mut() {
-                    top.selected = top.selected.saturating_sub(1);
                 }
             }
             // Queue move up/down (Ctrl+K/J) must come before plain k/j
@@ -3989,12 +3944,6 @@ impl App {
                                                 self.fetch_metadata_cover();
                                             }
                                         }
-                                    }
-                                } else if action == "help" {
-                                    if self.pickers.top().is_some_and(|o| o.id == PickerId::Help) {
-                                        self.pickers.close_top();
-                                    } else {
-                                        self.pickers.open(PickerId::Help);
                                     }
                                 } else if action == "health check" {
                                     self.send_high(TuiCommand::CheckHealth);

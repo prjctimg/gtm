@@ -314,11 +314,6 @@ impl CommandPalette {
                 hint: "quit daemon",
             },
             Command {
-                label: "Help",
-                keys: "?",
-                hint: "help",
-            },
-            Command {
                 label: "Health Check",
                 keys: "Alt+H",
                 hint: "health check",
@@ -351,5 +346,5 @@ pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("Playback", 14),
     ("Library & Queue", 26),
     ("View & Overlays", 15),
-    ("System", 7),
+    ("System", 6),
 ];

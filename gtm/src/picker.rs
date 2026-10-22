@@ -20,7 +20,6 @@ pub enum PickerId {
     About,
     SleepTimer,
     ThemePicker,
-    Help,
     PlaylistSelect,
     /// The verbs the provider registry offers for the highlighted playlist.
     PlaylistActions,

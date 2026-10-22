@@ -8,6 +8,9 @@
 use crate::progress::{ProgressStyle, render_progress_styled};
 use crate::ui::*;
 
+/// The crossfade durations the picker offers, in seconds.
+pub(crate) const CROSSFADE_DURATIONS: [u8; 5] = [3, 5, 10, 15, 30];
+
 impl Pickers {
     /// The heading above a preset preview: the selected preset's name, set off
     /// by its accent colour rather than by a rule of dashes.

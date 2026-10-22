@@ -22,6 +22,11 @@
   and the YouTube playlist fetch had no client method at all.
 - **Dynamic mode.** The setting, its saved field, its state and its event are
   gone. Queue behaviour is fixed rather than configured.
+- **The in-app help window.** `?` opened a full-screen keybinding buffer that
+  duplicated the docs site and drifted from the keymap; the `toggle_help` /
+  `help` action name goes with it, so a `[keybindings]` entry naming it now
+  prints the unknown-action warning and is dropped. The reference lives at
+  <https://gtmd.dev/docs/keybindings>.
 
 ### Changed
 - **`YtSetConfig` now fails on a build without the `youtube` feature** instead

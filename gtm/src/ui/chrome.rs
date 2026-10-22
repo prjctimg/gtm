@@ -3361,15 +3361,6 @@ impl Render {
                 Paragraph::new(" Loading...").style(Style::default().fg(app.theme.fg_dim));
             f.render_widget(loading, inner);
         }
-
-        let help = Paragraph::new("").style(Style::default().fg(app.theme.fg_dim));
-        let help_area = Rect::new(
-            rect.x,
-            rect.y + rect.height.saturating_sub(1),
-            rect.width,
-            1,
-        );
-        f.render_widget(help, help_area);
     }
 }
 

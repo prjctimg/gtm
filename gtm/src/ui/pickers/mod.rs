@@ -153,47 +153,42 @@ impl Pickers {
             return;
         };
         let top_id = top.id;
-        let top_help = top.id == PickerId::Help;
 
-        let picker_area = if top_help {
-            area
+        let square_min = 40
+            .min(area.width.saturating_sub(2))
+            .min(area.height.saturating_sub(2));
+        let (content_w, content_h) = Self::picker_content_hint(top, app);
+        let picker_width = content_w.max(square_min).min(area.width.saturating_sub(2));
+        let scrolling = matches!(
+            top.id,
+            PickerId::Queue
+                | PickerId::YTSearch
+                | PickerId::SearchLibrary
+                | PickerId::Libraries
+                | PickerId::CommandPalette
+                | PickerId::ThemePicker
+                | PickerId::PlaylistSelect
+                | PickerId::PlaylistTrackSelect
+                | PickerId::SpotifySearch
+                | PickerId::PodcastFeeds
+                | PickerId::PodcastEpisodes
+                | PickerId::Radio
+                | PickerId::SpotifyDest
+        );
+        let picker_height = if scrolling {
+            let height_cap = (area.height.saturating_sub(2) / 2).max(10);
+            content_h.max((square_min / 2).max(10)).min(height_cap)
         } else {
-            let square_min = 40
-                .min(area.width.saturating_sub(2))
-                .min(area.height.saturating_sub(2));
-            let (content_w, content_h) = Self::picker_content_hint(top, app);
-            let picker_width = content_w.max(square_min).min(area.width.saturating_sub(2));
-            let scrolling = matches!(
-                top.id,
-                PickerId::Queue
-                    | PickerId::YTSearch
-                    | PickerId::SearchLibrary
-                    | PickerId::Libraries
-                    | PickerId::CommandPalette
-                    | PickerId::ThemePicker
-                    | PickerId::PlaylistSelect
-                    | PickerId::PlaylistTrackSelect
-                    | PickerId::SpotifySearch
-                    | PickerId::PodcastFeeds
-                    | PickerId::PodcastEpisodes
-                    | PickerId::Radio
-                    | PickerId::SpotifyDest
-            );
-            let picker_height = if scrolling {
-                let height_cap = (area.height.saturating_sub(2) / 2).max(10);
-                content_h.max((square_min / 2).max(10)).min(height_cap)
-            } else {
-                content_h.max(10).min(area.height.saturating_sub(2))
-            };
-            let picker_x = area.width.saturating_sub(picker_width) / 2;
-            let picker_y = area.height.saturating_sub(picker_height) / 2;
+            content_h.max(10).min(area.height.saturating_sub(2))
+        };
+        let picker_x = area.width.saturating_sub(picker_width) / 2;
+        let picker_y = area.height.saturating_sub(picker_height) / 2;
 
-            Rect {
-                x: picker_x,
-                y: picker_y,
-                width: picker_width,
-                height: picker_height,
-            }
+        let picker_area = Rect {
+            x: picker_x,
+            y: picker_y,
+            width: picker_width,
+            height: picker_height,
         };
 
         f.render_widget(Clear, picker_area);
@@ -210,7 +205,6 @@ impl Pickers {
             PickerId::CommandPalette => Self::command_palette(f, picker_area, app),
             PickerId::Equalizer => Self::render_equalizer(f, picker_area, app),
             PickerId::ThemePicker => Self::render_theme(f, picker_area, app),
-            PickerId::Help => Self::render_help(f, picker_area, app),
             PickerId::PlaylistSelect => Self::render_playlist_select(f, picker_area, app),
             PickerId::PlaylistActions => Self::render_playlist_actions(f, picker_area, app),
             PickerId::PlaylistTrackSelect => Self::render_track_select(f, picker_area, app),

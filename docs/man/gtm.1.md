@@ -17,9 +17,8 @@ opens a full-screen Terminal User Interface (TUI) with keyboard-driven
 navigation. With **\--cli** (or **-c**), it acts as a command-line client for
 scripting and headless control.
 
-The TUI provides a built-in help buffer accessible with **?** listing every
-default keybinding, grouped by topic. For configuration options and setup, see
-**gtm config**(1) and the project documentation.
+For the full keybinding reference, configuration options and setup, see the
+project documentation.
 
 # TUI MODE (default)
 
@@ -127,7 +126,6 @@ To turn it off, empty the `Alt+X` field and press Enter, or remove
 | `l` | Fetch lyrics for current track |
 | `i` | Track info — what the daemon knows about the current track |
 | `:` | Command mode |
-| `?` | Toggle help |
 | `Q` / `Ctrl+Q` | Quit and stop the daemon |
 | `q` | Quit the client |
 | `Esc` | Close the top overlay, or pop a drill-down step |

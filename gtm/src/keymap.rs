@@ -95,7 +95,6 @@ pub enum KeyboardAction {
     // Meta
     Quit,
     QuitDaemon,
-    ToggleHelp,
     ToggleTheme,
     CycleSort,
     CheckHealth,
@@ -159,14 +158,14 @@ fn key_matches(event: &KeyEvent, binding: &KeyEvent) -> bool {
 
 /// Build the default set of key bindings.  Layered by context:
 ///
-///   Global : q (quit), ? (help), space (play/pause)
+///   Global : q (quit), space (play/pause)
 ///   Normal : tab switching, cursor, volume, filters, playback control
 ///   List   : j/k, enter, delete
 ///
 /// Bindings are scanned in order; the first match wins.
 /// Build the default set of key bindings.  Layered by context:
 ///
-///   Global : q (quit), ? (help), space (play/pause)
+///   Global : q (quit), space (play/pause)
 ///   Normal : tab switching, cursor, volume, filters, playback control
 ///   List   : j/k, enter, delete
 ///
@@ -218,7 +217,6 @@ pub fn default_keybindings() -> Keybindings {
     Keybindings {
         bindings: vec![
             b!(KeyCode::Char('q'), KeyboardAction::Quit, GLOBAL),
-            b!(KeyCode::Char('?'), KeyboardAction::ToggleHelp, GLOBAL),
             b!(
                 KeyCode::Char(':'),
                 KeyboardAction::OpenOverlay(PickerId::CommandPalette),
@@ -335,9 +333,9 @@ pub fn default_keybindings() -> Keybindings {
                 KeyboardAction::OpenOverlay(PickerId::About),
                 NORMAL
             ),
-            // Advertised by the help buffer and the command palette since the
-            // health check shipped, with no binding behind either: pressing the
-            // key the app told you about did nothing.
+            // Advertised by the command palette since the health check
+            // shipped, with no binding behind it: pressing the key the app
+            // told you about did nothing.
             b!(
                 KeyEvent::new(KeyCode::Char('H'), KeyModifiers::ALT),
                 KeyboardAction::CheckHealth,
@@ -514,8 +512,8 @@ pub fn parse_key_event(s: &str) -> Option<KeyEvent> {
 }
 
 /// Inverse of [`parse_key_event`]: the spelling of a key event as it appears in
-/// `config.toml` and the help screen. Lets the footer echo the key a command
-/// was triggered with instead of the command's name.
+/// `config.toml`. Lets the footer echo the key a command was triggered with
+/// instead of the command's name.
 ///
 /// A shifted letter arrives as an already-uppercase `Char` with the `SHIFT`
 /// modifier set, so the modifier is folded into the character rather than
@@ -613,7 +611,6 @@ impl KeyboardAction {
             "edit_metadata" | "edit" => KeyboardAction::EditMetadata,
             "quit" => KeyboardAction::Quit,
             "quit_daemon" | "quit_all" => KeyboardAction::QuitDaemon,
-            "toggle_help" | "help" => KeyboardAction::ToggleHelp,
             "toggle_theme" | "theme" => KeyboardAction::ToggleTheme,
             "cycle_sort" | "sort" => KeyboardAction::CycleSort,
             "check_health" | "health" => KeyboardAction::CheckHealth,

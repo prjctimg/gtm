@@ -61,7 +61,6 @@ pub struct Render;
 pub(crate) struct Pickers;
 pub mod chrome;
 pub mod command;
-pub mod help;
 pub mod icons;
 pub mod pickers;
 pub mod text;
@@ -81,7 +80,7 @@ pub(crate) use widgets::*;
 
 pub use chrome::{render, run_tui};
 pub use command::{COMMAND_GROUPS, Command, CommandPalette};
-pub use help::{CROSSFADE_DURATIONS, HELP_LINES};
+pub(crate) use pickers::presets::CROSSFADE_DURATIONS;
 pub(crate) use icons::{cover_provider_label, provider_icon, theme_mode_label, use_nerd_fonts};
 pub(crate) use text::format_duration_short;
 pub(crate) use widgets::{COVER_H, COVER_W, step_viewport};

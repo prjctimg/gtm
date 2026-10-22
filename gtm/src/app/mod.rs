@@ -64,8 +64,8 @@ pub(crate) use crate::theme::{
 };
 pub(crate) use crate::ui;
 pub(crate) use crate::ui::{
-    CROSSFADE_DURATIONS, Command, CommandPalette, HELP_LINES, cover_provider_label,
-    theme_mode_label, use_nerd_fonts,
+    CROSSFADE_DURATIONS, Command, CommandPalette, cover_provider_label, theme_mode_label,
+    use_nerd_fonts,
 };
 pub(crate) use crate::visualizer::{AudioVisualizer, VisualizerPreset};
 pub const NUM_SETTINGS_CATEGORIES: usize = 3;
@@ -2087,10 +2087,6 @@ impl App {
             PickerId::Radio => self.radio_picks().len(),
             _ => 0,
         }
-    }
-
-    fn help_picker_total(&self) -> usize {
-        HELP_LINES.len()
     }
 
     /// Move the top picker's selection by one (wrapping), clamped to the

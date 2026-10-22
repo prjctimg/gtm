@@ -1,6 +1,6 @@
 // Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
-// About, help, notifications and sleep timer
+// About, notifications and sleep timer
 //
 //
 // This is free software released under the GPL-3.0 license.
@@ -87,57 +87,6 @@ impl Pickers {
             Line::from(Span::styled(crate::ui::bigtext::SITE, accent)),
         ];
         f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rows[2]);
-    }
-
-    pub(crate) fn render_help(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Keybindings ");
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-
-        let filtered: Vec<(&str, &str)> = HELP_LINES.to_vec();
-
-        let mut lines: Vec<Line> = Vec::new();
-
-        let total = filtered.len();
-        let sel = app
-            .pickers
-            .top()
-            .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
-        let visible = inner.height as usize;
-        let (scroll_start, scroll_end) = if total > 0 {
-            if let Some(top) = app.pickers.top_mut() {
-                let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
-                top.viewport_offset = s;
-                (s, e)
-            } else {
-                (0, total)
-            }
-        } else {
-            (0, 0)
-        };
-
-        for (i, (kind, line)) in filtered
-            .iter()
-            .enumerate()
-            .take(scroll_end)
-            .skip(scroll_start)
-        {
-            let style = if i == sel {
-                Style::default()
-                    .fg(app.theme.selection_fg_readable())
-                    .bg(app.theme.selection_bg)
-            } else if *kind == "topic" {
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(app.theme.fg)
-            };
-            lines.push(Line::from(Span::styled(*line, style)));
-        }
-
-        let para = Paragraph::new(lines);
-        f.render_widget(para, inner);
     }
 
     pub(crate) fn render_notifications(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
