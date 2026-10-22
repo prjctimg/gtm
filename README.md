@@ -1,5 +1,23 @@
-# [gtm](https://gtmd.dev) 📻
-
+<!-- LOGO -->
+<h1>
+<p align="center">
+  <img src="./logo.png" alt="Logo" width="128">
+  <br>gtm
+</h1>
+  <p align="center">
+    A reimagined audio player built for terminal enthusiasts.
+    <br />
+    <a href="#about">About</a>
+    ·
+    <a href="#download">Download</a>
+    ·
+    <a href="https://gtmd.dev/docs">Documentation</a>
+    ·
+    <a href="CONTRIBUTING.md">Contributing</a>
+    ·
+    <a href="#acknowledgements">Acknowledgements</a>
+  </p>
+</p>
 
 [![Terminal Index](https://cli.masoko.net/badge/gtm.svg)](https://cli.masoko.net/tools/gtm/)
 [![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
@@ -7,44 +25,31 @@
 
 ![](./screenshots/1.png)
 
+## About
 
-`gtm` is a reimagined audio player built for terminal enthusiasts.
+- **[Background playback](https://gtmd.dev/docs/daemon)**: reattach to the client from anywhere in the terminal
+- **YouTube & Spotify**: search & download from [YouTube](https://gtmd.dev/docs/youtube) and sync [Spotify](https://gtmd.dev/docs/spotify).
+- **Offline playback**: Resolve Spotify tracks via yt-dlp for [downloading](https://gtmd.dev/docs/youtube).
+- **[Internet radio](https://gtmd.dev/docs/radio)**: browse the Radio Browser directory and stream any station
+- **[Podcasts](https://gtmd.dev/docs/podcasts)**: subscribe to RSS/Atom feeds and play episodes in order
+- **[Top charts](https://gtmd.dev/docs/library)**: Spotify, Apple and community charts, browsable as a tree
+- **[Crossfade](https://gtmd.dev/docs/crossfade)**: gapless-ish transitions with a configurable duration.
+- **[Lyrics](https://gtmd.dev/docs/lyrics)**: automatic fetch from LRCLIB (default provider)
+- **[Metadata sync](https://gtmd.dev/docs/metadata-sources)**: backfill missing tags, cover art, and lyrics for local files
+- **[Last.fm](https://gtmd.dev/docs/metadata-sources)**: scrobbling, love and now-playing
+- **[Equalizer](https://gtmd.dev/docs/audio)**: 16 presets
+- **[Visualizer](https://gtmd.dev/docs/audio)**: 12 spectrum presets
+- **[Command palette](https://gtmd.dev/docs/tui)**: fuzzy-finder over every TUI action
+- **[Extensions](https://gtmd.dev/docs/configuration)**: toggle optional surfaces per session
+- **[Playlist management](https://gtmd.dev/docs/library)**: Import/export `m3u8` playlists
+- **[Sleep timer](https://gtmd.dev/docs/playback)**
+- **[Cover art support](https://gtmd.dev/docs/cover-art)**: rendered inline via the kitty/terminal image protocol
+- **[Zero configuration](https://gtmd.dev/docs/configuration)**: sane defaults, fully customizable via TOML
+- **[Progress styles](https://gtmd.dev/docs/theming)**: four indicators for the playback position
+- **[Theming](https://gtmd.dev/docs/theming)**: accent colors extracted from the current track cover (reactive theming), transparent mode and 16 built-in themes
+- **[MPRIS](https://gtmd.dev/docs/mpris)**: media player controls via D-Bus
 
-## On this page
-
-- [Features](#features)
-- [Install](#install)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [Acknowledgements](#acknowledgements)
-- [Contributors](#contributors)
-
-
-## Features
-
-- **Background playback**: reattach to the client from anywhere in the terminal
-- **YouTube & Spotify**: search & download from YouTube and sync Spotify. 
-- **Offline playback**: Resolve Spotify tracks via yt-dlp for downloading.
- - **Internet radio**: browse the Radio Browser directory and stream any station
-- **Podcasts**: subscribe to RSS/Atom feeds and play episodes in order
-- **Top charts**: Spotify, Apple and community charts, browsable as a tree
-- **Crossfade**: gapless-ish transitions with a configurable duration.
-- **Lyrics**: automatic fetch from LRCLIB (default provider)
-- **Metadata sync**: backfill missing tags, cover art, and lyrics for local files
-- **Last.fm**: scrobbling, love and now-playing
-- **Equalizer**: 16 presets
-- **Visualizer**: 12 spectrum presets
-- **Command palette**: fuzzy-finder over every TUI action
-- **Extensions**: toggle optional surfaces per session
-- **Playlist management**: Import/export `m3u8` playlists
-- **Sleep timer**
-- **Cover art support**: rendered inline via the kitty/terminal image protocol
-- **Zero configuration**: sane defaults, fully customizable via TOML
-- **Progress styles**: four indicators for the playback position
-- **Theming**: accent colors extracted from the current track cover (reactive theming), transparent mode and 16 built-in themes
-- **MPRIS**: media player controls via D-Bus
-
-## Install
+## Download
 
 ```bash
 # stable (latest)
@@ -60,11 +65,9 @@ curl -fsSL https://gtmd.dev/install.sh | bash -s -- --nightly
 
 Or grab an archive [releases page](https://github.com/prjctimg/gtm/releases/latest), extract it, and run the `./install.sh` in its directory
 
-
 See [CONTRIBUTING](./CONTRIBUTING.md#build-from-source) for more installation routes.
 
-
-### Install via AUR 
+### Install via AUR
 
 `gtm` is now available in the AUR as `gtm-player` (Compiles it) and `gtm-player-bin` (Binary/No compilation):
 
@@ -88,7 +91,7 @@ paru -S gtm-player-bin
 
 ## Documentation
 
-- [gtmd.dev](https://gtmd.dev) 
+- [gtmd.dev](https://gtmd.dev)
 
 ### Manpages
 
@@ -96,17 +99,15 @@ paru -S gtm-player-bin
 - [gtmd(1)](docs/man/gtmd.1.md)
 - [gtmd-ipc(1)](docs/man/gtmd-ipc.1.md)
 
-## Contributing
+## Contributing and Developing
 
 See [the contributing guide](CONTRIBUTING.md) and [the Code of Conduct](CODE_OF_CONDUCT.md) first.
 
-
 ## Acknowledgements
-
 
 ![](./logo.png)
 
-This project wouldn't be possible without the amazing open source community! 
+This project wouldn't be possible without the amazing open source community!
 
 - [color-thief](https://crates.io/crates/color-thief)
 - [rustfft](https://crates.io/crates/rustfft)
@@ -119,14 +120,13 @@ This project wouldn't be possible without the amazing open source community!
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 - [LRCLIB](https://lrclib.net)
 - [Myx](https://github.com/HaseebKhalid1507/Myx)
-- [spotify-player](https://github.com/aome510/spotify-player)  
-
+- [spotify-player](https://github.com/aome510/spotify-player)
 
 <a href="https://www.star-history.com/?repos=prjctimg%2Fgtm&type=date&legend=top-left">
  <picture>
    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=prjctimg/gtm&type=date&theme=auto&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=prjctimg/gtm&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=prjctimg/gtm&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=prjctimg/gtm&type=date&theme=auto&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=prjctimg/gtm&type=date&theme=auto&legend=top-left" />
  </picture>
 </a>
 
