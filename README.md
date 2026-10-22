@@ -1,8 +1,8 @@
 <!-- LOGO -->
 <h1>
 <p align="center">
-  <img src="./logo.png" alt="Logo" width="128">
-  <br>gtm
+  <img src="./logo.png" alt="Logo">
+  <br><a href="https://gtmd.dev">gtm 📻️</a>
 </h1>
   <p align="center">
     A reimagined audio player built for terminal enthusiasts.
@@ -20,7 +20,7 @@
 </p>
 
 [![Terminal Index](https://cli.masoko.net/badge/gtm.svg)](https://cli.masoko.net/tools/gtm/)
-[![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
+[![Awesome Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
 [![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm/ci.yml?label=CI)](https://github.com/prjctimg/gtm/actions/workflows/ci.yml)
 
 ![](./screenshots/1.png)
@@ -128,8 +128,6 @@ See [the contributing guide](CONTRIBUTING.md) and
 [the Code of Conduct](CODE_OF_CONDUCT.md) first.
 
 ## Acknowledgements
-
-![](./logo.png)
 
 This project wouldn't be possible without the amazing open source community!
 
