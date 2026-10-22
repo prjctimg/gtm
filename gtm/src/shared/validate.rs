@@ -5,8 +5,7 @@
 // This is free software released under the GPL-3.0 license.
 
 use crate::shared::global::{
-    AudioSettings, CrossfadeConfig, DaemonState, DynamicModeConfig, PlaybackStatus, RepeatMode,
-    ScrobbleConfig,
+    AudioSettings, CrossfadeConfig, DaemonState, PlaybackStatus, RepeatMode, ScrobbleConfig,
 };
 use crate::shared::radio::RadioTracklist;
 use crate::shared::spotify::pretty_id;
@@ -51,7 +50,6 @@ impl DaemonState {
             radio_artist: None,
             sleep_timer: None,
             audio: AudioSettings::default(),
-            dynamic_mode: DynamicModeConfig::default(),
             scrobble: ScrobbleConfig::default(),
             audio_levels: Vec::new(),
             wave_samples: Vec::new(),

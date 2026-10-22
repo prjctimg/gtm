@@ -213,10 +213,8 @@ impl DaemonClient {
         // Spotify sync) legitimately take minutes; everything else must answer
         // fast so a wedged daemon surfaces quickly instead of hanging the UI.
         let timeout_secs = match &req {
-            DaemonReq::YtResolveStream { .. }
-            | DaemonReq::YtDownload { .. }
+            DaemonReq::YtDownload { .. }
             | DaemonReq::YtSearch { .. }
-            | DaemonReq::YtFetchPlaylist { .. }
             | DaemonReq::SpotifySync
             | DaemonReq::SpotifyResolve { .. }
             | DaemonReq::SpotifyResolveTrack { .. } => 200,
@@ -311,6 +309,20 @@ impl DaemonClient {
         self.send_ok(DaemonReq::SetVolume { volume }).await
     }
 
+    /// Read the daemon's current volume, without pulling the whole state.
+    pub async fn get_volume(&self) -> Result<u8> {
+        let res = self.send_raw(DaemonReq::GetVolume).await?;
+        match res {
+            DaemonRes::Value { value } => value
+                .get("volume")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.min(u64::from(u8::MAX)) as u8)
+                .ok_or_else(|| CoreError::Daemon("missing volume".into())),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
     pub async fn toggle_shuffle(&self) -> Result<()> {
         self.send_ok(DaemonReq::ToggleShuffle).await
     }
@@ -334,6 +346,16 @@ impl DaemonClient {
 
     pub async fn set_eq_preset(&self, preset: EqPreset) -> Result<()> {
         self.send_ok(DaemonReq::SetEqPreset { preset }).await
+    }
+
+    /// The EQ preset names the daemon offers.
+    pub async fn list_eq_presets(&self) -> Result<Vec<String>> {
+        let res = self.send_raw(DaemonReq::ListEqPresets).await?;
+        match res {
+            DaemonRes::EqPresets { presets } => Ok(presets),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
     }
 
     pub async fn set_eq_enabled(&self, enabled: bool) -> Result<()> {
@@ -378,11 +400,6 @@ impl DaemonClient {
         .await
     }
 
-    /// Change the daemon's on-disk cover cache budget and prune to fit.
-    pub async fn set_cover_cache(&self, bytes: u64) -> Result<()> {
-        self.send_ok(DaemonReq::SetCoverCache { bytes }).await
-    }
-
     /// Current cover cache usage, for the Settings display.
     pub async fn cover_cache_stat(&self) -> Result<(u64, u64, u64)> {
         let res = self.send_raw(DaemonReq::GetCoverCacheStat).await?;
@@ -407,38 +424,6 @@ impl DaemonClient {
 
     pub async fn set_pre_gain(&self, pre_gain_db: f32) -> Result<()> {
         self.send_ok(DaemonReq::SetPreGain { pre_gain_db }).await
-    }
-
-    pub async fn set_dynamic_mode(
-        &self,
-        enabled: bool,
-        min_queue_remaining: Option<u32>,
-        max_history: Option<u32>,
-    ) -> Result<()> {
-        self.send_ok(DaemonReq::SetDynamicMode {
-            enabled,
-            min_queue_remaining,
-            max_history,
-        })
-        .await
-    }
-
-    pub async fn set_scrobble(
-        &self,
-        enabled: bool,
-        api_key: Option<String>,
-        session_token: Option<String>,
-        min_play_secs: Option<u32>,
-        min_play_pct: Option<f32>,
-    ) -> Result<()> {
-        self.send_ok(DaemonReq::SetScrobble {
-            enabled,
-            api_key,
-            session_token,
-            min_play_secs,
-            min_play_pct,
-        })
-        .await
     }
 
     pub async fn set_sleep_timer(&self, minutes: u32, stop_immediately: bool) -> Result<()> {
@@ -932,16 +917,6 @@ impl<'a> Yt<'a> {
         self.client.send_raw(DaemonReq::YtSearchPoll).await
     }
 
-    pub async fn cancel(&self) -> Result<()> {
-        self.client.send_ok(DaemonReq::YtSearchCancel).await
-    }
-
-    pub async fn resolve_stream(&self, url: &str) -> Result<DaemonRes> {
-        self.client
-            .send_raw(DaemonReq::YtResolveStream { url: url.into() })
-            .await
-    }
-
     /// Start a daemon-side yt-dlp download of `url`. Returns a download ID to
     /// poll with [`Yt::download_poll`].
     pub async fn download(
@@ -976,11 +951,6 @@ impl<'a> Yt<'a> {
     /// Cancel the download in flight, whichever row asked for it.
     pub async fn cancel_download(&self) -> Result<()> {
         self.client.send_ok(DaemonReq::YtCancelDownload).await
-    }
-
-    /// Poll for a finished playlist fetch.
-    pub async fn fetch_playlist_poll(&self) -> Result<DaemonRes> {
-        self.client.send_raw(DaemonReq::YtFetchPlaylistPoll).await
     }
 
     pub async fn set_config(
@@ -1677,15 +1647,6 @@ impl<'a> Lastfm<'a> {
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
         }
-    }
-
-    /// Exchange a web-auth token for a (persisted) session key.
-    pub async fn authenticate(&self, token: &str) -> Result<()> {
-        self.client
-            .send_ok(DaemonReq::LastfmAuthenticate {
-                token: token.into(),
-            })
-            .await
     }
 
     pub async fn status(&self) -> Result<LastfmStatus> {

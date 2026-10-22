@@ -82,16 +82,6 @@ impl Lastfm {
         lastfm.set_retry_path(path);
     }
 
-    /// Exchange a web-auth token for a (persisted) session key, clearing any
-    /// recorded link error. Shared by the IPC `authenticate` call and the
-    /// daemon-hosted OAuth flow task so both paths run the same exchange.
-    pub async fn authenticate(inner: &DaemonInner, token: &str) -> Result<DaemonRes, CoreError> {
-        match Self::exchange_session(inner, token).await {
-            Ok(()) => Ok(DaemonRes::Ok),
-            Err(e) => Ok(DaemonRes::Error { message: e }),
-        }
-    }
-
     /// How long to keep retrying the exchange while the user decides whether to
     /// click *Allow*. Last.fm tokens live 60 minutes (§6.1); this is the
     /// time we are willing to hold a retry loop for someone who opened the

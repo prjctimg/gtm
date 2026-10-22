@@ -23,39 +23,6 @@ pub enum CoreError {
     Timeout,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum DynamicMode {
-    #[default]
-    Off,
-    On,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DynamicModeConfig {
-    pub enabled: bool,
-    pub min_queue_remaining: u32,
-    pub max_history: u32,
-    #[serde(default = "default_cooldown_weight")]
-    pub cooldown_weight: f32,
-}
-
-fn default_cooldown_weight() -> f32 {
-    0.1
-}
-
-impl Default for DynamicModeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            min_queue_remaining: 3,
-            max_history: 50,
-            cooldown_weight: 0.1,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScrobbleConfig {
     pub enabled: bool,
@@ -198,7 +165,6 @@ pub struct DaemonState {
     pub sleep_timer: Option<u32>,
     #[serde(flatten)]
     pub audio: AudioSettings,
-    pub dynamic_mode: DynamicModeConfig,
     pub scrobble: ScrobbleConfig,
     #[serde(default)]
     pub audio_levels: Vec<f32>,
@@ -537,8 +503,6 @@ pub struct SavedState {
     pub crossfade: Option<CrossfadeConfig>,
     #[serde(flatten)]
     pub audio: AudioSettings,
-    #[serde(default)]
-    pub dynamic_mode: DynamicModeConfig,
     /// Present in every state this build writes, but a state file written by
     /// an older version lacks the key -- and without a default that made the
     /// *whole* file fail to deserialize, silently dropping the queue, volume
@@ -574,7 +538,6 @@ impl SavedState {
             mono: state.mono,
             crossfade: state.crossfade.clone(),
             audio: state.audio.clone(),
-            dynamic_mode: state.dynamic_mode.clone(),
             scrobble: state.scrobble.clone(),
             current_track: state.current_track.clone(),
             source: state.source.clone(),
@@ -593,7 +556,6 @@ impl SavedState {
         state.mono = self.mono;
         state.crossfade = self.crossfade.clone();
         state.audio = self.audio.clone();
-        state.dynamic_mode = self.dynamic_mode.clone();
         state.scrobble = self.scrobble.clone();
         // Restore the last track so the daemon can resume exactly as left.
         // Actual playback is kicked off by the startup resume task.

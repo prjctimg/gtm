@@ -14,7 +14,7 @@ use gtm::shared::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAc
 use gtm::shared::playlist::PlaylistFormatKind;
 use gtm::shared::podcast::PodcastFeed;
 use gtm::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-use gtm::shared::track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
+use gtm::shared::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
 use gtm::shared::wire::{decode, encode};
 
 // ---------------------------------------------------------------------------
@@ -151,16 +151,6 @@ roundtrip!(
     }
 );
 roundtrip!(
-    stream_info_roundtrip,
-    StreamInfo,
-    StreamInfo {
-        url: "https://example.com/stream".into(),
-        title: "Stream".into(),
-        ext: "mp3".into(),
-        duration: 300.0,
-    }
-);
-roundtrip!(
     crossfade_config_roundtrip,
     CrossfadeConfig,
     CrossfadeConfig {
@@ -275,13 +265,6 @@ fn req_parse_lastfm() {
     for cmd in ["lastfm_status", "lastfm_clear"] {
         let req = DaemonReq::parse_cmd(cmd, serde_json::json!({})).unwrap();
         assert_eq!(req.cmd_name(), cmd);
-    }
-
-    let req =
-        DaemonReq::parse_cmd("lastfm_authenticate", serde_json::json!({ "token": "t1" })).unwrap();
-    match req {
-        DaemonReq::LastfmAuthenticate { token } => assert_eq!(token, "t1"),
-        other => panic!("expected LastfmAuthenticate, got {other:?}"),
     }
 }
 

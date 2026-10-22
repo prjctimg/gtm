@@ -11,7 +11,7 @@ use crate::shared::playlist::PlaylistFormatKind;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastResult, PodcastStatus};
 use crate::shared::radio::{RadioCountry, RadioStation, RadioTag, RadioTracklist};
 use crate::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-use crate::shared::track::{LrcData, Playlist, StreamInfo, TrackInfo, YTSearchResult};
+use crate::shared::track::{LrcData, Playlist, TrackInfo, YTSearchResult};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -288,18 +288,6 @@ pub enum DaemonReq {
     SetPreGain {
         pre_gain_db: f32,
     },
-    SetDynamicMode {
-        enabled: bool,
-        min_queue_remaining: Option<u32>,
-        max_history: Option<u32>,
-    },
-    SetScrobble {
-        enabled: bool,
-        api_key: Option<String>,
-        session_token: Option<String>,
-        min_play_secs: Option<u32>,
-        min_play_pct: Option<f32>,
-    },
     SetEqPreset {
         preset: EqPreset,
     },
@@ -348,10 +336,6 @@ pub enum DaemonReq {
         filter: Option<YTFilter>,
     },
     YtSearchPoll,
-    YtSearchCancel,
-    YtResolveStream {
-        url: String,
-    },
     YtDownload {
         url: String,
         title: Option<String>,
@@ -366,10 +350,6 @@ pub enum DaemonReq {
     /// there is. A request that means what it says beats one that carries a
     /// field it cannot honour.
     YtCancelDownload,
-    YtFetchPlaylist {
-        url: String,
-    },
-    YtFetchPlaylistPoll,
     YtSetConfig {
         cookie_source: Option<String>,
         cookie_file: Option<String>,
@@ -386,10 +366,6 @@ pub enum DaemonReq {
     },
     SetCoverProvider {
         provider: String,
-    },
-    /// Change the combined on-disk cover cache budget and prune to fit.
-    SetCoverCache {
-        bytes: u64,
     },
     /// Current disk and memory usage of the cover caches.
     GetCoverCacheStat,
@@ -524,9 +500,6 @@ pub enum DaemonReq {
     /// that belongs to no account, so it must not require a linked provider.
     GetImageCover {
         url: String,
-    },
-    LastfmAuthenticate {
-        token: String,
     },
     LastfmStatus,
     LastfmClear,
@@ -686,8 +659,6 @@ impl DaemonReq {
             DaemonReq::SetMono { .. } => "set_mono",
             DaemonReq::Crossfade { .. } => "crossfade",
             DaemonReq::SetPreGain { .. } => "set_pre_gain",
-            DaemonReq::SetDynamicMode { .. } => "set_dynamic_mode",
-            DaemonReq::SetScrobble { .. } => "set_scrobble",
             DaemonReq::SetEqPreset { .. } => "set_eq_preset",
             DaemonReq::SetEqEnabled { .. } => "set_eq_enabled",
             DaemonReq::SetReverb { .. } => "set_reverb",
@@ -702,18 +673,13 @@ impl DaemonReq {
             DaemonReq::ToggleFavUri { .. } => "toggle_fav_uri",
             DaemonReq::YtSearch { .. } => "yt_search",
             DaemonReq::YtSearchPoll => "yt_search_poll",
-            DaemonReq::YtSearchCancel => "yt_search_cancel",
-            DaemonReq::YtResolveStream { .. } => "yt_resolve_stream",
             DaemonReq::YtDownload { .. } => "yt_download",
             DaemonReq::YtDownloadPoll => "yt_download_poll",
             DaemonReq::YtCancelDownload => "yt_cancel_download",
-            DaemonReq::YtFetchPlaylist { .. } => "yt_fetch_playlist",
-            DaemonReq::YtFetchPlaylistPoll => "yt_playlist_poll",
             DaemonReq::YtSetConfig { .. } => "yt_set_config",
             DaemonReq::GetCoverArt { .. } => "get_cover_art",
             DaemonReq::GetArtistCoverArt { .. } => "artist_cover_art",
             DaemonReq::SetCoverProvider { .. } => "set_cover_provider",
-            DaemonReq::SetCoverCache { .. } => "set_cover_cache",
             DaemonReq::GetCoverCacheStat => "cover_cache_stat",
             DaemonReq::GetLyrics { .. } => "get_lyrics",
             DaemonReq::LyricsSearch { .. } => "lyrics_search",
@@ -743,7 +709,6 @@ impl DaemonReq {
             DaemonReq::LastfmSetConfig { .. } => "lastfm_set_config",
             DaemonReq::LastfmOauthStart => "lastfm_oauth_start",
             DaemonReq::GetImageCover { .. } => "get_image_cover",
-            DaemonReq::LastfmAuthenticate { .. } => "lastfm_authenticate",
             DaemonReq::LastfmStatus => "lastfm_status",
             DaemonReq::LastfmClear => "lastfm_clear",
             DaemonReq::LastfmLove => "lastfm_love",
@@ -808,9 +773,7 @@ impl DaemonReq {
             "list_eq_presets" => DaemonReq::ListEqPresets,
             "get_favourites" => DaemonReq::GetFavourites,
             "yt_search_poll" => DaemonReq::YtSearchPoll,
-            "yt_search_cancel" => DaemonReq::YtSearchCancel,
             "yt_download_poll" => DaemonReq::YtDownloadPoll,
-            "yt_playlist_poll" => DaemonReq::YtFetchPlaylistPoll,
             "cover_cache_stat" => DaemonReq::GetCoverCacheStat,
             "spotify_cancel_oauth" => DaemonReq::SpotifyCancelOauth,
             "spotify_clear" => DaemonReq::SpotifyClear,
@@ -934,38 +897,6 @@ impl DaemonReq {
                     pre_gain_db: x.pre_gain_db,
                 }
             }
-            "set_dynamic_mode" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    enabled: bool,
-                    min_queue_remaining: Option<u32>,
-                    max_history: Option<u32>,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SetDynamicMode {
-                    enabled: x.enabled,
-                    min_queue_remaining: x.min_queue_remaining,
-                    max_history: x.max_history,
-                }
-            }
-            "set_scrobble" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    enabled: bool,
-                    api_key: Option<String>,
-                    session_token: Option<String>,
-                    min_play_secs: Option<u32>,
-                    min_play_pct: Option<f32>,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SetScrobble {
-                    enabled: x.enabled,
-                    api_key: x.api_key,
-                    session_token: x.session_token,
-                    min_play_secs: x.min_play_secs,
-                    min_play_pct: x.min_play_pct,
-                }
-            }
             "set_eq_preset" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1075,14 +1006,6 @@ impl DaemonReq {
                     filter: x.filter,
                 }
             }
-            "yt_resolve_stream" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    url: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::YtResolveStream { url: x.url }
-            }
             "yt_download" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1098,14 +1021,6 @@ impl DaemonReq {
                 }
             }
             "yt_cancel_download" => DaemonReq::YtCancelDownload,
-            "yt_fetch_playlist" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    url: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::YtFetchPlaylist { url: x.url }
-            }
             "yt_set_config" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1154,14 +1069,6 @@ impl DaemonReq {
                 DaemonReq::SetCoverProvider {
                     provider: x.provider,
                 }
-            }
-            "set_cover_cache" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    bytes: u64,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SetCoverCache { bytes: x.bytes }
             }
             "get_lyrics" => {
                 #[derive(Deserialize)]
@@ -1396,14 +1303,6 @@ impl DaemonReq {
                 }
                 let _x: Params = p(params)?;
                 DaemonReq::LastfmOauthStart
-            }
-            "lastfm_authenticate" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    token: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::LastfmAuthenticate { token: x.token }
             }
             "set_sleep_timer" => {
                 #[derive(Deserialize)]
@@ -1731,12 +1630,8 @@ pub enum DaemonEvent {
     MonoChanged { enabled: bool },
     #[serde(rename = "mute_changed")]
     MuteChanged { mute: bool },
-    #[serde(rename = "metadata_changed")]
-    MetadataChanged { detail: String },
     #[serde(rename = "queue_changed")]
     QueueChanged { queue: Vec<TrackInfo>, cursor: u64 },
-    #[serde(rename = "queue_index_changed")]
-    QueueIndexChanged { index: u64 },
     #[serde(rename = "repeat_mode_changed")]
     RepeatModeChanged { mode: RepeatMode },
     #[serde(rename = "shuffle_changed")]
@@ -1745,12 +1640,6 @@ pub enum DaemonEvent {
     CrossfadeChanged { enabled: bool, duration_secs: u8 },
     #[serde(rename = "pre_gain_changed")]
     PreGainChanged { pre_gain_db: f32 },
-    #[serde(rename = "dynamic_mode_changed")]
-    DynamicModeChanged {
-        enabled: bool,
-        min_queue_remaining: u32,
-        max_history: u32,
-    },
     #[serde(rename = "scrobble_config_changed")]
     ScrobbleConfigChanged { enabled: bool },
     #[serde(rename = "sleep_timer_tick")]
@@ -1862,9 +1751,6 @@ pub enum DaemonRes {
         query: String,
         results: Vec<YTSearchResult>,
     },
-    StreamInfo {
-        info: Box<StreamInfo>,
-    },
     Lyrics {
         lyrics: Option<LrcData>,
     },
@@ -1949,12 +1835,6 @@ pub enum DaemonRes {
     RadioTrackCoverRes {
         data: Option<String>,
     },
-    ChartsLoaded {
-        charts: Vec<ChartPlaylist>,
-    },
-    ChartTracksLoaded {
-        tracks: Vec<ChartTrack>,
-    },
     CoverArt {
         data: Option<String>,
     },
@@ -2004,12 +1884,6 @@ pub enum DaemonRes {
         rate_bps: Option<f64>,
         eta_secs: Option<u64>,
     },
-    YtDownloadResult {
-        id: u64,
-        url: String,
-        title: String,
-        file_path: String,
-    },
     Error {
         message: String,
     },
@@ -2032,7 +1906,6 @@ impl DaemonRes {
             DaemonRes::YtSearchResults { query, results } => {
                 Some(serde_json::json!({ "query": query, "results": results }))
             }
-            DaemonRes::StreamInfo { info } => Some(serde_json::json!({ "info": info })),
             DaemonRes::Lyrics { lyrics } => Some(serde_json::json!({ "lyrics": lyrics })),
             DaemonRes::SpotifyStatusRes { status } => Some(serde_json::json!({ "status": status })),
             DaemonRes::SpotifyPlaylistsRes { playlists } => {
@@ -2086,10 +1959,6 @@ impl DaemonRes {
                 Some(serde_json::json!({ "chart_id": chart_id, "cover": cover }))
             }
             DaemonRes::RadioTrackCoverRes { data } => Some(serde_json::json!({ "data": data })),
-            DaemonRes::ChartsLoaded { charts } => Some(serde_json::json!({ "charts": charts })),
-            DaemonRes::ChartTracksLoaded { tracks } => {
-                Some(serde_json::json!({ "tracks": tracks }))
-            }
             DaemonRes::CoverArt { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::CoverCacheStat {
                 disk_bytes,
@@ -2156,17 +2025,6 @@ impl DaemonRes {
                 "rate_bps": rate_bps,
                 "eta_secs": eta_secs,
             })),
-            DaemonRes::YtDownloadResult {
-                id,
-                url,
-                title,
-                file_path,
-            } => Some(serde_json::json!({
-                "id": id,
-                "url": url,
-                "title": title,
-                "file_path": file_path,
-            })),
             DaemonRes::Error { message } => return WireRes::err(id, message),
             DaemonRes::Pong => None,
         };
@@ -2223,7 +2081,6 @@ impl DaemonRes {
                 field!("query", &query);
                 field!("results", &results);
             }
-            DaemonRes::StreamInfo { info } => field!("info", &info),
             DaemonRes::Lyrics { lyrics } => field!("lyrics", &lyrics),
             DaemonRes::SpotifyStatusRes { status } => field!("status", &status),
             DaemonRes::SpotifyOauthStarted { url } => field!("url", &url),
@@ -2266,8 +2123,6 @@ impl DaemonRes {
                 field!("cover", &cover);
             }
             DaemonRes::RadioTrackCoverRes { data } => field!("data", &data),
-            DaemonRes::ChartsLoaded { charts } => field!("charts", &charts),
-            DaemonRes::ChartTracksLoaded { tracks } => field!("tracks", &tracks),
             DaemonRes::CoverArt { data } => field!("data", &data),
             DaemonRes::CoverCacheStat {
                 disk_bytes,
@@ -2331,17 +2186,6 @@ impl DaemonRes {
                 field!("total_bytes", &total_bytes);
                 field!("rate_bps", &rate_bps);
                 field!("eta_secs", &eta_secs);
-            }
-            DaemonRes::YtDownloadResult {
-                id,
-                url,
-                title,
-                file_path,
-            } => {
-                field!("id", &id);
-                field!("url", &url);
-                field!("title", &title);
-                field!("file_path", &file_path);
             }
             // Handled by the early return above.
             DaemonRes::Error { .. } => unreachable!(),
@@ -2444,12 +2288,6 @@ impl DaemonRes {
                 let query = field_str(&data, "query").to_string();
                 match serde_json::from_value::<Vec<YTSearchResult>>(field(&data, "results")) {
                     Ok(results) => DaemonRes::YtSearchResults { query, results },
-                    Err(_) => DaemonRes::Value { value: data },
-                }
-            }
-            "yt_resolve_stream" => {
-                match serde_json::from_value::<Box<StreamInfo>>(field(&data, "info")) {
-                    Ok(info) => DaemonRes::StreamInfo { info },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
@@ -2661,12 +2499,6 @@ impl DaemonRes {
                 total_bytes: data.get("total_bytes").and_then(|v| v.as_u64()),
                 rate_bps: data.get("rate_bps").and_then(|v| v.as_f64()),
                 eta_secs: data.get("eta_secs").and_then(|v| v.as_u64()),
-            },
-            "yt_download_result" => DaemonRes::YtDownloadResult {
-                id: data.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
-                url: field_str(&data, "url").to_string(),
-                title: field_str(&data, "title").to_string(),
-                file_path: field_str(&data, "file_path").to_string(),
             },
             "list_eq_presets" => {
                 match serde_json::from_value::<Vec<String>>(field(&data, "presets")) {

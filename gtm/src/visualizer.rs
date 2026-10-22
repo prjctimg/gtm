@@ -1387,11 +1387,10 @@ pub struct AudioFrame<'a> {
 
 /// What a visualizer draws. `Cells` is the terminal-glyph renderer and the
 /// universal fallback; `Pixels` is a real image sampled into half-blocks by
-/// [`pixels_to_lines`]; `Shader` names a WGSL entry point compiled once.
+/// [`pixels_to_lines`].
 pub enum Frame {
     Cells(Lines<'static>),
     Pixels(RgbaImage),
-    Shader(&'static str),
 }
 
 /// A visualizer: consume audio, produce a frame. The twelve presets were one

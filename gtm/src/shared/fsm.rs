@@ -172,25 +172,6 @@ impl DaemonState {
         Ok(())
     }
 
-    /// Set dynamic mode configuration.
-    pub fn set_dynamic_mode(
-        &mut self,
-        enabled: bool,
-        min_queue_remaining: Option<u32>,
-        max_history: Option<u32>,
-    ) -> Result<()> {
-        tripwire::check(FailPoint::StateTransition)?;
-        self.dynamic_mode.enabled = enabled;
-        if let Some(min) = min_queue_remaining {
-            self.dynamic_mode.min_queue_remaining = min;
-        }
-        if let Some(max) = max_history {
-            self.dynamic_mode.max_history = max;
-        }
-        self.commit();
-        Ok(())
-    }
-
     /// Set scrobble configuration.
     pub fn set_scrobble(
         &mut self,
@@ -270,9 +251,6 @@ impl DaemonState {
                 self.queue = queue.clone();
                 self.queue_cursor = *cursor;
             }
-            DaemonEvent::QueueIndexChanged { index } => {
-                self.queue_cursor = *index;
-            }
             DaemonEvent::RepeatModeChanged { mode } => {
                 self.repeat = *mode;
             }
@@ -337,15 +315,6 @@ impl DaemonState {
             DaemonEvent::PreGainChanged { pre_gain_db } => {
                 self.audio.pre_gain_db = *pre_gain_db;
             }
-            DaemonEvent::DynamicModeChanged {
-                enabled,
-                min_queue_remaining,
-                max_history,
-            } => {
-                self.dynamic_mode.enabled = *enabled;
-                self.dynamic_mode.min_queue_remaining = *min_queue_remaining;
-                self.dynamic_mode.max_history = *max_history;
-            }
             DaemonEvent::ScrobbleConfigChanged { enabled } => {
                 self.scrobble.enabled = *enabled;
             }
@@ -361,8 +330,7 @@ impl DaemonState {
             // Info-only or app-level events with no DaemonState mirror field.
             // Listing every variant here (instead of a catch-all `_`) forces a
             // compile check when new events are added to DaemonEvent.
-            DaemonEvent::MetadataChanged { .. }
-            | DaemonEvent::SleepTimerExpired
+            DaemonEvent::SleepTimerExpired
             | DaemonEvent::Custom { .. }
             | DaemonEvent::SpotifyStatusChanged
             | DaemonEvent::LastfmStatusChanged

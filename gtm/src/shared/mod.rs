@@ -50,6 +50,6 @@ pub use radio::RadioStation;
 pub use source::{SOURCES, SRC_CHART, SRC_LOCAL, SRC_PODCAST, SRC_RADIO, SRC_SPOTIFY, is_known};
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 pub use theme::{ROLE_NAMES, ReactiveTheme, Roles, THEME_VER, derive};
-pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
+pub use track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
 
 pub type Result<T> = std::result::Result<T, CoreError>;

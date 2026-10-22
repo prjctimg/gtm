@@ -88,11 +88,3 @@ pub struct YTSearchResult {
     #[serde(default)]
     pub priority: u32,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamInfo {
-    pub url: String,
-    pub title: String,
-    pub ext: String,
-    pub duration: f64,
-}

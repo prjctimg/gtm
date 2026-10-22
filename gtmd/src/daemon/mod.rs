@@ -39,7 +39,7 @@ use gtm::shared::radio::{RadioTrack, RadioTracklist};
 use gtm::shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, delete_secret, get_secret, set_secret,
 };
-use gtm::shared::track::{StreamInfo, TrackInfo};
+use gtm::shared::track::TrackInfo;
 use gtm::shared::url::{is_youtube, ytdlp_label};
 use gtm::shared::wire;
 use gtm::shared::{CoreError, MetadataPatch};
@@ -1448,45 +1448,6 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    pub async fn set_dynamic_mode(
-        inner: &DaemonInner,
-        enabled: bool,
-        min_queue_remaining: Option<u32>,
-        max_history: Option<u32>,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.set_dynamic_mode(enabled, min_queue_remaining, max_history)?;
-        let effective_min = min_queue_remaining.unwrap_or(state.dynamic_mode.min_queue_remaining);
-        let effective_max = max_history.unwrap_or(state.dynamic_mode.max_history);
-        drop(state);
-        Daemon::push_event(
-            inner,
-            DaemonEvent::DynamicModeChanged {
-                enabled,
-                min_queue_remaining: effective_min,
-                max_history: effective_max,
-            },
-        );
-        Daemon::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    pub async fn set_scrobble(
-        inner: &DaemonInner,
-        enabled: bool,
-        api_key: Option<String>,
-        session_token: Option<String>,
-        min_play_secs: Option<u32>,
-        min_play_pct: Option<f32>,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.set_scrobble(enabled, api_key, session_token, min_play_secs, min_play_pct)?;
-        drop(state);
-        Daemon::push_event(inner, DaemonEvent::ScrobbleConfigChanged { enabled });
-        Daemon::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
     pub async fn set_eq_preset(
         inner: &DaemonInner,
         preset: EqPreset,
@@ -2194,7 +2155,6 @@ fn request_is_playback(req: &DaemonReq) -> bool {
             | DaemonReq::SetEqEnabled { .. }
             | DaemonReq::SetReverb { .. }
             | DaemonReq::SetPreGain { .. }
-            | DaemonReq::SetDynamicMode { .. }
             | DaemonReq::SetSleepTimer { .. }
             | DaemonReq::CancelSleepTimer
             | DaemonReq::SetAudioDevice { .. }
@@ -2245,10 +2205,7 @@ fn playlist_reaches_network(req: &DaemonReq) -> bool {
 fn is_yt_slow(req: &DaemonReq) -> bool {
     matches!(
         req,
-        DaemonReq::YtSearch { .. }
-            | DaemonReq::YtResolveStream { .. }
-            | DaemonReq::YtDownload { .. }
-            | DaemonReq::YtFetchPlaylist { .. }
+        DaemonReq::YtSearch { .. } | DaemonReq::YtDownload { .. }
     )
 }
 
@@ -3389,28 +3346,6 @@ impl Daemon {
                 duration_secs,
             } => Cmd::crossfade(inner, *enabled, *duration_secs).await,
             DaemonReq::SetPreGain { pre_gain_db } => Cmd::set_pre_gain(inner, *pre_gain_db).await,
-            DaemonReq::SetDynamicMode {
-                enabled,
-                min_queue_remaining,
-                max_history,
-            } => Cmd::set_dynamic_mode(inner, *enabled, *min_queue_remaining, *max_history).await,
-            DaemonReq::SetScrobble {
-                enabled,
-                api_key,
-                session_token,
-                min_play_secs,
-                min_play_pct,
-            } => {
-                Cmd::set_scrobble(
-                    inner,
-                    *enabled,
-                    api_key.clone(),
-                    session_token.clone(),
-                    *min_play_secs,
-                    *min_play_pct,
-                )
-                .await
-            }
             DaemonReq::Library { action } => LibraryHandler::handle(inner, action).await,
             DaemonReq::Playlist { action } => Self::playlist(inner, action.clone()).await,
             DaemonReq::Search { query } => Search::handle(inner, query).await,
@@ -3422,15 +3357,8 @@ impl Daemon {
             DaemonReq::YtSearch { query, filter } => Yt::search(inner, query, *filter).await,
             #[cfg(feature = "youtube")]
             DaemonReq::YtSearchPoll => Yt::poll(inner).await,
-            #[cfg(feature = "youtube")]
-            DaemonReq::YtSearchCancel => Yt::cancel(inner).await,
-            #[cfg(feature = "youtube")]
-            DaemonReq::YtResolveStream { url } => Yt::resolve_stream(inner, url).await,
             #[cfg(not(feature = "youtube"))]
-            DaemonReq::YtSearch { .. }
-            | DaemonReq::YtSearchPoll
-            | DaemonReq::YtSearchCancel
-            | DaemonReq::YtResolveStream { .. } => Err(CoreError::Daemon(
+            DaemonReq::YtSearch { .. } | DaemonReq::YtSearchPoll => Err(CoreError::Daemon(
                 "youtube support is disabled in this build".into(),
             )),
             DaemonReq::YtDownload {
@@ -3504,41 +3432,6 @@ impl Daemon {
                     ))
                 }
             }
-            DaemonReq::YtFetchPlaylist { url } => {
-                #[cfg(feature = "youtube")]
-                {
-                    let mut yt = inner.youtube.lock().await;
-                    match yt.start_fetch_playlist(url.clone()) {
-                        Ok(()) => Ok(DaemonRes::Ok),
-                        Err(e) => Err(CoreError::Daemon(e)),
-                    }
-                }
-                #[cfg(not(feature = "youtube"))]
-                {
-                    Err(CoreError::Daemon(
-                        "youtube support is disabled in this build".into(),
-                    ))
-                }
-            }
-            DaemonReq::YtFetchPlaylistPoll => {
-                #[cfg(feature = "youtube")]
-                {
-                    let mut yt = inner.youtube.lock().await;
-                    match yt.poll_playlist() {
-                        Ok(Some((query, results))) => {
-                            Ok(DaemonRes::YtSearchResults { query, results })
-                        }
-                        Ok(None) => Ok(DaemonRes::Ok),
-                        Err(e) => Err(CoreError::Daemon(e)),
-                    }
-                }
-                #[cfg(not(feature = "youtube"))]
-                {
-                    Err(CoreError::Daemon(
-                        "youtube support is disabled in this build".into(),
-                    ))
-                }
-            }
             #[cfg(feature = "youtube")]
             DaemonReq::YtSetConfig {
                 cookie_source,
@@ -3560,7 +3453,9 @@ impl Daemon {
                 Ok(DaemonRes::Ok)
             }
             #[cfg(not(feature = "youtube"))]
-            DaemonReq::YtSetConfig { .. } => Ok(DaemonRes::Ok),
+            DaemonReq::YtSetConfig { .. } => Err(CoreError::Daemon(
+                "youtube support is disabled in this build".into(),
+            )),
             DaemonReq::GetCoverArt { track_id, path } => {
                 Cover::get(inner, *track_id, path.clone()).await
             }
@@ -3568,14 +3463,6 @@ impl Daemon {
             DaemonReq::SetCoverProvider { provider } => {
                 *inner.cover_provider_override.lock().await =
                     Some(CoverProvider::from_str_lossy(provider));
-                Ok(DaemonRes::Ok)
-            }
-            DaemonReq::SetCoverCache { bytes } => {
-                let cache = inner.cover_cache().await;
-                if let Some(cc) = cache.as_ref() {
-                    cc.set_disk_cap(*bytes);
-                    cc.prune_disk_cache().await;
-                }
                 Ok(DaemonRes::Ok)
             }
             DaemonReq::GetCoverCacheStat => {
@@ -3701,7 +3588,6 @@ impl Daemon {
             }
             DaemonReq::GetImageCover { url } => Cover::image(inner, url).await,
             DaemonReq::LastfmOauthStart => Lastfm::oauth_start(inner).await,
-            DaemonReq::LastfmAuthenticate { token } => Lastfm::authenticate(inner, token).await,
             DaemonReq::LastfmStatus => Lastfm::status(inner).await,
             DaemonReq::LastfmClear => Lastfm::clear(inner).await,
             DaemonReq::LastfmLove => Lastfm::love(inner).await,

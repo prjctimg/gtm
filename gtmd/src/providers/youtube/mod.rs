@@ -20,7 +20,7 @@ use tokio::time::timeout;
 use tracing::debug;
 
 use gtm::shared::global::YTFilter;
-use gtm::shared::track::{StreamInfo, YTSearchResult};
+use gtm::shared::track::YTSearchResult;
 use gtm::shared::yt::{match_yt_host, yt_hosts};
 
 use crate::cleaner::clean_youtube_title;
@@ -29,11 +29,11 @@ const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT: usize = 2;
 
 /// Minimum gap enforced between yt-dlp subprocess launches. YouTube treats a
-/// rapid succession of extractor runs (stream resolve + download + search +
-/// playlist fetch) as a request burst and answers HTTP 429, which is exactly
-/// the "failed to stream or download the selected track" symptom. Every
-/// yt-dlp invocation site shares this launch gate, so subprocesses start at
-/// least this far apart even when several tasks fire at once.
+/// rapid succession of extractor runs (stream resolve + download + search) as a
+/// request burst and answers HTTP 429, which is exactly the "failed to stream
+/// or download the selected track" symptom. Every yt-dlp invocation site shares
+/// this launch gate, so subprocesses start at least this far apart even when
+/// several tasks fire at once.
 const YTDLP_MIN_LAUNCH_GAP: Duration = Duration::from_millis(1500);
 /// A rate-limited (HTTP 429 / "Too Many Requests") yt-dlp run is retried this
 /// many times with exponential backoff before the failure is surfaced.
@@ -55,7 +55,7 @@ pub struct YoutubeManager {
     semaphore: Arc<Semaphore>,
     /// Shared yt-dlp launch gate (see [`YTDLP_MIN_LAUNCH_GAP`]). Cloned into
     /// spawned tasks and handed to the daemon so every yt-dlp site — resolve,
-    /// download, search, playlist fetch — goes through the same throttle.
+    /// download, search — goes through the same throttle.
     last_ytdlp_launch: Arc<Mutex<Instant>>,
     cookie_file: Option<PathBuf>,
     /// Browser cookies source forwarded to yt-dlp as `--cookies-from-browser`
@@ -74,10 +74,6 @@ pub struct YoutubeManager {
     download_cancel: Option<oneshot::Sender<()>>,
     download_progress_tx: mpsc::UnboundedSender<DownloadProgress>,
     download_progress_rx: mpsc::UnboundedReceiver<DownloadProgress>,
-    playlist_task: Option<JoinHandle<()>>,
-    playlist_cancel: Option<oneshot::Sender<()>>,
-    playlist_tx: mpsc::UnboundedSender<(String, Vec<YTSearchResult>)>,
-    playlist_rx: mpsc::UnboundedReceiver<(String, Vec<YTSearchResult>)>,
     download_dir: PathBuf,
     max_concurrent_downloads: usize,
     /// Mtime of the cookie file the current InnerTube client was built with,
@@ -255,7 +251,6 @@ impl YoutubeManager {
     pub fn new() -> Self {
         let (results_tx, results_rx) = mpsc::unbounded_channel();
         let (download_progress_tx, download_progress_rx) = mpsc::unbounded_channel();
-        let (playlist_tx, playlist_rx) = mpsc::unbounded_channel();
         let download_dir = dirs::data_local_dir()
             .or_else(dirs::cache_dir)
             .unwrap_or_else(|| {
@@ -285,10 +280,6 @@ impl YoutubeManager {
             download_cancel: None,
             download_progress_tx,
             download_progress_rx,
-            playlist_task: None,
-            playlist_cancel: None,
-            playlist_tx,
-            playlist_rx,
             download_dir,
             max_concurrent_downloads: 2,
             client_cookie_mtime: None,
@@ -491,10 +482,6 @@ impl YoutubeManager {
             }
             _ => Ok(None),
         }
-    }
-
-    pub async fn cancel(&mut self) {
-        self.cancel_current();
     }
 
     /// Start downloading a YouTube video as audio via yt-dlp. Returns a
@@ -760,72 +747,6 @@ impl YoutubeManager {
         &self.download_dir
     }
 
-    /// Fire-and-forget playlist entry fetch via `yt-dlp --flat-playlist
-    /// --dump-json`. Results are collected with
-    /// [`YoutubeManager::poll_playlist`]; a new fetch cancels any in-flight
-    /// one. Runs under the shared semaphore so it never competes unfairly with
-    /// stream resolution.
-    pub fn start_fetch_playlist(&mut self, url: String) -> Result<(), String> {
-        self.cancel_playlist_fetch();
-
-        let (cancel_tx, cancel_rx) = oneshot::channel();
-        self.playlist_cancel = Some(cancel_tx);
-
-        let auth_args = self.ytdlp_auth_args();
-        let semaphore = self.semaphore.clone();
-        let gate = self.last_ytdlp_launch.clone();
-        let res_tx = self.playlist_tx.clone();
-        let handle = tokio::spawn(async move {
-            let permit = match semaphore.acquire_owned().await {
-                Ok(p) => p,
-                Err(_) => return,
-            };
-            let results = run_playlist_fetch(&url, auth_args, gate, cancel_rx, permit).await;
-            let _ = res_tx.send((url, results));
-        });
-        self.playlist_task = Some(handle);
-        Ok(())
-    }
-
-    /// Drain any finished playlist fetch, returning the source URL and the
-    /// entries published since the last poll.
-    pub fn poll_playlist(&mut self) -> Result<Option<(String, Vec<YTSearchResult>)>, String> {
-        match self.playlist_rx.try_recv() {
-            Ok(entry) => Ok(Some(entry)),
-            Err(mpsc::error::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                Err("playlist channel disconnected".to_string())
-            }
-        }
-    }
-
-    fn cancel_playlist_fetch(&mut self) {
-        if let Some(tx) = self.playlist_cancel.take() {
-            let _ = tx.send(());
-        }
-        if let Some(handle) = self.playlist_task.take() {
-            handle.abort();
-        }
-        while self.playlist_rx.try_recv().is_ok() {}
-    }
-
-    /// Resolve a YouTube watch URL into a playable direct audio stream using
-    /// yt-dlp's maintained extractor (fresh PO tokens and signature handling),
-    /// so the returned CDN URL is not a stale, HTTP-403'd one. Callers that
-    /// cannot afford to hold the manager lock across the run should use
-    /// [`resolve_stream_ytdlp`] with [`YoutubeManager::yt_extras`] instead.
-    pub async fn resolve_stream(&mut self, url: &str) -> Result<StreamInfo, String> {
-        let auth = self.ytdlp_auth_args();
-        let direct =
-            resolve_stream_ytdlp(&self.semaphore, &self.last_ytdlp_launch, &auth, url).await?;
-        Ok(StreamInfo {
-            url: direct,
-            title: url.to_string(),
-            ext: "m4a".to_string(),
-            duration: 0.0,
-        })
-    }
-
     /// Resolve any yt-dlp-supported URL into its rendered title and a direct
     /// audio URL in a single extractor pass — the yt-dlp provider family
     /// (SoundCloud, Bandcamp, Mixcloud, ...).
@@ -963,7 +884,7 @@ fn is_starved(stderr: &str) -> bool {
 /// elapsed since the previous yt-dlp subprocess start, then stamp the new
 /// start time. Because the gate stays held across the wait, callers are
 /// served one at a time: launches land exactly `MIN_LAUNCH_GAP` apart even
-/// when resolve/download/search/playlist tasks fire in the same instant.
+/// when resolve/download/search tasks fire in the same instant.
 async fn gate_ytdlp_launch(gate: &Arc<Mutex<Instant>>) {
     let mut guard = gate.lock().await;
     let since = Instant::now().saturating_duration_since(*guard);
@@ -1450,69 +1371,6 @@ async fn run_ytdlp_search(
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or("unknown error");
             Err(format!("yt-dlp search: {detail}"))
-        }
-    };
-
-    let stdout = match tokio::select! {
-        res = fetch => res,
-        _ = cancel_rx => return Vec::new(),
-    } {
-        Ok(out) => out,
-        Err(e) => {
-            debug!("{e}");
-            return Vec::new();
-        }
-    };
-
-    let mut results = Vec::new();
-    for line in stdout.split(|&b| b == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(entry) = serde_json::from_slice::<Value>(line)
-            && let Some(r) = parse_flat_entry(&entry)
-        {
-            results.push(r);
-        }
-    }
-    results
-}
-
-/// Collect the entries of a YouTube playlist/URL via `yt-dlp --flat-playlist
-/// --dump-json`, mapping each JSON-lines record into a [`YTSearchResult`]
-/// until the caller cancels via `cancel_rx` or [`SEARCH_TIMEOUT`] elapses.
-async fn run_playlist_fetch(
-    url: &str,
-    auth_args: Vec<std::ffi::OsString>,
-    gate: Arc<Mutex<Instant>>,
-    cancel_rx: oneshot::Receiver<()>,
-    _permit: OwnedSemaphorePermit,
-) -> Vec<YTSearchResult> {
-    let mut args: Vec<std::ffi::OsString> = vec![
-        "--flat-playlist".into(),
-        "--dump-json".into(),
-        "--no-warnings".into(),
-    ];
-    args.extend(auth_args);
-    args.push(url.to_string().into());
-
-    let fetch = async {
-        gate_ytdlp_launch(&gate).await;
-        let output =
-            match timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output()).await {
-                Ok(res) => res.map_err(|e| format!("yt-dlp: {e}"))?,
-                Err(_) => return Err("playlist fetch timeout".to_string()),
-            };
-        if output.status.success() {
-            Ok(output.stdout)
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let detail = stderr
-                .lines()
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("unknown error");
-            Err(format!("yt-dlp playlist fetch: {detail}"))
         }
     };
 
