@@ -1,8 +1,7 @@
 # [gtm](https://gtmd.dev) 📻
 
 
-[![Crates.io](https://img.shields.io/crates/v/gtm)](https://crates.io/crates/gtm)
-[![Crates.io downloads](https://img.shields.io/crates/d/gtm)](https://crates.io/crates/gtm)
+[![Terminal Index](https://cli.masoko.net/badge/gtm.svg)](https://cli.masoko.net/tools/gtm/)
 [![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
 [![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm/ci.yml?label=CI)](https://github.com/prjctimg/gtm/actions/workflows/ci.yml)
 
