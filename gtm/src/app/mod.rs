@@ -13,8 +13,8 @@ pub(crate) use std::pin::Pin;
 pub(crate) use std::time::Duration;
 
 pub(crate) use crate::providers::playlist::{
-    SPOTIFY_SOURCE, NewPlaylist, PlaylistCaps, PlaylistId, PlaylistNameWrite, PlaylistSource,
-    PlaylistWrite, Verb,
+    NewPlaylist, PlaylistCaps, PlaylistId, PlaylistNameWrite, PlaylistSource, PlaylistWrite,
+    SPOTIFY_SOURCE, Verb,
 };
 pub(crate) use crate::providers::spotify::SpotifyRemote;
 pub(crate) use crate::shared::client::{DaemonClient, LastfmStatus};

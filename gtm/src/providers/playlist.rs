@@ -218,9 +218,17 @@ pub enum PlaylistNameWrite {
 /// request.
 #[derive(Debug, Clone)]
 pub enum PlaylistWrite {
-    Rename { id: PlaylistId, name: String },
-    Copy { id: PlaylistId, name: Option<String> },
-    Delete { id: PlaylistId },
+    Rename {
+        id: PlaylistId,
+        name: String,
+    },
+    Copy {
+        id: PlaylistId,
+        name: Option<String>,
+    },
+    Delete {
+        id: PlaylistId,
+    },
 }
 
 /// One item to add to a playlist.
