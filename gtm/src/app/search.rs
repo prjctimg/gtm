@@ -243,7 +243,7 @@ impl App {
             "Liked" => self.tracks_cache.iter().filter(|t| t.favourite).count(),
             "Playlists" => self.playlist_cache.len(),
             "Spotify" => self.spotify.playlists.len(),
-            "Radio" => self.radio.custom.len(),
+            "Radio" => self.radio_left_rows().len(),
             "Podcasts" => self.podcast.feeds.len(),
             _ => 0,
         }
@@ -300,7 +300,7 @@ impl App {
         }
         self.spotify.playlist_tracks_cache.clear();
         match self.library_category {
-            LIB_RADIO => self.refresh_custom_stations(),
+            LIB_RADIO => self.prepare_radio_left(),
             LIB_CHARTS => self.fetch_chart_sources(),
             LIB_PODCASTS => self.fetch_podcast_feeds(),
             _ => {}
@@ -782,7 +782,7 @@ impl App {
                 PlaylistGroup::Liked => self.fav_cache.len(),
             },
             LIB_SPOTIFY => self.spotify.playlists.len(),
-            LIB_RADIO => self.radio.custom.len(),
+            LIB_RADIO => self.radio_left_rows().len(),
             // The feed list, or the episode list of the feed drilled into. The
             // cursor clamp reads this, so a category whose rows are not tracks
             // must answer with its own row count or the selection range is

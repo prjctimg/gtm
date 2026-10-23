@@ -1222,13 +1222,10 @@ impl App {
                                     }));
                                 }
                             } else if self.library_category == LIB_RADIO {
-                                // Radio: select custom station → play it
-                                let pos = self.list_pos();
-                                if let Some(station) = self.radio.custom.get(pos).cloned() {
-                                    let id = match station.uuid.as_deref() {
-                                        Some(uuid) => uuid.to_string(),
-                                        None => format!("custom:{}", pos + 1),
-                                    };
+                                // Radio: play whichever station the left-pane
+                                // scope is showing, saved or directory.
+                                if let Some(station) = self.radio_left_station_at(self.list_pos()) {
+                                    let id = station.id;
                                     let c = self.client.clone();
                                     let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.radio().play(&id, &station.name).await;
@@ -1526,6 +1523,14 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::AddToQueue) => {
+                        // Podcasts advertise `a` on their list as "add a feed
+                        // by URL", but the global queue action claimed the key
+                        // first, so it was unreachable. The list has no tracks
+                        // to queue anyway; its `a` belongs to the feed form.
+                        if self.library_category == LIB_PODCASTS && !self.library_pane_focus {
+                            self.open_podcast_subscribe();
+                            return true;
+                        }
                         // Read-only for the whole time a station is on air.
                         if !self.live_queue().is_empty() {
                             self.notify_typed(
@@ -1767,8 +1772,9 @@ impl App {
                             } else if self.library_category == LIB_RADIO {
                                 // Radio category: removing a custom station
                                 // edits radios.toml, so require confirmation.
+                                // Directory rows are not ours to delete.
                                 if let Some(station) =
-                                    self.radio.custom.get(self.list_pos()).cloned()
+                                    self.radio_left_saved_at(self.list_pos()).cloned()
                                 {
                                     self.pending_prompt = Some(PendingPrompt {
                                         message: format!(
@@ -2706,8 +2712,13 @@ impl App {
                         let ipc_tx = self.ipc_tx.clone();
                         let _ = tx.try_send(TuiCommand::fire(move || async move {
                             match c.podcast().add_feed(&hit.url).await {
-                                Ok(feeds) => {
-                                    let _ = ipc_tx.send(IpcResult::PodcastFeeds(feeds));
+                                Ok(_) => {
+                                    // `add_feed` returns only what that call
+                                    // added; replacing the whole list with it
+                                    // made every earlier subscription vanish.
+                                    if let Ok(feeds) = c.podcast().feeds().await {
+                                        let _ = ipc_tx.send(IpcResult::PodcastFeeds(feeds));
+                                    }
                                     let _ = ipc_tx.send(IpcResult::Notification(
                                         "Podcast".into(),
                                         format!("Subscribed to {}", hit.title),
@@ -2762,8 +2773,7 @@ impl App {
                     if self.podcast.results.is_empty() {
                         match c {
                             'a' => {
-                                self.podcast.subscribe_url.clear();
-                                self.pickers.open(PickerId::PodcastSubscribe);
+                                self.open_podcast_subscribe();
                             }
                             'r' => {
                                 self.refresh_podcast_feeds(&tx);
@@ -2900,6 +2910,11 @@ impl App {
                     let _ = tx.try_send(TuiCommand::fire(move || async move {
                         match c.podcast().add_feed(&url).await {
                             Ok(_) => {
+                                // Refresh the whole subscription list, not the
+                                // one feed this call happened to return.
+                                if let Ok(feeds) = c.podcast().feeds().await {
+                                    let _ = ipc_tx.send(IpcResult::PodcastFeeds(feeds));
+                                }
                                 let _ = ipc_tx.send(IpcResult::Notification(
                                     "Podcast".into(),
                                     format!("Subscribed to {url}"),

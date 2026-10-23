@@ -15,6 +15,8 @@
   ·
   <a href="CONTRIBUTING.md">Contributing</a>
   ·
+  <a href="https://discord.gg/h5bKgkWBfT">Discord</a>
+  ·
   <a href="#acknowledgements">Acknowledgements</a>
 </p>
 

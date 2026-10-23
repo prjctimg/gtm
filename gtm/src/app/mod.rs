@@ -830,6 +830,10 @@ pub(crate) enum IpcResult {
     RadioTags(Vec<RadioTag>),
     RadioCountries(Vec<RadioCountry>),
     RadioBrowseStations(Vec<RadioStation>),
+    /// Directory stations for one left-pane Radio tag. The tag travels with
+    /// the reply so a late response for a scope the user has already left is
+    /// discarded rather than shown under the new one.
+    RadioLeftStations(String, Vec<RadioStation>),
     /// A station tracklist pulled on demand when the queue view opens before
     /// the daemon's refresh tick has landed.
     RadioTracklist(crate::shared::radio::RadioTracklist),
@@ -1814,6 +1818,10 @@ impl App {
         self.prefetch_playlist_lyrics();
         self.fetch_row_cover();
         self.fetch_list_cover();
+        // The left card is a sleeve of the source's artwork, not the track
+        // row's: move it with the cursor or the first chart opened keeps the
+        // sleeve of whatever the list started on.
+        self.fetch_chart_sleeve();
         self.fetch_chart_cover();
         // Matches the downward pass: the rows above the cursor are the ones the
         // upward warm skips, so without this a scroll up shows cold covers.
@@ -1829,12 +1837,13 @@ impl App {
     /// onto different keys in the first place.
     pub(crate) fn cycle_view_filter(&mut self, back: bool) {
         let Some(top) = self.pickers.top_mut() else {
-            // No picker open: whichever of the two grouped views is on screen.
-            // The other categories are flat lists with nothing to slice, so the
-            // pair does nothing there rather than moving the category.
+            // No picker open: whichever grouped view is on screen. Radio is
+            // flat too, but its rows come from three different places, so the
+            // pair steps the left-pane scope rather than the category.
             match self.library_category {
                 LIB_ALL => self.cycle_library_filter(back),
                 LIB_PLAYLISTS => self.cycle_playlist_group(back),
+                LIB_RADIO => self.cycle_radio_left_scope(back),
                 _ => {}
             }
             return;
@@ -2270,7 +2279,7 @@ impl App {
             ClipField::LastfmKey => self.setup.lastfm_api_key.clone(),
             ClipField::DiscordId => self.setup.discord_input.clone(),
             ClipField::YoutubeCookie => self.setup.youtube_cookie_input.clone(),
-            ClipField::PodcastUrl => self.pickers.top()?.query.clone(),
+            ClipField::PodcastUrl => self.podcast.subscribe_url.clone(),
             ClipField::StreamUrl => self.pickers.top()?.query.clone(),
             ClipField::SleepMinutes => self.sleep_timer.input_buf.clone(),
             ClipField::LastfmSecret => self.setup.lastfm_api_secret.clone(),
@@ -2318,7 +2327,8 @@ impl App {
             // A cookie file path or a feed URL is one line, so a multi-line
             // paste is flattened rather than silently truncated mid-path.
             ClipField::YoutubeCookie => self.setup.youtube_cookie_input.push_str(text.trim()),
-            ClipField::PodcastUrl | ClipField::StreamUrl => {
+            ClipField::PodcastUrl => self.podcast.subscribe_url.push_str(text.trim()),
+            ClipField::StreamUrl => {
                 if let Some(top) = self.pickers.top_mut() {
                     top.query.push_str(text.trim());
                 }
@@ -2409,7 +2419,12 @@ impl App {
                 }
                 PickerId::DiscordSetup => self.apply_paste(ClipField::DiscordId, text),
                 PickerId::YoutubeSetup => self.apply_paste(ClipField::YoutubeCookie, text),
-                PickerId::PodcastSubscribe | PickerId::LoadStream => {
+                PickerId::PodcastSubscribe => {
+                    // The subscribe form has no query box: its draft is
+                    // `podcast.subscribe_url`, the same field Enter reads.
+                    self.apply_paste(ClipField::PodcastUrl, text);
+                }
+                PickerId::LoadStream => {
                     if let Some(top) = self.pickers.top_mut() {
                         top.query.push_str(text.trim());
                     }

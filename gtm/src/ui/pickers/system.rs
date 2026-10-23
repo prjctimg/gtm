@@ -363,37 +363,44 @@ impl Pickers {
         )]));
         lines.push(Line::from(""));
 
-        let slider_w = inner.width.saturating_sub(4) as u32;
-        let pos = if slider_w > 0 {
-            ((mins as f32 / 180.0) * slider_w as f32) as u32
-        } else {
-            0
+        // A filled bar rather than a line with a dot on it: the old slider said
+        // "180 minutes" twice (the adjacent labels) but only ever lit one cell.
+        // The fill's hue walks from the theme accent towards the far end of the
+        // dial, so increasing the timer is visible as well as readable.
+        let slider_w = inner.width.saturating_sub(4) as usize;
+        let ratio = (mins as f32 / 180.0).clamp(0.0, 1.0);
+        let pos = ((ratio * slider_w as f32).round() as usize).min(slider_w);
+        let base = match app.theme.accent {
+            Color::Rgb(r, g, b) => [r, g, b],
+            _ => [120, 170, 255],
         };
-        let filled: String = "─".repeat(pos as usize);
-        let empty: String = "─".repeat((slider_w.saturating_sub(pos + 1)) as usize);
+        let [fr, fg, fb] = crate::shared::reactive::hue_shift(base, ratio * 0.33);
+        let fill_color = Color::Rgb(fr, fg, fb);
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled(filled, Style::default().fg(app.theme.success)),
             Span::styled(
-                "●",
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD),
+                "█".repeat(pos),
+                Style::default().fg(fill_color).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(empty, Style::default().fg(app.theme.fg_dim)),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("  0m", Style::default().fg(app.theme.fg_dim)),
             Span::styled(
-                format!("{:.0}m", 180.0),
+                "░".repeat(slider_w.saturating_sub(pos)),
                 Style::default().fg(app.theme.fg_dim),
             ),
+        ]));
+        // The two dial endpoints, not a second "0m 180m" caption pair: the bar
+        // above already states the current value in the Timer line.
+        let gap = inner.width.saturating_sub(8) as usize;
+        lines.push(Line::from(vec![
+            Span::styled("  0m", Style::default().fg(app.theme.fg_dim)),
+            Span::styled(" ".repeat(gap), Style::default()),
+            Span::styled("180m", Style::default().fg(app.theme.fg_dim)),
         ]));
         lines.push(Line::from(""));
 
         // Rows 1..=7: quick presets. `focus - 1` indexes into this list, and
         // the focused chip is highlighted (the value matches `mins` whenever
-        // the user adjusted the slider to a preset).
+        // the user adjusted the slider to a preset). Plain text, no brackets:
+        // the fill behind a selected chip already says which one is active.
         let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
         let mut spans: Vec<Span> = vec![Span::styled("  ", Style::default())];
         for (i, &m) in quick_opts.iter().enumerate() {
@@ -411,21 +418,33 @@ impl Pickers {
             } else {
                 Style::default().fg(app.theme.fg_dim)
             };
-            spans.push(Span::styled(format!("[{}m] ", m), style));
+            spans.push(Span::styled(format!(" {m}m "), style));
         }
         lines.push(Line::from(spans));
+        // Two blank rows before the switch: it is a separate setting from the
+        // time, not another preset row, and giving it breathing room also
+        // moves it clear of the bar's endpoint labels.
+        lines.push(Line::from(""));
         lines.push(Line::from(""));
 
-        // Row 8: the "stop immediately" checkbox.
-        let boxed = if app.sleep_timer.stop_immediately {
-            "[x]"
+        // Row 8: the "stop immediately" switch.
+        let mark = if app.sleep_timer.stop_immediately {
+            "◉"
         } else {
-            "[ ]"
+            "○"
         };
-        lines.push(Line::from(vec![Span::styled(
-            format!("  {} End playback immediately when the time is up", boxed),
-            focus_style(app, focus == 8),
-        )]));
+        let toggle_style = focus_style(app, focus == 8);
+        let mark_style = if focus == 8 {
+            toggle_style
+        } else if app.sleep_timer.stop_immediately {
+            Style::default().fg(app.theme.accent)
+        } else {
+            Style::default().fg(app.theme.fg_dim)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {mark} "), mark_style),
+            Span::styled("End playback immediately when the time is up", toggle_style),
+        ]));
         lines.push(Line::from(""));
 
         if is_active && let Some(remaining) = app.sleep_timer.remaining {

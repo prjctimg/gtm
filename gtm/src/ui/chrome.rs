@@ -7,7 +7,7 @@
 
 use crate::app::{
     GRID_CELL_H, GRID_CELL_W, LIB_ALL, LIB_CATEGORIES, LIB_CHARTS, LIB_PLAYLISTS, LIB_PODCASTS,
-    LIB_RADIO, LIB_SPOTIFY, LibraryFilter, PlaylistGroup, playlist_row_label,
+    LIB_RADIO, LIB_SPOTIFY, LibraryFilter, PlaylistGroup, RadioLeftScope, playlist_row_label,
 };
 use crate::ui::*;
 use crate::visualizer::{AudioFrame, Frame, Visualizer, pixels_to_lines};
@@ -1902,28 +1902,47 @@ impl Render {
                 (lines, st_line)
             }
         } else if app.library_category == LIB_RADIO {
-            let stations = &app.radio.custom;
-            let total_len = stations.len();
+            let rows = app.radio_left_rows();
+            let total_len = rows.len();
             let sel = app.list_pos().min(total_len.saturating_sub(1));
             let st_line = format!(
-                " {} {} ",
+                " {} {} | {} ",
                 total_len,
-                plural(total_len, "station", "stations")
+                plural(total_len, "station", "stations"),
+                app.radio.left_scope.label()
             );
             let available = window_rows();
             app.viewport_items = available;
             let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
             app.list_scroll = list_scroll;
             let mut lines = vec![Line::from("")];
-            if stations.is_empty() {
-                lines.extend(empty_hint_lines(
-                    app,
-                    "No custom stations yet",
-                    "Hint: open Radio Browser with / or r, then save one with s",
-                ));
+            if rows.is_empty() {
+                let (headline, hint) = match &app.radio.left_scope {
+                    RadioLeftScope::Saved => (
+                        "No saved stations yet",
+                        "Hint: open Radio Browser with /, then save one with s",
+                    ),
+                    RadioLeftScope::Tag(_) if app.radio.left_tag_pending => (
+                        "Loading stations for this tag…",
+                        "Hint: [ and ] switch the Radio scope",
+                    ),
+                    RadioLeftScope::Tag(_) => (
+                        "No stations in this tag",
+                        "Hint: [ and ] switch the Radio scope",
+                    ),
+                    RadioLeftScope::All if app.radio.top_pending => (
+                        "Loading directory stations…",
+                        "Hint: saved stations appear first",
+                    ),
+                    RadioLeftScope::All => (
+                        "No stations found",
+                        "Hint: open Radio Browser with / and save one with s",
+                    ),
+                };
+                lines.extend(empty_hint_lines(app, headline, hint));
             } else {
-                for (i, s) in stations[app.list_scroll..end].iter().enumerate() {
-                    let real_i = app.list_scroll + i;
+                for (i, row) in rows[list_scroll..end].iter().enumerate() {
+                    let real_i = list_scroll + i;
                     let is_sel = real_i == sel && !left_focus;
                     let prefix = "   ";
                     let style = if is_sel {
@@ -1933,7 +1952,8 @@ impl Render {
                     } else {
                         Style::default().fg(app.theme.fg)
                     };
-                    let row = format!("{}{}", prefix, s.name);
+                    let name = app.radio_left_row_name(*row).unwrap_or("station");
+                    let row = format!("{prefix}{name}");
                     let row = if is_sel {
                         let pad = row_pad(&row, results_area.width);
                         format!("{row}{}", " ".repeat(pad))

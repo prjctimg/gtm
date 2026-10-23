@@ -398,7 +398,8 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
             })
         }
         TrackInfoKind::RadioStation => {
-            let st = app.radio.custom.get(app.list_pos())?;
+            let selection = app.radio_left_selection_at(app.list_pos())?;
+            let st = &selection.station;
             // The host, not the whole stream URL: the path and query on a
             // station URL are long and identify nothing the reader can use.
             let host = st
@@ -409,10 +410,10 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                 .unwrap_or(st.url.as_str())
                 .to_string();
             let mut meta = host;
-            if st.uuid.is_some() {
+            if selection.directory {
                 meta.push_str(" | directory");
             }
-            if st.tracklist.is_some() {
+            if selection.tracklist.is_some() {
                 meta.push_str(" | tracklist");
             }
             Some(TrackInfoFields {
@@ -420,8 +421,8 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                 artist: "Radio".to_string(),
                 album: None,
                 meta,
-                // See `App::popup_cover_url`: a custom station has no icon
-                // without a directory lookup.
+                // See `App::popup_cover_url`: a station has no icon without a
+                // directory lookup.
                 has_cover: false,
             })
         }

@@ -287,6 +287,182 @@ impl App {
         }
     }
 
+    /// Reset the left-pane Radio category to its default view.
+    ///
+    /// The left pane used to list only `radios.toml`, so entering the category
+    /// looked like an empty directory until the user found the picker. This
+    /// loads the directory's Top list alongside the saved stations and starts
+    /// every visit on the merged `All` scope.
+    pub fn prepare_radio_left(&mut self) {
+        self.refresh_custom_stations();
+        self.radio.left_scope = RadioLeftScope::All;
+        self.radio.left_stations.clear();
+        self.radio.left_tag_pending = false;
+        self.radio.left_tag_loaded = None;
+        self.seed_radio_picker(false);
+    }
+
+    /// The flat row list behind the left-pane Radio category.
+    ///
+    /// The picker's tree is deliberately not reused here: a header row would
+    /// make Enter land on a label, and the category has one scope at a time.
+    /// `All` merges saved stations with the directory's Top list, skipping
+    /// directory rows already saved so the same station does not appear twice.
+    pub fn radio_left_rows(&self) -> Vec<RadioLeftRow> {
+        match &self.radio.left_scope {
+            RadioLeftScope::All => {
+                let mut rows: Vec<RadioLeftRow> = self
+                    .radio
+                    .custom
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| RadioLeftRow::Custom(i))
+                    .collect();
+                for (i, station) in self.radio.top.iter().enumerate() {
+                    let already_saved = self.radio.custom.iter().any(|saved| {
+                        saved.uuid.as_deref() == Some(station.id.as_str())
+                            || (saved.name.eq_ignore_ascii_case(&station.name)
+                                && saved.url == station.playable_url())
+                    });
+                    if !already_saved {
+                        rows.push(RadioLeftRow::Top(i));
+                    }
+                }
+                rows
+            }
+            RadioLeftScope::Saved => (0..self.radio.custom.len())
+                .map(RadioLeftRow::Custom)
+                .collect(),
+            RadioLeftScope::Tag(_) => (0..self.radio.left_stations.len())
+                .map(RadioLeftRow::Tag)
+                .collect(),
+        }
+    }
+
+    /// The name of one left-pane Radio row, for the list renderer.
+    pub fn radio_left_row_name(&self, row: RadioLeftRow) -> Option<&str> {
+        match row {
+            RadioLeftRow::Custom(i) => self.radio.custom.get(i).map(|s| s.name.as_str()),
+            RadioLeftRow::Top(i) => self.radio.top.get(i).map(|s| s.name.as_str()),
+            RadioLeftRow::Tag(i) => self.radio.left_stations.get(i).map(|s| s.name.as_str()),
+        }
+    }
+
+    /// The station under the left-pane Radio cursor.
+    ///
+    /// Saved rows are materialised as `RadioStation` so the info card and the
+    /// play path can share one shape with directory rows. The extra fields are
+    /// what the card needs but `RadioStation` does not carry: whether this came
+    /// from the directory and a saved station's tracklist endpoint.
+    pub fn radio_left_selection_at(&self, pos: usize) -> Option<RadioLeftSelection> {
+        match *self.radio_left_rows().get(pos)? {
+            RadioLeftRow::Custom(i) => {
+                let saved = self.radio.custom.get(i)?;
+                let mut station = empty_station();
+                station.id = saved
+                    .uuid
+                    .clone()
+                    .unwrap_or_else(|| format!("custom:{}", i + 1));
+                station.name = saved.name.clone();
+                station.url = saved.url.clone();
+                station.url_resolved = saved.url.clone();
+                Some(RadioLeftSelection {
+                    station,
+                    directory: saved.uuid.is_some(),
+                    tracklist: saved.tracklist.clone(),
+                })
+            }
+            RadioLeftRow::Top(i) => Some(RadioLeftSelection {
+                station: self.radio.top.get(i)?.clone(),
+                directory: true,
+                tracklist: None,
+            }),
+            RadioLeftRow::Tag(i) => Some(RadioLeftSelection {
+                station: self.radio.left_stations.get(i)?.clone(),
+                directory: true,
+                tracklist: None,
+            }),
+        }
+    }
+
+    /// The station under the cursor, without the card-only fields.
+    pub fn radio_left_station_at(&self, pos: usize) -> Option<RadioStation> {
+        self.radio_left_selection_at(pos).map(|s| s.station)
+    }
+
+    /// The saved station under the cursor, if the row is one.
+    ///
+    /// Removal is only meaningful for `radios.toml`; a directory row cannot be
+    /// deleted from the browser, and the old path assumed every row was saved.
+    pub fn radio_left_saved_at(&self, pos: usize) -> Option<&CustomRadioStation> {
+        match *self.radio_left_rows().get(pos)? {
+            RadioLeftRow::Custom(i) => self.radio.custom.get(i),
+            RadioLeftRow::Top(_) | RadioLeftRow::Tag(_) => None,
+        }
+    }
+
+    /// The scopes `[` / `]` step through: All, Saved, then each directory tag.
+    fn radio_left_scopes(&self) -> Vec<RadioLeftScope> {
+        let mut scopes = vec![RadioLeftScope::All, RadioLeftScope::Saved];
+        scopes.extend(
+            self.radio
+                .browse_tags
+                .iter()
+                .map(|tag| RadioLeftScope::Tag(tag.name.clone())),
+        );
+        scopes
+    }
+
+    /// Step the left-pane Radio scope, loading a tag's stations on first use.
+    pub(crate) fn cycle_radio_left_scope(&mut self, back: bool) {
+        let scopes = self.radio_left_scopes();
+        let current = self.radio.left_scope.clone();
+        let index = scopes.iter().position(|s| *s == current).unwrap_or(0);
+        let len = scopes.len();
+        let next = scopes[if back {
+            (index + len - 1) % len
+        } else {
+            (index + 1) % len
+        }]
+        .clone();
+
+        self.radio.left_scope = next.clone();
+        self.radio.left_stations.clear();
+        self.radio.left_tag_pending = false;
+        self.radio.left_tag_loaded = None;
+        self.set_list_pos(0);
+        if matches!(next, RadioLeftScope::Tag(_)) {
+            self.fetch_left_tag_stations();
+        }
+        self.update_track_popup();
+        self.data_dirty = true;
+    }
+
+    /// Load the stations for the tag the left pane is showing.
+    pub fn fetch_left_tag_stations(&mut self) {
+        let RadioLeftScope::Tag(tag) = self.radio.left_scope.clone() else {
+            return;
+        };
+        self.radio.left_tag_pending = true;
+        self.radio.left_tag_loaded = None;
+        self.radio.left_stations.clear();
+        let (c, ipc_tx) = (self.client.clone(), self.ipc_tx.clone());
+        let request_tag = tag.clone();
+        tokio::spawn(async move {
+            match c.radio().stations_by_tag(&request_tag, 50).await {
+                Ok(stations) => {
+                    let _ = ipc_tx.send(IpcResult::RadioLeftStations(tag, stations));
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("radio tag stations failed: {e}"));
+                    // An answer, even an empty one, releases the "loading" line
+                    // instead of leaving the scope spinning forever.
+                    let _ = ipc_tx.send(IpcResult::RadioLeftStations(tag, Vec::new()));
+                }
+            }
+        });
+    }
+
     /// The station the radio picker's row `i` names, as the details the preview
     /// strip shows.
     ///

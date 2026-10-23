@@ -254,7 +254,7 @@ impl App {
             TrackInfoKind::ChartSource => self.list_pos() < self.charts.sources.len(),
             TrackInfoKind::Chart => self.list_pos() < self.charts.charts.len(),
             TrackInfoKind::ChartTrack => self.list_pos() < self.charts.chart_tracks.len(),
-            TrackInfoKind::RadioStation => self.list_pos() < self.radio.custom.len(),
+            TrackInfoKind::RadioStation => self.radio_left_rows().get(self.list_pos()).is_some(),
             _ => maybe_track.is_some(),
         };
 
@@ -454,7 +454,15 @@ impl App {
     /// cached cover is invisible to the art cache but is not blank: the row
     /// carries the URL it was published with.
     pub(crate) fn popup_row_art_url(&self) -> Option<String> {
-        if self.track_info_kind() != TrackInfoKind::Track {
+        // Album and artist rows are groups too: they resolve a representative
+        // track for the local art cache, so the same representative's published
+        // `cover_url` has to be available when that cache misses. Excluding
+        // them here was why the Albums and Artists previews stayed blank while
+        // the identical row worked as Genres/Folders (which are `Track` kind).
+        if !matches!(
+            self.track_info_kind(),
+            TrackInfoKind::Track | TrackInfoKind::Album | TrackInfoKind::Artist
+        ) {
             return None;
         }
         let pos = self.list_pos();

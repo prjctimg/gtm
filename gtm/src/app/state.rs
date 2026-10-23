@@ -613,6 +613,54 @@ pub enum RadioPick {
     Country(usize),
 }
 
+/// The slice of Radio Browser the left-pane Radio category shows.
+///
+/// The picker has one merged tree; the category is a flat list with one scope
+/// at a time, stepped with `[` / `]`. Keeping this separate from
+/// `RadioSection` avoids moving the picker's cursor state just because the
+/// library pane changed what it is showing.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RadioLeftScope {
+    /// Saved stations followed by the directory's Top list.
+    #[default]
+    All,
+    /// Only stations from `radios.toml`.
+    Saved,
+    /// Stations carrying one Radio Browser tag.
+    Tag(String),
+}
+
+impl RadioLeftScope {
+    pub fn label(&self) -> String {
+        match self {
+            RadioLeftScope::All => "All".to_string(),
+            RadioLeftScope::Saved => "Saved".to_string(),
+            RadioLeftScope::Tag(tag) => format!("#{tag}"),
+        }
+    }
+}
+
+/// One selectable row in the left-pane Radio list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RadioLeftRow {
+    /// Index into `radio.custom`.
+    Custom(usize),
+    /// Index into `radio.top` (the `All` scope).
+    Top(usize),
+    /// Index into `radio.left_stations` (a tag scope).
+    Tag(usize),
+}
+
+/// The station under the left-pane Radio cursor, with the bits the info card
+/// cannot read from `RadioStation` alone.
+pub struct RadioLeftSelection {
+    pub station: RadioStation,
+    /// Whether this is a directory station rather than a hand-written entry.
+    pub directory: bool,
+    /// A saved station's optional tracklist endpoint.
+    pub tracklist: Option<String>,
+}
+
 /// How the `Stations` section was entered, so `r` can re-fetch the same
 /// directory query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -648,6 +696,15 @@ pub struct RadioView {
     /// Custom stations from `radios.toml` (1-based index = position + 1),
     /// mirrored into the left-pane Radio category.
     pub custom: Vec<CustomRadioStation>,
+    /// Which slice of the directory the left-pane Radio category shows.
+    pub left_scope: RadioLeftScope,
+    /// Stations behind `left_scope` when it names a tag.
+    pub left_stations: Vec<RadioStation>,
+    /// A left-pane tag request is in flight.
+    pub left_tag_pending: bool,
+    /// The tag `left_stations` belongs to, so a late reply for the tag the user
+    /// just stepped away from is dropped instead of painted under another one.
+    pub left_tag_loaded: Option<String>,
 }
 
 /// Queue picker/view UI state, grouped under `App::queue`. Note this mirrors

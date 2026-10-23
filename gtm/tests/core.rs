@@ -2615,7 +2615,8 @@ fn the_palette_has_no_unreachable_or_unlabelled_rows() {
     // `Shuffle Library` / `Repeat Mode`, which drive the *local* queue, so an
     // unlabelled "Spotify Next" was indistinguishable from them at a glance --
     // and with no key column to read, indistinguishable from a broken row.
-    // The "Device:" prefix is what distinguishes them.
+    // The "Device:" prefix is what distinguishes them. The provider playlist
+    // action row is also palette-only; its label names the surface it acts on.
     let keyless: Vec<&String> = rows
         .iter()
         .filter(|(_, k)| k.is_empty())
@@ -2627,7 +2628,7 @@ fn the_palette_has_no_unreachable_or_unlabelled_rows() {
     );
     for label in keyless {
         assert!(
-            label.contains("Device"),
+            label.contains("Device") || label.contains("Playlist"),
             "{label} has no key and nothing in its label says what it acts on"
         );
     }
@@ -4035,7 +4036,7 @@ fn charts_and_radio_rows_all_describe_themselves() {
         "TrackInfoKind::ChartSource => self.list_pos() < self.charts.sources.len(),",
         "TrackInfoKind::Chart => self.list_pos() < self.charts.charts.len(),",
         "TrackInfoKind::ChartTrack => self.list_pos() < self.charts.chart_tracks.len(),",
-        "TrackInfoKind::RadioStation => self.list_pos() < self.radio.custom.len(),",
+        "TrackInfoKind::RadioStation => self.radio_left_rows().get(self.list_pos()).is_some(),",
     ] {
         assert!(squish(cover).contains(&squish(probe)), "missing: {probe}");
     }

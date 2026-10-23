@@ -952,6 +952,12 @@ impl App {
                     IpcResult::RadioTop(stations) => {
                         self.radio.top = stations;
                         self.radio.top_pending = false;
+                        // The left-pane Radio category lists `top` in its All
+                        // scope: the card for row zero has to follow the list
+                        // the moment the directory arrives, not on the next key.
+                        if self.library_category == LIB_RADIO {
+                            self.update_track_popup();
+                        }
                     }
                     IpcResult::RadioTags(tags) => {
                         self.radio.browse_tags = tags;
@@ -964,6 +970,17 @@ impl App {
                     IpcResult::RadioBrowseStations(stations) => {
                         self.radio.browse_stations = stations;
                         self.radio.browse_stations_pending = false;
+                    }
+                    IpcResult::RadioLeftStations(tag, stations) => {
+                        // A reply for a tag the user stepped away from must not
+                        // paint over the scope they are looking at now.
+                        if matches!(&self.radio.left_scope, RadioLeftScope::Tag(current) if current == &tag)
+                        {
+                            self.radio.left_stations = stations;
+                            self.radio.left_tag_pending = false;
+                            self.radio.left_tag_loaded = Some(tag);
+                            self.update_track_popup();
+                        }
                     }
                     IpcResult::SpotifyMatch(uri) => {
                         self.live_uri = Some(uri);
@@ -1025,8 +1042,13 @@ impl App {
                         }
                         self.charts.charts = charts;
                         // The card describes the highlighted chart, so it can
-                        // only be built once the list is here.
+                        // only be built once the list is here. The artwork is
+                        // addressed from the same row, so ask for it now too:
+                        // opening a source used to leave the left pane blank
+                        // until the cursor moved.
                         self.update_track_popup();
+                        self.fetch_chart_sleeve();
+                        self.fetch_chart_cover();
                     }
                     IpcResult::ChartTracksLoaded(tracks) => {
                         self.charts.chart_tracks = tracks;

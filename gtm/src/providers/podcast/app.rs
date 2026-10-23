@@ -130,6 +130,16 @@ impl App {
         self.arm_podcast_search();
     }
 
+    /// Open the URL form for subscribing to a feed.
+    ///
+    /// One entry point because both the feed picker and the library category's
+    /// `a` reach it, and the form's draft lives on `podcast` rather than in the
+    /// feed picker's query.
+    pub fn open_podcast_subscribe(&mut self) {
+        self.podcast.subscribe_url.clear();
+        self.pickers.open(PickerId::PodcastSubscribe);
+    }
+
     /// Whether the podcast picker's query is blank.
     fn picker_query_is_empty_podcast(&self) -> bool {
         self.pickers.top().is_some_and(|t| {
