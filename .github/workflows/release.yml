@@ -59,9 +59,17 @@ jobs:
       prev_nightly: ${{ steps.prev-nightly.outputs.sha }}
       matrix: ${{ steps.build-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Checkout automata scripts
+        uses: actions/checkout@v7
+        with:
+          repository: prjctimg/automata
+          path: automata
+          ref: main
 
       - name: Derive tag
         id: set-tag
@@ -579,9 +587,17 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Checkout automata scripts
+        uses: actions/checkout@v7
+        with:
+          repository: prjctimg/automata
+          path: automata
+          ref: main
 
       - uses: actions/download-artifact@v8
         with:
@@ -604,7 +620,7 @@ jobs:
             prev_tag="$(git tag --sort=-v:refname | grep -E '^v[0-9]' | grep -v "^$tag$" | head -1)"
             [[ -n "$prev_tag" ]] || prev_tag="$(git rev-list --max-parents=0 HEAD)"
           fi
-          bash scripts/build/release-notes.sh "${prev_tag}" "${{ github.sha }}" "$version" release-notes.md
+          bash automata/scripts/release-notes.sh "${prev_tag}" "${{ github.sha }}" "$version" release-notes.md
           ls -l release-notes.md
 
       - name: Print release asset manifest
@@ -691,9 +707,17 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Checkout automata scripts
+        uses: actions/checkout@v7
+        with:
+          repository: prjctimg/automata
+          path: automata
+          ref: main
 
       - uses: actions/download-artifact@v8
         with:
