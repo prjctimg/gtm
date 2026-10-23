@@ -80,7 +80,7 @@ pub(crate) use widgets::*;
 
 pub use chrome::{render, run_tui};
 pub use command::{COMMAND_GROUPS, Command, CommandPalette};
-pub(crate) use pickers::presets::CROSSFADE_DURATIONS;
 pub(crate) use icons::{cover_provider_label, provider_icon, theme_mode_label, use_nerd_fonts};
+pub(crate) use pickers::presets::CROSSFADE_DURATIONS;
 pub(crate) use text::format_duration_short;
 pub(crate) use widgets::{COVER_H, COVER_W, step_viewport};
