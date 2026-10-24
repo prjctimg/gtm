@@ -26,34 +26,16 @@ const CONFIG_PERMS: u32 = 0o600;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_FEED_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_PODCAST_FEEDS: &[(&str, &str)] = &[
-    (
-        "NPR News Now",
-        "https://feeds.npr.org/500005/podcast.xml",
-    ),
+    ("NPR News Now", "https://feeds.npr.org/500005/podcast.xml"),
     (
         "This American Life",
         "https://feed.thisamericanlife.org/talpodcast",
     ),
-    (
-        "Serial",
-        "https://feeds.simplecast.com/xl36XBC2",
-    ),
-    (
-        "99% Invisible",
-        "https://feeds.simplecast.com/82FI35Px",
-    ),
-    (
-        "Planet Money",
-        "https://feeds.npr.org/510289/podcast.xml",
-    ),
-    (
-        "Radiolab",
-        "https://feeds.simplecast.com/EmVW7VGp",
-    ),
-    (
-        "The Daily",
-        "https://feeds.simplecast.com/54nAGcIl",
-    ),
+    ("Serial", "https://feeds.simplecast.com/xl36XBC2"),
+    ("99% Invisible", "https://feeds.simplecast.com/82FI35Px"),
+    ("Planet Money", "https://feeds.npr.org/510289/podcast.xml"),
+    ("Radiolab", "https://feeds.simplecast.com/EmVW7VGp"),
+    ("The Daily", "https://feeds.simplecast.com/54nAGcIl"),
     (
         "Stuff You Should Know",
         "https://feeds.megaphone.fm/stuffyoushouldknow",
@@ -118,23 +100,25 @@ impl PodcastManager {
     }
 
     /// Load subscriptions at daemon startup.
-    /// Load subscriptions at daemon startup.
     pub fn load(&mut self) {
-        let Ok(raw) = std::fs::read_to_string(self.config_path()) else {
-            let mut seeded = Vec::new();
-            for (title, url) in DEFAULT_PODCAST_FEEDS {
-                seeded.push(SubscribedFeed {
-                    id: feed_id(url),
-                    url: url.to_string(),
-                    title: title.to_string(),
-                    image_url: None,
-                });
+        let raw = match std::fs::read_to_string(self.config_path()) {
+            Ok(r) => r,
+            Err(_) => {
+                let mut seeded = Vec::new();
+                for (title, url) in DEFAULT_PODCAST_FEEDS {
+                    seeded.push(SubscribedFeed {
+                        id: feed_id(url),
+                        url: url.to_string(),
+                        title: title.to_string(),
+                        image_url: None,
+                    });
+                }
+                self.feeds = seeded;
+                let _ = self.save();
+                info!("seeded {} default podcast feeds", self.feeds.len());
+                return;
             }
-            self.feeds = seeded;
-            let _ = self.save();
-            info!("seeded {} default podcast feeds", self.feeds.len());
-            return;
-        }
+        };
         match serde_json::from_str::<Vec<SubscribedFeed>>(&raw) {
             Ok(feeds) => {
                 self.feeds = feeds;
