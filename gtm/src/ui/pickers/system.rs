@@ -56,8 +56,13 @@ impl Pickers {
             .add_modifier(Modifier::BOLD);
         let hint = Style::default().fg(app.theme.accent);
         let lines = vec![
-            // Under the mark rather than welded to it: the name says what this
-            // is, the numbers say which one.
+            Line::from(vec![
+                Span::styled("Press s to star", hint),
+                Span::styled(
+                    format!(" {}", crate::ui::bigtext::mark(&app.icon_style)),
+                    dim,
+                ),
+            ]),
             Line::from(Span::styled(
                 format!(
                     "{version} ({:.7}{})",
@@ -70,13 +75,6 @@ impl Pickers {
             Line::from(Span::styled("Copyright (C) 2026, prjctimg", dim)),
             Line::from(Span::styled("License GPL-3.0", dim)),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Press s to star", hint),
-                Span::styled(
-                    format!(" {}", crate::ui::bigtext::mark(&app.icon_style)),
-                    dim,
-                ),
-            ]),
             Line::from(Span::styled(crate::ui::bigtext::SITE, accent)),
         ];
         f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rows[2]);

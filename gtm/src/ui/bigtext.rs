@@ -301,7 +301,7 @@ fn provider_row(
     // rather than as a jump.
     spans.push(Span::styled(PROVIDER_GAP.to_string(), glyph));
     let total = Line::from(spans.clone()).width() as u16;
-    Line::from(slice(&spans, march(frame / 2, total as usize), w as usize))
+    Line::from(slice(&spans, march(frame, total as usize), w as usize))
 }
 
 /// Where in a row of `total` cells the marquee is at tick `frame`.
