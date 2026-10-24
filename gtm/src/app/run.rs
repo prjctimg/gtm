@@ -1949,8 +1949,14 @@ impl App {
             let pos_changed = (self.display_position - self.last_display_position).abs() >= 0.05;
             // Advance title scroll animations (every 3rd frame)
             if frame_count.is_multiple_of(3) {
-                self.footer_title_scroll = self.footer_title_scroll.wrapping_add(1);
-                self.np_title_scroll = self.np_title_scroll.wrapping_add(1);
+                if self.onboard {
+                    if frame_count.is_multiple_of(6) {
+                        self.footer_title_scroll = self.footer_title_scroll.wrapping_add(1);
+                    }
+                } else {
+                    self.footer_title_scroll = self.footer_title_scroll.wrapping_add(1);
+                    self.np_title_scroll = self.np_title_scroll.wrapping_add(1);
+                }
             }
 
             let playing = self.state.status == PlaybackStatus::Playing;

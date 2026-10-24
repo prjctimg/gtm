@@ -21,7 +21,7 @@ pub(crate) fn overlay_extension(id: PickerId) -> Option<ExtensionId> {
 /// but the flag was never written, so the welcome returned on the next launch
 /// while the key label kept promising otherwise.
 pub(crate) fn is_onboard_hide(key: &event::KeyEvent) -> bool {
-    key.code == KeyCode::Char('H')
+    matches!(key.code, KeyCode::Char('H') | KeyCode::Char('h'))
         && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
 }
 
@@ -121,6 +121,9 @@ impl App {
             if is_onboard_hide(&key) {
                 self.onboard_hidden = true;
                 self.show_welcome = false;
+                let mut prefs = crate::app::prefs::load_prefs();
+                prefs.show_welcome = false;
+                crate::app::prefs::save_prefs(&prefs);
                 save_prefs(&self.current_prefs());
                 self.notify_titled(
                     "Welcome",

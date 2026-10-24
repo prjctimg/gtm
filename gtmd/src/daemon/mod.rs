@@ -2724,7 +2724,7 @@ impl Daemon {
         if !self.inner.config.test_mode {
             let net_inner = Arc::clone(&self.inner);
             tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                let mut interval = tokio::time::interval(Duration::from_secs(15));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 // Seeded from what the state already says rather than from
                 // `Unknown`: the reading survives a restart of this task, and a

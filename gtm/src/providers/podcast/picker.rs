@@ -155,6 +155,9 @@ impl Pickers {
             " expects an RSS or Atom feed URL (e.g. https://feeds.example.com/show.xml)",
             Style::default().fg(app.theme.fg_dim),
         )));
-        f.render_widget(Paragraph::new(lines), inner);
+        f.render_widget(
+            Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
+            inner,
+        );
     }
 }

@@ -30,7 +30,7 @@ pub use gtm::shared::network::{
 
 /// Per-target request timeout. Keeps the picker/event loop responsive even when
 /// the network is black-holed rather than refusing fast.
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Generic connectivity targets, in probe order.
 ///

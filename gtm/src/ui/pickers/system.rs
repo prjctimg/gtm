@@ -56,20 +56,6 @@ impl Pickers {
             .add_modifier(Modifier::BOLD);
         let hint = Style::default().fg(app.theme.accent);
         let lines = vec![
-            // The call to action sits directly under the name. It used to sit
-            // under the whole block as a picker hint, which put "press s to star"
-            // below the copyright and below the site — the one line the window
-            // exists to prompt with, filed at the bottom next to legal text.
-            // The mark rides at the end of the sentence rather than on a row of
-            // its own: it is the logo for the link the sentence names, so it
-            // reads as part of it.
-            Line::from(vec![
-                Span::styled("Press s to star", hint),
-                Span::styled(
-                    format!(" {}", crate::ui::bigtext::mark(&app.icon_style)),
-                    dim,
-                ),
-            ]),
             // Under the mark rather than welded to it: the name says what this
             // is, the numbers say which one.
             Line::from(Span::styled(
@@ -84,6 +70,13 @@ impl Pickers {
             Line::from(Span::styled("Copyright (C) 2026, prjctimg", dim)),
             Line::from(Span::styled("License GPL-3.0", dim)),
             Line::from(""),
+            Line::from(vec![
+                Span::styled("Press s to star", hint),
+                Span::styled(
+                    format!(" {}", crate::ui::bigtext::mark(&app.icon_style)),
+                    dim,
+                ),
+            ]),
             Line::from(Span::styled(crate::ui::bigtext::SITE, accent)),
         ];
         f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rows[2]);
@@ -355,6 +348,13 @@ impl Pickers {
 
         let mut lines: Vec<Line> = Vec::new();
 
+        // Center content vertically and horizontally
+        let total_lines = 15u16;
+        let pad_top = inner.height.saturating_sub(total_lines) / 2;
+        for _ in 0..pad_top {
+            lines.push(Line::from(""));
+        }
+
         // Row 0: the time slider (focus 0). Left/Right and h/l adjust it;
         // Enter arms the timer with the current minutes.
         lines.push(Line::from(vec![Span::styled(
@@ -367,7 +367,7 @@ impl Pickers {
         // "180 minutes" twice (the adjacent labels) but only ever lit one cell.
         // The fill's hue walks from the theme accent towards the far end of the
         // dial, so increasing the timer is visible as well as readable.
-        let slider_w = inner.width.saturating_sub(4) as usize;
+        let slider_w = inner.width.saturating_sub(10) as usize;
         let ratio = (mins as f32 / 180.0).clamp(0.0, 1.0);
         let pos = ((ratio * slider_w as f32).round() as usize).min(slider_w);
         let base = match app.theme.accent {
@@ -377,7 +377,7 @@ impl Pickers {
         let [fr, fg, fb] = crate::shared::reactive::hue_shift(base, ratio * 0.33);
         let fill_color = Color::Rgb(fr, fg, fb);
         lines.push(Line::from(vec![
-            Span::styled("  ", Style::default()),
+            Span::styled("   ", Style::default()),
             Span::styled(
                 "█".repeat(pos),
                 Style::default().fg(fill_color).add_modifier(Modifier::BOLD),
@@ -387,11 +387,12 @@ impl Pickers {
                 Style::default().fg(app.theme.fg_dim),
             ),
         ]));
+        lines.push(Line::from(""));
         // The two dial endpoints, not a second "0m 180m" caption pair: the bar
         // above already states the current value in the Timer line.
-        let gap = inner.width.saturating_sub(8) as usize;
+        let gap = inner.width.saturating_sub(16).max(10) as usize;
         lines.push(Line::from(vec![
-            Span::styled("  0m", Style::default().fg(app.theme.fg_dim)),
+            Span::styled("   0m", Style::default().fg(app.theme.fg_dim)),
             Span::styled(" ".repeat(gap), Style::default()),
             Span::styled("180m", Style::default().fg(app.theme.fg_dim)),
         ]));

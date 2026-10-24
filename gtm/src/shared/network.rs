@@ -35,7 +35,7 @@ pub enum Connectivity {
 /// Three probe intervals: long enough that one slow answer is not a dead
 /// network, short enough that a reader is not looking at an hour-old verdict
 /// while the link is down.
-pub const FRESHNESS: std::time::Duration = std::time::Duration::from_secs(90);
+pub const FRESHNESS: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Successes required before the reading flips to online, and failures before it
 /// flips to offline.

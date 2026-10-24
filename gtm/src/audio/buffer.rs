@@ -18,11 +18,11 @@ use rodio::Source;
 /// Sentinel value for "no seek request pending".
 pub const NO_SEEK: u64 = u64::MAX;
 
-/// Prebuffer threshold in samples (1.5 seconds at 44100 stereo).
-pub const PREBUFFER_SAMPLES: usize = 44100 * 2 * 3 / 2; // 132300
+/// Prebuffer threshold in samples (2 seconds at 44100 stereo).
+pub const PREBUFFER_SAMPLES: usize = 44100 * 2 * 2; // 176400
 
-/// Reduced prebuffer for subsequent track transitions (0.5 seconds at 44100 stereo).
-pub const PREBUFFER_SAMPLES_REDUCED: usize = 44100 * 2 / 2; // 44100
+/// Reduced prebuffer for subsequent track transitions (0.75 seconds at 44100 stereo).
+pub const PREBUFFER_SAMPLES_REDUCED: usize = 44100 * 2 * 3 / 4; // 66150
 
 /// Ring buffer capacity (4 seconds at 44100 stereo) so the decode thread
 /// can push well ahead of the consumer on slow disks or EQ-heavy tracks.

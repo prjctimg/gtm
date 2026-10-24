@@ -559,15 +559,16 @@ impl YoutubeManager {
             let _permit = permit;
 
             let output_template = download_dir
-                .join("%(title)s.%(ext)s")
+                .join("%(title).200B.%(ext)s")
                 .to_string_lossy()
                 .to_string();
 
             let mut args: Vec<std::ffi::OsString> = vec![
                 "-f".into(),
-                "bestaudio[ext=m4a]/bestaudio".into(),
+                "bestaudio/best".into(),
                 "--no-playlist".into(),
                 "--newline".into(),
+                "--no-warnings".into(),
                 // See `download_into`: without it yt-dlp treats an existing
                 // file as a finished download and exits 0.
                 "--force-overwrites".into(),

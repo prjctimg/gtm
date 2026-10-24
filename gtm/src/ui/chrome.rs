@@ -1416,11 +1416,11 @@ impl Render {
                         Style::default().fg(app.theme.fg)
                     };
                     let glyph = if picked {
-                        Style::default()
-                            .fg(app.theme.selection_bg)
-                            .bg(app.theme.selection_fg_readable())
-                    } else {
                         style
+                    } else if is_active {
+                        Style::default().fg(app.theme.accent)
+                    } else {
+                        Style::default().fg(app.theme.fg)
                     };
                     ListItem::new(Line::from(vec![
                         Span::styled(" ", style),
