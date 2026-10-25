@@ -5,9 +5,7 @@
 ![](./screenshots/1.png)
 
 <p align="center">
-  <a href="https://gtmd.dev"><img src="./logo.png" alt="Logo"></a>
-  <br />
-  A reimagined audio player built for terminal enthusiasts.
+  The missing (terminal) audio player.
   <br />
   <a href="#features">Features</a>
   ·
