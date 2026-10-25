@@ -2,6 +2,8 @@
 
 # [`📻️ gtm(d)`](https://gtmd.dev)
 
+![](./screenshots/1.png)
+
 <p align="center">
   <a href="https://gtmd.dev"><img src="./logo.png" alt="Logo"></a>
   <br />
@@ -24,8 +26,6 @@
   <a href="https://cli.masoko.net/tools/gtm/"><img src="https://cli.masoko.net/badge/gtm.svg" alt="Terminal Index"></a>
   <a href="https://ratatui.rs/"><img src="https://ratatui.rs/built-with-ratatui/badge.svg" alt="Awesome Ratatui"></a>
   </p>
-
-![](./screenshots/1.png)
 
 ## Features
 
