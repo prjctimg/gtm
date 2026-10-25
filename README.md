@@ -139,6 +139,8 @@ See [the contributing guide](CONTRIBUTING.md) and
 
 ## Acknowledgements
 
+![](logo.png)
+
 This project wouldn't be possible without the amazing open source community!
 
 - [color-thief](https://crates.io/crates/color-thief)
