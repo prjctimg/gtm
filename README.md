@@ -131,11 +131,13 @@ See [the contributing guide](CONTRIBUTING.md) and
 
 ## Screenshots
 
-![](screenshots/2.png)
+**multiple clients opened in different panes** ![](screenshots/2.png)
 
-![](screenshots/3.png)
+**spotify search** ![](screenshots/3.png)
 
-![](screenshots/4.png)
+**theme picker** ![](screenshots/4.png)
+
+**about** ![](screenshots/5.png)
 
 ## Acknowledgements
 
