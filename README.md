@@ -129,6 +129,14 @@ paru -S gtm-player-bin
 See [the contributing guide](CONTRIBUTING.md) and
 [the Code of Conduct](CODE_OF_CONDUCT.md) first.
 
+## Screenshots
+
+![](screenshots/2.png)
+
+![](screenshots/3.png)
+
+![](screenshots/4.png)
+
 ## Acknowledgements
 
 This project wouldn't be possible without the amazing open source community!
