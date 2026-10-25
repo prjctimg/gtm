@@ -217,7 +217,8 @@ impl DaemonClient {
             | DaemonReq::YtSearch { .. }
             | DaemonReq::SpotifySync
             | DaemonReq::SpotifyResolve { .. }
-            | DaemonReq::SpotifyResolveTrack { .. } => 200,
+            | DaemonReq::SpotifyResolveTrack { .. }
+            | DaemonReq::PodcastEpisodes { .. } => 200,
             DaemonReq::SpotifyMatch { .. }
             | DaemonReq::SpotifyLike { .. }
             | DaemonReq::SpotifyPlaylistAdd { .. } => 30,

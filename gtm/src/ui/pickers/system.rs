@@ -360,7 +360,9 @@ impl Pickers {
         // Center the timer title
         let pad =
             " ".repeat(((inner.width as usize).saturating_sub(timer_title.chars().count())) / 2);
-        lines.push(Line::from(Span::raw(pad.clone()) + timer_line));
+        let mut line = Line::from(Span::raw(pad));
+        line.spans.extend(timer_line.spans);
+        lines.push(line);
         lines.push(Line::from(""));
         lines.push(Line::from(""));
 
@@ -430,7 +432,9 @@ impl Pickers {
         let opts_text: String = quick_opts.iter().map(|m| format!(" {m}m ")).collect();
         let pad_opts =
             " ".repeat(((inner.width as usize).saturating_sub(opts_text.chars().count())) / 2);
-        lines.push(Line::from(Span::raw(pad_opts) + opts_line));
+        let mut line = Line::from(Span::raw(pad_opts));
+        line.spans.extend(opts_line.spans);
+        lines.push(line);
         // Two blank rows before the switch: it is a separate setting from the
         // time, not another preset row, and giving it breathing room also
         // moves it clear of the bar's endpoint labels.

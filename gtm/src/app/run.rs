@@ -1304,13 +1304,12 @@ impl App {
                                 // of the blank card in "All Tracks": the URL was
                                 // known the whole time and only ever consulted for
                                 // rows with no local path at all.
-                                let url = self.popup_row_art_url();
-                                if url.is_some() {
-                                    self.fetch_url_cover(url);
-                                    return;
+                                if let Some(url) = self.popup_row_art_url() {
+                                    self.fetch_url_cover(Some(url));
+                                } else {
+                                    // Also retry for groups/albums/artists
+                                    self.update_track_popup();
                                 }
-                                // Also retry for groups/albums/artists
-                                self.update_track_popup();
                             }
                         }
                     }

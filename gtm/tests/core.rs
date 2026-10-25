@@ -540,6 +540,13 @@ fn every_client_expectation_round_trips() {
         // A miss is `None`, not an absent key, and must survive as `None`.
         ("lyrics_search", DaemonRes::Lyrics { lyrics: None }),
         (
+            "get_image_cover",
+            DaemonRes::CoverArt {
+                data: Some("aGVsbG8=".into()),
+            },
+        ),
+        ("get_image_cover", DaemonRes::CoverArt { data: None }),
+        (
             "charts_sources",
             DaemonRes::ChartsSourcesRes {
                 sources: vec![ChartSource {

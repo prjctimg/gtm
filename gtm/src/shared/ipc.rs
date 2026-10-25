@@ -2291,7 +2291,7 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "get_cover_art" | "artist_cover_art" => {
+            "get_cover_art" | "artist_cover_art" | "get_image_cover" => {
                 match serde_json::from_value::<Option<String>>(field(&data, "data")) {
                     Ok(data) => DaemonRes::CoverArt { data },
                     Err(_) => DaemonRes::Value { value: data },

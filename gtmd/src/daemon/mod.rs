@@ -2799,7 +2799,26 @@ impl Daemon {
         tokio::spawn(async move {
             let mut podcast = provider_inner.podcast.lock().await;
             podcast.load();
+            let feed_ids = podcast.feed_ids();
             drop(podcast);
+            if !feed_ids.is_empty() {
+                let warm_inner = Arc::clone(&provider_inner);
+                tokio::spawn(async move {
+                    let total = feed_ids.len();
+                    let mut warmed = 0usize;
+                    for id in feed_ids {
+                        let mut podcast = warm_inner.podcast.lock().await;
+                        if podcast.has_episodes(&id) {
+                            continue;
+                        }
+                        match podcast.refresh_feed(&id).await {
+                            Ok(_) => warmed += 1,
+                            Err(e) => warn!("warm podcast feed {id}: {e}"),
+                        }
+                    }
+                    info!("warmed {warmed}/{total} podcast feeds");
+                });
+            }
             Lastfm::restore_credentials(&provider_inner).await;
             Lastfm::set_retry_queue(&provider_inner).await;
             // Periodically flush any scrobbles that failed transiently (network

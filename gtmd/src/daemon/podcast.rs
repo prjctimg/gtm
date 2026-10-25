@@ -59,7 +59,12 @@ impl Podcast {
     }
 
     pub async fn episodes(inner: &DaemonInner, feed_id: &str) -> Result<DaemonRes, CoreError> {
-        let podcast = inner.podcast.lock().await;
+        let mut podcast = inner.podcast.lock().await;
+        if !podcast.has_episodes(feed_id)
+            && let Err(e) = podcast.refresh_feed(feed_id).await
+        {
+            warn!("refresh episodes for {feed_id}: {e}");
+        }
         match podcast.episodes(feed_id) {
             Ok((feed_title, episodes)) => Ok(DaemonRes::PodcastEpisodesRes {
                 feed_id: feed_id.to_string(),

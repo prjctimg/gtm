@@ -24,7 +24,9 @@ pub mod vtt;
 const CONFIG_FILE: &str = "podcast.json";
 const CONFIG_PERMS: u32 = 0o600;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_FEED_BYTES: usize = 8 * 1024 * 1024;
+// Some shows publish their whole archive in one document: Stuff You Should
+// Know is ~10 MiB. The cap still bounds a hostile or malformed feed.
+const MAX_FEED_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_PODCAST_FEEDS: &[(&str, &str)] = &[
     ("NPR News Now", "https://feeds.npr.org/500005/podcast.xml"),
     (
@@ -32,33 +34,36 @@ const DEFAULT_PODCAST_FEEDS: &[(&str, &str)] = &[
         "https://feed.thisamericanlife.org/talpodcast",
     ),
     ("Serial", "https://feeds.simplecast.com/xl36XBC2"),
-    ("99% Invisible", "https://feeds.simplecast.com/82FI35Px"),
+    ("99% Invisible", "https://feeds.simplecast.com/BqbsxVfO"),
     ("Planet Money", "https://feeds.npr.org/510289/podcast.xml"),
     ("Radiolab", "https://feeds.simplecast.com/EmVW7VGp"),
-    ("The Daily", "https://feeds.simplecast.com/54nAGcIl"),
+    ("The Daily", "https://feeds.simplecast.com/Sl5CSM3S"),
     (
         "Stuff You Should Know",
-        "https://feeds.megaphone.fm/stuffyoushouldknow",
+        "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/a91018a4-ea4f-4130-bf55-ae270180c327/44710ecc-10bb-48d1-93c7-ae270180c33e/podcast.rss",
     ),
-    ("Crime Junkie", "https://feeds.megaphone.fm/ADL9840290619"),
+    ("Crime Junkie", "https://feeds.simplecast.com/qm_9xx0g"),
     ("Huberman Lab", "https://feeds.megaphone.fm/hubermanlab"),
     (
         "Lex Fridman Podcast",
         "https://lexfridman.com/feed/podcast/",
     ),
-    ("WTF with Marc Maron", "https://wtfpod.libsyn.com/rss"),
+    (
+        "WTF with Marc Maron",
+        "https://feeds.acast.com/public/shows/62a222737c02140013aa4c03",
+    ),
     (
         "Conan O'Brien Needs a Friend",
         "https://feeds.simplecast.com/dHoohVNH",
     ),
-    ("SmartLess", "https://feeds.simplecast.com/6qBzL3cT"),
+    ("SmartLess", "https://feeds.simplecast.com/hNaFxXpO"),
     (
         "Ologies with Alie Ward",
-        "https://feeds.megaphone.fm/HSW4135128763",
+        "https://feeds.simplecast.com/FO6kxYGj",
     ),
     (
         "Freakonomics Radio",
-        "https://feeds.simplecast.com/Y8lVzIav",
+        "https://feeds.simplecast.com/Y8lFbOT4",
     ),
 ];
 
@@ -251,6 +256,11 @@ impl PodcastManager {
                 image_url: f.image_url.clone(),
             })
             .collect()
+    }
+
+    /// Subscribed feed ids, for the daemon's startup warmup.
+    pub fn feed_ids(&self) -> Vec<String> {
+        self.feeds.iter().map(|f| f.id.clone()).collect()
     }
 
     /// Search the public podcast directory.
@@ -447,6 +457,11 @@ impl PodcastManager {
         Ok(results)
     }
 
+    /// Whether the feed's episode list has been fetched at least once.
+    pub fn has_episodes(&self, feed_id: &str) -> bool {
+        self.episodes.contains_key(feed_id)
+    }
+
     /// Episodes of a feed. Returns the cached list; `refresh_feed` re-fetches.
     pub fn episodes(&self, feed_id: &str) -> Result<(String, Vec<PodcastEpisode>), String> {
         let feed = self
@@ -472,7 +487,13 @@ impl PodcastManager {
             .find(|f| f.id == feed_id)
             .cloned()
             .ok_or_else(|| "unknown podcast feed".to_string())?;
-        let parsed = fetch_and_parse(&self.client, &feed.url).await?;
+        let parsed = match fetch_and_parse(&self.client, &feed.url).await {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                self.error = Some(format!("refresh {}: {e}", feed.url));
+                return Err(e);
+            }
+        };
         // Keep the stored picture if the feed's own is still absent: feeds
         // commonly publish artwork only through the directory that indexed them.
         let art = parsed.image.clone().or(feed.image_url.clone());
