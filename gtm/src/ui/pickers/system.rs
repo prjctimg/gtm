@@ -56,13 +56,12 @@ impl Pickers {
             .add_modifier(Modifier::BOLD);
         let hint = Style::default().fg(app.theme.accent);
         let lines = vec![
-            Line::from(vec![
-                Span::styled("Press s to star", hint),
-                Span::styled(
-                    format!(" {}", crate::ui::bigtext::mark(&app.icon_style)),
-                    dim,
-                ),
-            ]),
+            Line::from(Span::styled("Press s to star", hint)),
+            Line::from(Span::styled(crate::ui::bigtext::SITE, accent)),
+            Line::from(vec![Span::styled(
+                format!(" {}", crate::ui::bigtext::mark(&app.icon_style)),
+                dim,
+            )]),
             Line::from(Span::styled(
                 format!(
                     "{version} ({:.7}{})",
@@ -74,8 +73,6 @@ impl Pickers {
             Line::from(""),
             Line::from(Span::styled("Copyright (C) 2026, prjctimg", dim)),
             Line::from(Span::styled("License GPL-3.0", dim)),
-            Line::from(""),
-            Line::from(Span::styled(crate::ui::bigtext::SITE, accent)),
         ];
         f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rows[2]);
     }
@@ -355,10 +352,16 @@ impl Pickers {
 
         // Row 0: the time slider (focus 0). Left/Right and h/l adjust it;
         // Enter arms the timer with the current minutes.
-        lines.push(Line::from(vec![Span::styled(
-            format!("  Timer: {} minutes", mins),
+        let timer_title = format!("Timer {} minutes", mins);
+        let timer_line = Line::from(Span::styled(
+            timer_title.clone(),
             focus_style(app, focus == 0),
-        )]));
+        ));
+        // Center the timer title
+        let pad =
+            " ".repeat(((inner.width as usize).saturating_sub(timer_title.chars().count())) / 2);
+        lines.push(Line::from(Span::raw(pad.clone()) + timer_line));
+        lines.push(Line::from(""));
         lines.push(Line::from(""));
 
         // A filled bar rather than a line with a dot on it: the old slider said
@@ -374,8 +377,9 @@ impl Pickers {
         };
         let [fr, fg, fb] = crate::shared::reactive::hue_shift(base, ratio * 0.33);
         let fill_color = Color::Rgb(fr, fg, fb);
+        let bar_pad = " ".repeat(((inner.width as usize).saturating_sub(slider_w + 3)) / 2);
         lines.push(Line::from(vec![
-            Span::styled("   ", Style::default()),
+            Span::raw(bar_pad.clone()),
             Span::styled(
                 "█".repeat(pos),
                 Style::default().fg(fill_color).add_modifier(Modifier::BOLD),
@@ -389,8 +393,11 @@ impl Pickers {
         // The two dial endpoints, not a second "0m 180m" caption pair: the bar
         // above already states the current value in the Timer line.
         let gap = inner.width.saturating_sub(16).max(10) as usize;
+        let endpoints = "0m".to_string() + &" ".repeat(gap) + "180m";
+        let ep_pad = " ".repeat(((inner.width as usize).saturating_sub(endpoints.len() + 3)) / 2);
         lines.push(Line::from(vec![
-            Span::styled("   0m", Style::default().fg(app.theme.fg_dim)),
+            Span::raw(ep_pad),
+            Span::styled("0m", Style::default().fg(app.theme.fg_dim)),
             Span::styled(" ".repeat(gap), Style::default()),
             Span::styled("180m", Style::default().fg(app.theme.fg_dim)),
         ]));
@@ -401,7 +408,7 @@ impl Pickers {
         // the user adjusted the slider to a preset). Plain text, no brackets:
         // the fill behind a selected chip already says which one is active.
         let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
-        let mut spans: Vec<Span> = vec![Span::styled("  ", Style::default())];
+        let mut spans: Vec<Span> = Vec::new();
         for (i, &m) in quick_opts.iter().enumerate() {
             let focused = (1..=7).contains(&focus) && focus - 1 == i;
             let style = if focused {
@@ -419,7 +426,11 @@ impl Pickers {
             };
             spans.push(Span::styled(format!(" {m}m "), style));
         }
-        lines.push(Line::from(spans));
+        let opts_line = Line::from(spans);
+        let opts_text: String = quick_opts.iter().map(|m| format!(" {m}m ")).collect();
+        let pad_opts =
+            " ".repeat(((inner.width as usize).saturating_sub(opts_text.chars().count())) / 2);
+        lines.push(Line::from(Span::raw(pad_opts) + opts_line));
         // Two blank rows before the switch: it is a separate setting from the
         // time, not another preset row, and giving it breathing room also
         // moves it clear of the bar's endpoint labels.
@@ -440,9 +451,13 @@ impl Pickers {
         } else {
             Style::default().fg(app.theme.fg_dim)
         };
+        let toggle_text = "End playback immediately when the time is up";
+        let toggle_pad =
+            " ".repeat(((inner.width as usize).saturating_sub(toggle_text.len() + 3)) / 2);
         lines.push(Line::from(vec![
-            Span::styled(format!("  {mark} "), mark_style),
-            Span::styled("End playback immediately when the time is up", toggle_style),
+            Span::raw(toggle_pad),
+            Span::styled(format!("{mark} "), mark_style),
+            Span::styled(toggle_text, toggle_style),
         ]));
         lines.push(Line::from(""));
 

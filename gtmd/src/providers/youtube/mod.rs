@@ -565,7 +565,7 @@ impl YoutubeManager {
 
             let mut args: Vec<std::ffi::OsString> = vec![
                 "-f".into(),
-                "bestaudio/best".into(),
+                "bestaudio[ext=m4a]/bestaudio/best".into(),
                 "--no-playlist".into(),
                 "--newline".into(),
                 "--no-warnings".into(),
@@ -574,6 +574,7 @@ impl YoutubeManager {
                 "--force-overwrites".into(),
                 "-o".into(),
                 output_template.into(),
+                "--no-part".into(),
             ];
             args.extend(auth_args.iter().cloned());
             args.push(url_for_spawn.clone().into());

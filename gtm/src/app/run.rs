@@ -1307,7 +1307,10 @@ impl App {
                                 let url = self.popup_row_art_url();
                                 if url.is_some() {
                                     self.fetch_url_cover(url);
+                                    return;
                                 }
+                                // Also retry for groups/albums/artists
+                                self.update_track_popup();
                             }
                         }
                     }
@@ -1415,12 +1418,20 @@ impl App {
                                 cover.as_ref().map_or(0, Vec::len),
                                 url
                             );
+                            let hit = cover.is_some();
                             self.charts.row_cover = cover;
+                            if hit {
+                                self.charts.row_shown = Some(url.clone());
+                            }
                             // Released unconditionally: a claimed slot reads as
                             // "in flight" to the next fetch attempt.
                             self.charts.row_fetch.clear();
                             self.chart_cover_sync();
                             self.cover_art_dirty = true;
+                            if !hit {
+                                // Retry once more by re-fetching if we still need this row
+                                self.fetch_chart_cover();
+                            }
                         } else {
                             tracing::debug!("dropped a stale chart cover for {url}");
                         }

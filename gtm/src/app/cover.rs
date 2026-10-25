@@ -473,6 +473,10 @@ impl App {
             self.filtered_tracks()
                 .get(pos)
                 .and_then(|t| t.cover_url.clone())
+                .or_else(|| {
+                    self.group_representative(pos)
+                        .and_then(|t| t.cover_url.clone())
+                })
         };
         url.filter(|u| !u.trim().is_empty())
     }
@@ -928,6 +932,11 @@ impl App {
             return;
         };
         if self.charts.row_cover_index == Some(index) && self.charts.row_cover.is_some() {
+            return;
+        }
+        if self.charts.row_shown.as_deref() == Some(url.as_str()) && self.charts.row_cover.is_some()
+        {
+            self.charts.row_cover_index = Some(index);
             return;
         }
         if self.charts.row_fetch.pending(&url) {

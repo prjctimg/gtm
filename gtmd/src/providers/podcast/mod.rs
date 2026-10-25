@@ -40,6 +40,26 @@ const DEFAULT_PODCAST_FEEDS: &[(&str, &str)] = &[
         "Stuff You Should Know",
         "https://feeds.megaphone.fm/stuffyoushouldknow",
     ),
+    ("Crime Junkie", "https://feeds.megaphone.fm/ADL9840290619"),
+    ("Huberman Lab", "https://feeds.megaphone.fm/hubermanlab"),
+    (
+        "Lex Fridman Podcast",
+        "https://lexfridman.com/feed/podcast/",
+    ),
+    ("WTF with Marc Maron", "https://wtfpod.libsyn.com/rss"),
+    (
+        "Conan O'Brien Needs a Friend",
+        "https://feeds.simplecast.com/dHoohVNH",
+    ),
+    ("SmartLess", "https://feeds.simplecast.com/6qBzL3cT"),
+    (
+        "Ologies with Alie Ward",
+        "https://feeds.megaphone.fm/HSW4135128763",
+    ),
+    (
+        "Freakonomics Radio",
+        "https://feeds.simplecast.com/Y8lVzIav",
+    ),
 ];
 
 /// A subscribed feed as persisted.

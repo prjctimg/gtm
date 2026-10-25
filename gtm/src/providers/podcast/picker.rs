@@ -152,7 +152,7 @@ impl Pickers {
             },
         ]));
         lines.push(Line::from(Span::styled(
-            " expects an RSS or Atom feed URL (e.g. https://feeds.example.com/show.xml)",
+            " e.g. https://feeds.example.com/show.xml",
             Style::default().fg(app.theme.fg_dim),
         )));
         f.render_widget(

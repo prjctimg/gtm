@@ -353,6 +353,8 @@ pub struct ChartsView {
     /// The row whose cover is on screen, so a cursor move inside one album does
     /// not re-fetch what is already there.
     pub row_cover_index: Option<usize>,
+    /// URL of the cover currently shown
+    pub row_shown: Option<String>,
 }
 
 impl ChartsView {
