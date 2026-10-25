@@ -32,12 +32,7 @@ done
 # refuses to publish a path-only dependency. Nothing keeps the two in step, so
 # this is where it is checked: a mismatch publishes a `gtmd` that cannot
 # resolve, and the failure only surfaces for whoever tries to depend on it.
-gtm_req="$(sed -n 's/^gtm = { version = "\([^"]*\)".*/\1/p' gtmd/Cargo.toml)"
-if [ "${gtm_req}" != "${VERSION}" ]; then
-  echo "Error: gtmd/Cargo.toml depends on gtm ${gtm_req:-<path-only>}, but the workspace is ${VERSION}." >&2
-  echo "       Update the dependency before publishing, or crates.io gets a gtmd that will not build." >&2
-  exit 1
-fi
+bash "${ROOT}/scripts/build/check-versions.sh"
 
 echo "Publishing ${CRATES[*]} v${VERSION}..."
 

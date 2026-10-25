@@ -184,6 +184,10 @@ jobs:
             exit 1
           fi
 
+      - name: Validate crate version alignment
+        if: steps.set-tag.outputs.skip != 'true'
+        run: bash scripts/build/check-versions.sh
+
       - name: Capture previous nightly SHA
         if: steps.set-tag.outputs.skip != 'true'
         id: prev-nightly
