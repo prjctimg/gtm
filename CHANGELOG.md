@@ -32,6 +32,26 @@
 - **`YtSetConfig` now fails on a build without the `youtube` feature** instead
   of answering as if it had stored the config.
 
+## [0.2.96] - 2026-10-25
+
+### Fixed
+- **Chart and Library covers stayed blank.** The daemon answered
+  `get_image_cover`, but the client decoded that reply as an untyped value, so
+  the image never reached the sleeve. The response now goes through the same
+  `CoverArt` decoder as the Spotify track image, which is why Spotify previews
+  worked while chart and library rows did not.
+- **The podcast starter list pointed at dead feeds.** Seven of the sixteen
+  defaults were replaced (five returned 404, one was the wrong show, and one
+  was stale), the feed cap rose to 16 MiB so SYSK's 10.4 MiB document fits, and
+  episodes are now fetched on first open instead of only during a full load.
+  The daemon also warms the feeds in the background at startup; existing
+  podcast configs are left untouched.
+- **crates.io publishing failed after the 0.2.94 and 0.2.95 bumps.** The release
+  commits updated the workspace version but left `gtmd`'s versioned `gtm`
+  dependency at 0.2.93, so the publish preflight rejected the daemon after every
+  target had built. The dependency is back in step and CI, the release tag job,
+  and `publish.sh` now check the two versions before a build starts.
+
 ## [0.2.95] - 2026-10-21
 
 ### Fixed
