@@ -1,4 +1,4 @@
-<!-- LOGO -->
+
 
 # [`📻️ gtm(d)`](https://gtmd.dev)
 
