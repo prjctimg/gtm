@@ -139,7 +139,7 @@ Every command is a control call on the current session and returns as soon as th
 
 | Command | Request | Response | Emits |
 |---------|---------|----------|-------|
-| `play` | `path` : string, `start_pos` : float | — | `playback_started` |
+| `play` | `path` : string, `start_pos` : float, `queue_index` : integer (optional) | — | `playback_started` |
 | `play_stream` | `url` : string | — | `playback_started`, `radio_title_changed` |
 | `play_pause` | — | — | `playback_started` / `playback_paused` |
 | `pause` | — | — | `playback_paused` |

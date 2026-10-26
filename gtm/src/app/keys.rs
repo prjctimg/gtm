@@ -512,7 +512,10 @@ impl App {
                                 if !self.queue.cache.is_empty() {
                                     let idx = self.queue.cursor.min(self.queue.cache.len() - 1);
                                     let path = self.queue.cache[idx].path.clone();
-                                    self.send_high(TuiCommand::Play(path));
+                                    self.send_high(TuiCommand::Play {
+                                        path,
+                                        queue_index: Some(idx),
+                                    });
                                 }
                             }
                         }
@@ -3420,7 +3423,10 @@ impl App {
                                 // Immediately update queue_cursor so the up-next preview
                                 // reflects the newly selected track's next track.
                                 self.queue.cursor = idx;
-                                self.send_high(TuiCommand::Play(path));
+                                self.send_high(TuiCommand::Play {
+                                    path,
+                                    queue_index: Some(idx),
+                                });
                             }
                         }
                         PickerId::YTSearch => {
@@ -4200,7 +4206,10 @@ impl App {
                                 match &picks[idx] {
                                     LibraryPick::Track(i) => {
                                         let path = self.tracks_cache[*i].path.clone();
-                                        self.send_high(TuiCommand::Play(path));
+                                        self.send_high(TuiCommand::Play {
+                                            path,
+                                            queue_index: None,
+                                        });
                                     }
                                     LibraryPick::Artist(name) => {
                                         self.reset_library_view(3, Some(name.clone()));

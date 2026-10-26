@@ -180,6 +180,7 @@ fn req_cmd_name() {
         DaemonReq::Play {
             path: "/m/s.mp3".into(),
             start_pos: 0.0,
+            queue_index: None,
         },
         DaemonReq::PlayPause,
         DaemonReq::Pause,
@@ -223,9 +224,14 @@ fn req_parse_play() {
     let req = DaemonReq::parse_cmd("play", params).unwrap();
     assert_eq!(req.cmd_name(), "play");
     match req {
-        DaemonReq::Play { path, start_pos } => {
+        DaemonReq::Play {
+            path,
+            start_pos,
+            queue_index,
+        } => {
             assert_eq!(path, "/music/song.mp3");
             assert_eq!(start_pos, 0.0);
+            assert_eq!(queue_index, None);
         }
         other => panic!("expected Play, got {other:?}"),
     }

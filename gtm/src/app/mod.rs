@@ -1085,7 +1085,12 @@ fn sync_and_wait(
 }
 
 pub enum TuiCommand {
-    Play(String),
+    /// Play a path. `queue_index` is the merged-queue row when the request
+    /// came from the queue picker, so duplicates play the selected copy.
+    Play {
+        path: String,
+        queue_index: Option<usize>,
+    },
     PlayPause,
     Pause,
     Stop,

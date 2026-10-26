@@ -523,6 +523,7 @@ async fn delete_playing_track() {
         &DaemonReq::Play {
             path,
             start_pos: 0.0,
+            queue_index: None,
         },
     )
     .await;
@@ -823,6 +824,7 @@ async fn late_pulse_client_gets_the_current_palette() {
         &DaemonReq::Play {
             path,
             start_pos: 0.0,
+            queue_index: None,
         },
     )
     .await;
@@ -885,6 +887,7 @@ async fn late_pulse_client_is_told_there_is_no_palette() {
         &DaemonReq::Play {
             path,
             start_pos: 0.0,
+            queue_index: None,
         },
     )
     .await;

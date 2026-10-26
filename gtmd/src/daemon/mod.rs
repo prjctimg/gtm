@@ -237,7 +237,22 @@ impl Cmd {
         start_pos: f64,
         auto_advanced: bool,
     ) -> Result<DaemonRes, CoreError> {
-        Self::play_with(inner, path, start_pos, auto_advanced, false).await
+        Self::play_at(inner, path, start_pos, auto_advanced, None).await
+    }
+
+    /// Play `path`, optionally selecting one exact row of the merged queue.
+    ///
+    /// The client sends the row the user clicked. A path alone cannot identify
+    /// it: duplicates can exist in a persisted queue, and a library entry can
+    /// share its path with a queued copy.
+    pub async fn play_at(
+        inner: &DaemonInner,
+        path: &str,
+        start_pos: f64,
+        auto_advanced: bool,
+        queue_index: Option<usize>,
+    ) -> Result<DaemonRes, CoreError> {
+        Self::play_with(inner, path, start_pos, auto_advanced, false, queue_index).await
     }
 
     /// Load `path` without sounding it.
@@ -257,7 +272,7 @@ impl Cmd {
         path: &str,
         start_pos: f64,
     ) -> Result<DaemonRes, CoreError> {
-        Self::play_with(inner, path, start_pos, false, true).await
+        Self::play_with(inner, path, start_pos, false, true, None).await
     }
 
     async fn play_with(
@@ -266,6 +281,7 @@ impl Cmd {
         start_pos: f64,
         auto_advanced: bool,
         silent: bool,
+        queue_index: Option<usize>,
     ) -> Result<DaemonRes, CoreError> {
         // Bump first so any in-flight auto-advance/crossfade task sees a
         // session change and backs out before it touches state.
@@ -286,7 +302,7 @@ impl Cmd {
             if silent {
                 return Self::restore_remote(inner, path, start_pos).await;
             }
-            return Cmd::play_stream(inner, path, start_pos, auto_advanced).await;
+            return Cmd::play_stream(inner, path, start_pos, auto_advanced, queue_index).await;
         }
         if parse_remote_path(path).is_some() {
             // A restored live stream is not connected at all. Opening it means
@@ -298,7 +314,7 @@ impl Cmd {
             if silent {
                 return Self::restore_remote(inner, path, start_pos).await;
             }
-            return Cmd::play_remote(inner, path, start_pos, auto_advanced).await;
+            return Cmd::play_remote(inner, path, start_pos, auto_advanced, queue_index).await;
         }
         // Local file: halt any active librespot stream so it stops decoding.
         inner.stream.lock().await.reset();
@@ -342,18 +358,13 @@ impl Cmd {
         // Only fall back to a complete resolve when no matching entry exists.
         let queued = {
             let state = inner.state.read().await;
-            state
-                .queue
-                .iter()
-                .find(|t| t.path == path)
-                .cloned()
-                .or_else(|| {
-                    state
-                        .current_track
-                        .as_ref()
-                        .filter(|t| t.path == path)
-                        .cloned()
-                })
+            queue::selected_track(&state, path, queue_index).or_else(|| {
+                state
+                    .current_track
+                    .as_ref()
+                    .filter(|t| t.path == path)
+                    .cloned()
+            })
         };
         let track = match queued {
             Some(t) if t.duration > 0.0 || dur <= 0.0 => t,
@@ -377,11 +388,7 @@ impl Cmd {
         }
 
         let mut state = inner.state.write().await;
-        if let Some(pos) = state.queue.iter().position(|t| t.path == track.path)
-            && pos > 0
-        {
-            state.queue.rotate_left(pos);
-        }
+        queue::promote(&mut state, &track.path, queue_index);
         // `restore` rather than `play` when nothing was asked for: it leaves the track
         // loaded and positioned without a window in which the daemon reported a
         // track as started.
@@ -491,10 +498,11 @@ impl Cmd {
         uri_path: &str,
         start_pos: f64,
         auto_advanced: bool,
+        queue_index: Option<usize>,
     ) -> Result<DaemonRes, CoreError> {
         let row = {
             let state = inner.state.read().await;
-            state.queue.iter().find(|t| t.path == uri_path).cloned()
+            queue::selected_track(&state, uri_path, queue_index)
         };
         let meta = match Spotify::uri_meta(inner, uri_path).await {
             Some(meta) => meta,
@@ -589,6 +597,7 @@ impl Cmd {
         uri_path: &str,
         start_pos: f64,
         auto_advanced: bool,
+        queue_index: Option<usize>,
     ) -> Result<DaemonRes, CoreError> {
         inner.play_session.fetch_add(1, Ordering::Release);
         // Read every gate and the client under one lock, then refresh the token
@@ -616,7 +625,14 @@ impl Cmd {
             // resolves the rest, so the row plays like any other remote instead
             // of refusing: refusing here is what left a queue full of rows that
             // looked playable and were not.
-            return Self::play_spotify_fallback(inner, uri_path, start_pos, auto_advanced).await;
+            return Self::play_spotify_fallback(
+                inner,
+                uri_path,
+                start_pos,
+                auto_advanced,
+                queue_index,
+            )
+            .await;
         }
         // The Connect credential, never the Web API one — that pairing is what
         // login5 answers `INVALID_CREDENTIALS`, which the previous code did on
@@ -627,10 +643,7 @@ impl Cmd {
         };
         let duration_hint = {
             let state = inner.state.read().await;
-            state
-                .queue
-                .iter()
-                .find(|t| t.path == uri_path)
+            queue::selected_track(&state, uri_path, queue_index)
                 .map(|t| t.duration)
                 .filter(|d| *d > 0.0)
         };
@@ -694,7 +707,7 @@ impl Cmd {
         };
 
         let mut state = inner.state.write().await;
-        let mut track = state.queue.iter().find(|t| t.path == uri_path).cloned();
+        let mut track = queue::selected_track(&state, uri_path, queue_index);
         let track = match track.as_mut() {
             Some(t) => {
                 t.duration = dur;
@@ -707,11 +720,7 @@ impl Cmd {
                 ..Default::default()
             },
         };
-        if let Some(pos) = state.queue.iter().position(|t| t.path == uri_path)
-            && pos > 0
-        {
-            state.queue.rotate_left(pos);
-        }
+        queue::promote(&mut state, uri_path, queue_index);
         state.play(track.clone(), source_for_path(&track.path))?;
         state.time_pos = start_pos;
         state.duration = dur;
@@ -738,6 +747,7 @@ impl Cmd {
         path: &str,
         start_pos: f64,
         auto_advanced: bool,
+        queue_index: Option<usize>,
     ) -> Result<DaemonRes, CoreError> {
         inner.play_session.fetch_add(1, Ordering::Release);
         let resolved = resolve_remote(inner, path).await?;
@@ -800,7 +810,7 @@ impl Cmd {
         // Favour the existing queue entry's metadata (built client-side from
         // provider data); fall back to a default shaped by the provider kind.
         let mut state = inner.state.write().await;
-        let mut queue_meta = state.queue.iter().find(|t| t.path == path).cloned();
+        let mut queue_meta = queue::selected_track(&state, path, queue_index);
         let track = match queue_meta.as_mut() {
             Some(t) => {
                 if dur > 0.0 {
@@ -848,11 +858,7 @@ impl Cmd {
                 }
             }
         };
-        if let Some(pos) = state.queue.iter().position(|t| t.path == path)
-            && pos > 0
-        {
-            state.queue.rotate_left(pos);
-        }
+        queue::promote(&mut state, path, queue_index);
         state.play(track.clone(), source_for_path(&track.path))?;
         state.time_pos = start_pos;
         state.duration = dur;
@@ -3338,10 +3344,14 @@ impl Daemon {
         _client_id: ClientId,
     ) -> Result<DaemonRes, CoreError> {
         match req {
-            DaemonReq::Play { path, start_pos } => {
+            DaemonReq::Play {
+                path,
+                start_pos,
+                queue_index,
+            } => {
                 Self::clear_history(inner).await;
                 Self::enable_fallback(inner).await;
-                Cmd::play(inner, path, *start_pos, false).await
+                Cmd::play_at(inner, path, *start_pos, false, *queue_index).await
             }
             DaemonReq::PlayStream { url } => {
                 Self::clear_history(inner).await;

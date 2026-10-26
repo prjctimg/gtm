@@ -596,7 +596,7 @@ impl App {
         let c = self.client.clone();
         tokio::spawn(async move {
             let _ = c.queue().set(tracks).await;
-            let _ = c.play(&path, 0.0).await;
+            let _ = c.play_at(&path, 0.0, Some(idx)).await;
         });
     }
 

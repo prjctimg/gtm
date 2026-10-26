@@ -1494,6 +1494,11 @@ impl Render {
         // screen. Not named for the library column's own `list_rows` above.
         let window_rows = || results_area.height.saturating_sub(3 + dock_h) as usize;
 
+        // The Spotify drill-down puts two fixed action rows above its tracks.
+        // Record the window it actually drew so the mouse map is built from the
+        // same rows instead of re-deriving them from `list_scroll`.
+        let mut spotify_list_rows: Option<ListRows> = None;
+
         let (right_lines, _stats_line) = if app.grid_active() {
             // Drawn as cells below, not as rows: the renderer needs the pane, so
             // it runs after the header. Two consequences of being empty:
@@ -1531,6 +1536,11 @@ impl Render {
                 tracks.len(),
             );
             app.list_scroll = start + ACTION_ROWS;
+            spotify_list_rows = Some(ListRows::new(
+                ACTION_ROWS,
+                start,
+                stop.saturating_sub(start),
+            ));
 
             // Rows 0/1: virtual actions (Play All / Shuffle), then the tracks.
             let action_help = [("▶  Play All", "  Enter"), ("🔀  Shuffle", "  Enter / S")];
@@ -2361,25 +2371,31 @@ impl Render {
             }
 
             // Mouse hit zones for the visible library rows: rows start
-            // below one leading blank line.
+            // below one leading blank line. The Spotify drill-down supplies
+            // its own window because its action rows do not scroll.
             //
             // The budget subtracts the docked card as well, so every hit zone
             // belongs to a row that is actually on screen.
             if lib_total_rows > 0 {
                 let avail = right_inner.height.saturating_sub(2).saturating_sub(dock_h) as usize;
-                let visible_rows = lib_total_rows
-                    .saturating_sub(app.list_scroll)
-                    .min(app.viewport_items)
-                    .min(avail);
-                for v in 0..visible_rows {
+                let rows = match spotify_list_rows {
+                    Some(rows) => rows,
+                    None => {
+                        let visible_rows = lib_total_rows
+                            .saturating_sub(app.list_scroll)
+                            .min(app.viewport_items)
+                            .min(avail);
+                        ListRows::new(0, app.list_scroll, visible_rows)
+                    }
+                };
+                for (y, index) in rows.entries(right_inner.y + 1, avail) {
                     let rect = Rect {
                         x: right_inner.x,
-                        y: right_inner.y + 1 + v as u16,
+                        y,
                         width: right_inner.width,
                         height: 1,
                     };
-                    app.mouse_map
-                        .register(rect, MouseZone::ListItem(app.list_scroll + v));
+                    app.mouse_map.register(rect, MouseZone::ListItem(index));
                 }
             }
         }

@@ -268,9 +268,24 @@ impl DaemonClient {
     // ─── Playback ───
 
     pub async fn play(&self, path: &str, start_pos: f64) -> Result<()> {
+        self.play_at(path, start_pos, None).await
+    }
+
+    /// Play a path and, when it came from the queue, name the exact row.
+    ///
+    /// Duplicate paths are legal in a persisted queue, and a library row can
+    /// share its path with a queued copy. The index is the only way the daemon
+    /// can tell which occurrence the user selected.
+    pub async fn play_at(
+        &self,
+        path: &str,
+        start_pos: f64,
+        queue_index: Option<usize>,
+    ) -> Result<()> {
         self.send_ok(DaemonReq::Play {
             path: path.into(),
             start_pos,
+            queue_index,
         })
         .await
     }

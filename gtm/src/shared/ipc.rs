@@ -257,6 +257,10 @@ pub enum DaemonReq {
     Play {
         path: String,
         start_pos: f64,
+        /// Merged-queue row the client picked, when the play came from the
+        /// queue. Absent on older clients and on path-only callers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue_index: Option<usize>,
     },
     PlayStream {
         url: String,
@@ -826,11 +830,14 @@ impl DaemonReq {
                 struct Params {
                     path: String,
                     start_pos: f64,
+                    #[serde(default)]
+                    queue_index: Option<usize>,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::Play {
                     path: x.path,
                     start_pos: x.start_pos,
+                    queue_index: x.queue_index,
                 }
             }
             "play_stream" => {

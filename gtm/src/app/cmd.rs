@@ -23,9 +23,9 @@ impl App {
         };
 
         match cmd {
-            TuiCommand::Play(path) => {
+            TuiCommand::Play { path, queue_index } => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.play(&path, 0.0).await {
+                    if let Err(e) = client.play_at(&path, 0.0, queue_index).await {
                         error_handler(e);
                     }
                 });

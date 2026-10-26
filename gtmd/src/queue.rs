@@ -149,6 +149,78 @@ fn find_path(state: &DaemonState, path: &str) -> Option<(bool, usize)> {
         .map(|i| (false, i))
 }
 
+/// Locate the queue occurrence a play request named.
+///
+/// A path is not a unique key: the persisted queue can contain two copies of
+/// the same track, and a library entry can share its path with a user-queued
+/// one. `index` is the merged-view row the user actually picked, so it wins
+/// when it still names `path`; otherwise this falls back to the first match
+/// for callers that only know the path (CLI, auto-advance).
+pub(crate) fn selected(
+    state: &DaemonState,
+    path: &str,
+    index: Option<usize>,
+) -> Option<(bool, usize)> {
+    if let Some(index) = index {
+        if index < state.queue.len() {
+            if state.queue[index].path == path {
+                return Some((true, index));
+            }
+        } else {
+            let local = index - state.queue.len();
+            if state
+                .default_list
+                .get(local)
+                .is_some_and(|t| t.path == path)
+            {
+                return Some((false, local));
+            }
+        }
+    }
+    find_path(state, path)
+}
+
+/// The exact queue entry a play request named, including its metadata.
+pub(crate) fn selected_track(
+    state: &DaemonState,
+    path: &str,
+    index: Option<usize>,
+) -> Option<TrackInfo> {
+    let (is_user, local) = selected(state, path, index)?;
+    if is_user {
+        state.queue.get(local).cloned()
+    } else {
+        state.default_list.get(local).cloned()
+    }
+}
+
+/// Make the selected occurrence current for the next/prev walk.
+///
+/// For a user queue entry that means rotating it to the front, which is how
+/// the daemon has always represented "this row is now playing". For a default
+/// list entry the cursor moves instead; rotating that list would reorder the
+/// library. Returns the selected entry before any rotation so callers can use
+/// its metadata.
+pub(crate) fn promote(
+    state: &mut DaemonState,
+    path: &str,
+    index: Option<usize>,
+) -> Option<TrackInfo> {
+    let (is_user, local) = selected(state, path, index)?;
+    let track = if is_user {
+        let track = state.queue.get(local)?.clone();
+        if local > 0 {
+            state.queue.rotate_left(local);
+        }
+        track
+    } else {
+        let track = state.default_list.get(local)?.clone();
+        state.default_cursor = local;
+        track
+    };
+    Some(track)
+}
+
 /// Insert a track into the merged view at `pos`, maintaining the cursor.
 ///
 /// Returns `false` when the path is already queued, in which case nothing is
@@ -547,6 +619,57 @@ mod tests {
         assert!(move_track(&mut state, 2, 0));
         let paths: Vec<&str> = state.queue.iter().map(|t| t.path.as_str()).collect();
         assert_eq!(paths, ["c", "a", "b"]);
+    }
+
+    /// A path can name more than one queue row. The picked row must supply
+    /// the metadata and become current, not the first row with that path.
+    #[test]
+    fn selected_duplicate_plays_the_chosen_occurrence() {
+        let mut state = DaemonState {
+            queue: vec![
+                track("same", "First copy"),
+                track("other", "Other"),
+                track("same", "Second copy"),
+            ],
+            ..Default::default()
+        };
+        let picked = selected_track(&state, "same", Some(2)).expect("row exists");
+        assert_eq!(picked.title, "Second copy");
+
+        let promoted = promote(&mut state, "same", Some(2)).expect("row exists");
+        assert_eq!(promoted.title, "Second copy");
+        assert_eq!(state.queue[0].title, "Second copy");
+    }
+
+    /// An index into the library region must not rotate a same-path user
+    /// queue row; it moves the default cursor instead.
+    #[test]
+    fn selected_default_row_wins_over_a_queued_duplicate() {
+        let mut state = DaemonState {
+            queue: vec![track("same", "Queued copy")],
+            default_list: vec![track("same", "Library copy")],
+            ..Default::default()
+        };
+        let picked = selected_track(&state, "same", Some(1)).expect("row exists");
+        assert_eq!(picked.title, "Library copy");
+        let promoted = promote(&mut state, "same", Some(1)).expect("row exists");
+        assert_eq!(promoted.title, "Library copy");
+        assert_eq!(state.default_cursor, 0);
+        assert_eq!(state.queue[0].title, "Queued copy");
+    }
+
+    /// Without an index — the CLI and auto-advance — the first path match is
+    /// still the behaviour those callers expect.
+    #[test]
+    fn selected_without_index_keeps_first_match() {
+        let state = DaemonState {
+            queue: vec![track("same", "First copy"), track("same", "Second copy")],
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_track(&state, "same", None).unwrap().title,
+            "First copy"
+        );
     }
 
     /// A provider URI has no file to read a title from, so the queue must never

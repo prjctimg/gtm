@@ -98,6 +98,56 @@ pub(crate) fn cursor_span_style(app: &App) -> Option<Style> {
     )
 }
 
+/// The rendered rows of a main-pane list, mapped back to the indexes its
+/// cursor uses.
+///
+/// A list can draw fixed rows above its scrollable items — the Spotify
+/// playlist view puts Play All and Shuffle there — and those rows belong to
+/// the same cursor space even though they never scroll. Deriving click
+/// targets from `scroll + screen row` is wrong as soon as a prefix exists:
+/// every click lands one or two tracks too far down, and the last rows have
+/// no zone at all. Both the renderer and the mouse map therefore build this
+/// one description of what is on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ListRows {
+    /// Fixed rows above the scrolling items, counted in cursor space.
+    pub(crate) action_rows: usize,
+    /// First scrolling item's absolute index.
+    pub(crate) scroll: usize,
+    /// Number of scrolling items on screen.
+    pub(crate) len: usize,
+}
+
+impl ListRows {
+    pub(crate) fn new(action_rows: usize, scroll: usize, len: usize) -> Self {
+        Self {
+            action_rows,
+            scroll,
+            len,
+        }
+    }
+
+    /// `(screen y, absolute item index)` for every row that fits.
+    ///
+    /// `first_y` is the first row below the list's leading blank line and
+    /// `capacity` is how many rows that pane can draw.
+    pub(crate) fn entries(self, first_y: u16, capacity: usize) -> Vec<(u16, usize)> {
+        let actions = self.action_rows.min(capacity);
+        let tracks = self.len.min(capacity.saturating_sub(actions));
+        let mut rows = Vec::with_capacity(actions + tracks);
+        for offset in 0..actions {
+            rows.push((first_y.saturating_add(offset as u16), offset));
+        }
+        for offset in 0..tracks {
+            rows.push((
+                first_y.saturating_add((actions + offset) as u16),
+                self.action_rows + self.scroll + offset,
+            ));
+        }
+        rows
+    }
+}
+
 pub(crate) fn step_viewport(
     offset: usize,
     sel: usize,
@@ -164,7 +214,31 @@ pub(crate) fn scroll_text(text: &str, max_width: usize, frame: usize, is_selecte
 
 #[cfg(test)]
 mod tests {
-    use super::scroll_text;
+    use super::{ListRows, scroll_text};
+
+    /// Fixed action rows map to their own indexes, and the scrolling rows
+    /// start after them instead of being shifted down by the arithmetic.
+    #[test]
+    fn list_rows_map_actions_and_scrolled_tracks() {
+        let rows = ListRows::new(2, 5, 3).entries(10, 20);
+        assert_eq!(rows, vec![(10, 0), (11, 1), (12, 7), (13, 8), (14, 9)]);
+    }
+
+    /// A short pane clips tracks but never the actions, which are the only
+    /// way to start a playlist that cannot fit its first page.
+    #[test]
+    fn list_rows_keep_actions_when_capacity_is_tight() {
+        let rows = ListRows::new(2, 0, 5).entries(3, 3);
+        assert_eq!(rows, vec![(3, 0), (4, 1), (5, 2)]);
+    }
+
+    /// Ordinary lists have no fixed prefix and still start at the scroll
+    /// offset.
+    #[test]
+    fn list_rows_without_actions_start_at_scroll() {
+        let rows = ListRows::new(0, 8, 2).entries(4, 10);
+        assert_eq!(rows, vec![(4, 8), (5, 9)]);
+    }
 
     #[test]
     fn scroll_multibyte() {
