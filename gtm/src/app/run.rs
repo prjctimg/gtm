@@ -817,18 +817,25 @@ impl App {
                 // check) OR for reactive-theming palette extraction.
                 self.fetch_np_cover();
                 // Auto-fetch lyrics on track change if enabled and (pane
-                // visible or auto-fetch enabled).
+                // visible or auto-fetch enabled). A live stream's path never
+                // changes, so `live_advanced` is a track change there too.
                 //
                 // Keyed on a *different* track, not on every `PlaybackStarted`.
                 // A `PlaybackStarted` fires for a crossfade and for the same
                 // track restarting, where the lyrics already in the pane are
                 // the right ones and re-fetching them resets the user's manual
                 // sync offset for nothing.
-                if track_changed
+                if (track_changed || live_advanced)
                     && (self.auto_fetch_lyrics || self.lyrics.show)
                     && let Some(track) = self.state.current_track.clone()
                 {
                     self.fetch_lyrics(&track);
+                } else if track_changed || live_advanced {
+                    // Automatic fetch is off (and the pane is hidden): the old
+                    // lines no longer belong to what is playing. Clear them so
+                    // opening the lyrics fetches this track instead of showing
+                    // the previous one.
+                    self.invalidate_lyrics();
                 }
             }
 

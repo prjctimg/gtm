@@ -23,10 +23,39 @@ const LRCLIB_API: &str = "https://lrclib.net/api";
 /// fallback and holds untimed text for a track that does have timed lyrics;
 /// since the cache is consulted before the network on both the library and the
 /// Spotify route, keeping those names would have made the fix invisible.
-const CACHE_VERSION: &str = "v2";
+///
+/// Bumped to `v3` when the key started carrying the album and duration. The
+/// old artist/title key made two different recordings with the same name share
+/// one entry, and a timed cache hit is served before the network is consulted,
+/// so the wrong recording's lyrics could stick for the life of the cache.
+const CACHE_VERSION: &str = "v3";
 
 /// Similarity threshold for fuzzy matching artist/title against search results.
 const FUZZY_THRESHOLD: f64 = 0.75;
+
+/// How far a candidate's duration may be from the playing track before it is
+/// treated as a different recording. lrclib stores whole seconds, and a local
+/// file's tag can differ from the stream by a second or two.
+const DURATION_TOLERANCE: f64 = 5.0;
+
+/// A title-only lookup has no artist to corroborate the match, so it has to be
+/// stricter about the one field it does have.
+const TITLE_ONLY_TOLERANCE: f64 = 3.0;
+
+/// Words that mark a different version of a song. A live take, remix, cover or
+/// karaoke track can have the same artist and title as the studio recording,
+/// but not the same words. Ignoring this is how a search result list ends up
+/// handing back a different version's lyrics.
+const VERSION_TAGS: [&str; 8] = [
+    "live",
+    "remix",
+    "acoustic",
+    "instrumental",
+    "karaoke",
+    "demo",
+    "cover",
+    "nightcore",
+];
 
 /// Calculate Jaro-Winkler similarity between two strings (0.0 to 1.0).
 /// Used for fuzzy matching track/artist names against search results.
@@ -111,12 +140,6 @@ fn normalize_for_match(s: &str) -> String {
         .chars()
         .filter(|c| c.is_alphanumeric())
         .collect()
-}
-
-/// Check if two strings match fuzzily above the configured threshold,
-/// comparing normalized forms.
-fn fuzzy_match(a: &str, b: &str) -> bool {
-    jaro_winkler_similarity(&normalize_for_match(a), &normalize_for_match(b)) >= FUZZY_THRESHOLD
 }
 
 #[derive(Clone)]
@@ -320,18 +343,19 @@ impl LyricsManager {
         // 3. lrclib's exact lookup requires an artist; tracks with missing
         //    tags (e.g. queued/foreign files) fall back to a title-only
         //    search.
-        let fetched = if track.artist.is_empty() {
-            self.fetch_lrclib_title(&track.title).await
-        } else if let Some(lrc) = self.fetch_lrclib_exact(track).await {
-            Some(lrc)
-        } else if let Some(lrc) = self.fetch_lrclib_search(track).await {
+        //
+        //    There is deliberately no "artist+title failed, so try any artist
+        //    with this title" fallback. That route cannot tell the intended
+        //    recording from a cover, a live take, or an unrelated song that
+        //    happens to share the title. A clean miss is better than confidently
+        //    showing the wrong words.
+        let want = Lookup::for_track(track);
+        let fetched = if want.artist.trim().is_empty() {
+            self.fetch_lrclib_title(&want).await
+        } else if let Some(lrc) = self.fetch_lrclib_exact(&want).await {
             Some(lrc)
         } else {
-            // Strict artist+title matching failed (e.g. the artist tag is
-            // spelled differently or carries a featuring/remix credit). Drop
-            // to a title-only search so a correct song is still recovered;
-            // the tight title threshold keeps an unrelated song's lyrics out.
-            self.fetch_lrclib_title(&track.title).await
+            self.fetch_lrclib_search(&want).await
         };
 
         if let Some(lrc) = fetched {
@@ -349,14 +373,20 @@ impl LyricsManager {
     /// match without touching sidecar files. Used by the `gtm lyrics` CLI.
     pub async fn search(&self, artist: &str, title: &str) -> Option<LrcData> {
         let key = format!("{} - {}", artist, title);
+        let has_artist = !artist.trim().is_empty();
         // Serve from the disk cache first: this path is used by the CLI and by
         // `status --stream`, which would otherwise hit the network on every run.
-        if let Some(lrc) = self.read_cache_key(&key) {
+        // A title-only key is deliberately not cached: it has no artist to tell
+        // recordings apart, so reusing it could hand the next caller another
+        // artist's song.
+        if has_artist && let Some(lrc) = self.read_cache_key(&key) {
             return Some(lrc);
         }
 
         let query = format!("{} {}", artist, title);
         let url = format!("{}/search?q={}", LRCLIB_API, encode(&query));
+        let want = Lookup::new(artist, title, "", 0.0);
+        let title_only = want.artist.trim().is_empty();
 
         for attempt in 0..2 {
             if let Ok(resp) = self.client.get(&url).send().await
@@ -366,11 +396,11 @@ impl LyricsManager {
                 // Prefer a synced (timestamped) result across all fuzzy
                 // matches; a plain result is a last-resort fallback. Malformed
                 // entries are skipped so a single bad hit can't abort the list.
-                let picked = pick_best_result(&results, |artist_name, track_name| {
-                    fuzzy_match(artist_name, artist) && fuzzy_match(track_name, title)
-                });
+                let picked = pick_best_result(&results, &want, title_only);
                 if let Some(lrc) = picked {
-                    self.write_cache_key(&key, &lrc);
+                    if has_artist {
+                        self.write_cache_key(&key, &lrc);
+                    }
                     return Some(lrc);
                 }
                 // No fuzzy match on artist+title: prefer no lyrics over a
@@ -417,12 +447,12 @@ impl LyricsManager {
     /// a sanitized "Artist - Title" (plus a short content hash) so the same
     /// song shares one entry regardless of where the file lives.
     ///
-    /// The name is prefixed with [`CACHE_VERSION`]. Entries written before the
-    /// `syncedLyrics` fix hold untimed `plainLyrics` text under the key of a
-    /// track that does have synced lyrics, and both lookup paths read the cache
-    /// before reaching the network — so without the prefix every track would
-    /// keep serving its poisoned copy and the parser fix would look inert.
-    /// Versioning the name retires them with no migration step.
+    /// The name is prefixed with [`CACHE_VERSION`]. Both lookup paths read the
+    /// cache before reaching the network, so a bad entry would otherwise be
+    /// self-perpetuating. The prefix retired the entries written before the
+    /// `syncedLyrics` fix, and later retired the artist/title-only keys that
+    /// let different recordings share one entry. Versioning the name retires
+    /// them with no migration step.
     fn cache_path(&self, key: &str) -> Option<PathBuf> {
         let dir = self.cache_dir.as_ref()?;
         let sanitized: String = key
@@ -443,11 +473,31 @@ impl LyricsManager {
         Some(dir.join(name))
     }
 
-    /// Build the cache key for a track: "Artist - Title", falling back to the
-    /// file stem when no tags are present.
+    /// Build the cache key for a track: "Artist - Title", plus the album and a
+    /// duration bucket when they are known.
+    ///
+    /// The same recording still shares one entry across files and providers,
+    /// but two recordings with the same artist and title no longer do. Without
+    /// that distinction a live version, a remix, or a different album cut could
+    /// satisfy a timed cache read before the network ever saw the new track.
     fn track_cache_key(&self, track: &TrackInfo) -> Option<String> {
         if !track.artist.is_empty() || !track.title.is_empty() {
-            Some(format!("{} - {}", track.artist, track.title))
+            let mut key = format!("{} - {}", track.artist, track.title);
+            let album = track.album.trim();
+            if !album.is_empty() {
+                key.push_str(" [");
+                key.push_str(album);
+                key.push(']');
+            }
+            let duration = track_duration(track);
+            if duration >= 1.0 {
+                // A five-second bucket keeps the same recording cached across
+                // tag/container rounding without letting a live or extended
+                // version share the studio entry.
+                let bucket = ((duration / 5.0).round() * 5.0).max(5.0);
+                key.push_str(&format!(" [{}s]", bucket as u64));
+            }
+            Some(key)
         } else {
             Path::new(&track.path)
                 .file_stem()
@@ -506,16 +556,18 @@ impl LyricsManager {
         }
     }
 
-    async fn fetch_lrclib_exact(&self, track: &TrackInfo) -> Option<LrcData> {
+    async fn fetch_lrclib_exact(&self, want: &Lookup<'_>) -> Option<LrcData> {
         let mut url = format!(
             "{}/get?artist_name={}&track_name={}&album_name={}",
             LRCLIB_API,
-            encode(&track.artist),
-            encode(&track.title),
-            encode(&track.album),
+            encode(want.artist),
+            encode(want.title),
+            encode(want.album),
         );
-        if track.duration >= 1.0 {
-            url.push_str(&format!("&duration={}", track.duration as u64));
+        if want.duration >= 1.0 {
+            // lrclib stores whole seconds; round rather than truncate so a
+            // 240.7s tag does not ask for the 240s record and miss.
+            url.push_str(&format!("&duration={}", want.duration.round() as u64));
         }
 
         let resp = self.client.get(&url).send().await.ok()?;
@@ -524,37 +576,51 @@ impl LyricsManager {
         }
 
         let json: serde_json::Value = resp.json().await.ok()?;
+        // `/api/get` is documented as an exact lookup, but re-check what it
+        // actually returned. A server-side fallback must not smuggle in a
+        // different version just because the request was precise.
+        candidate_score(&json, want, false)?;
         parse_lrclib_response(&json)
     }
 
-    async fn fetch_lrclib_search(&self, track: &TrackInfo) -> Option<LrcData> {
-        let query = format!("{} {}", track.artist, track.title);
-        let url = format!("{}/search?q={}", LRCLIB_API, encode(&query));
+    async fn fetch_lrclib_search(&self, want: &Lookup<'_>) -> Option<LrcData> {
+        let artist = want.artist.trim();
+        let primary = primary_artist(artist);
+        let mut artists = vec![artist];
+        if !primary.is_empty() && primary != artist {
+            artists.push(primary);
+        }
 
-        for attempt in 0..2 {
-            if let Ok(resp) = self.client.get(&url).send().await
-                && resp.status().is_success()
-                && let Ok(results) = resp.json::<Vec<serde_json::Value>>().await
-            {
-                // Prefer a synced (timestamped) result across all fuzzy
-                // matches; a plain result is a last-resort fallback so a
-                // wrong song's lyrics are never shown.
-                return pick_best_result(&results, |artist_name, track_name| {
-                    fuzzy_match(artist_name, &track.artist) && fuzzy_match(track_name, &track.title)
-                });
-            }
-            if attempt == 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        for artist in artists {
+            let query = format!("{} {}", artist, want.title);
+            let url = format!("{}/search?q={}", LRCLIB_API, encode(&query));
+
+            for attempt in 0..2 {
+                if let Ok(resp) = self.client.get(&url).send().await
+                    && resp.status().is_success()
+                    && let Ok(results) = resp.json::<Vec<serde_json::Value>>().await
+                {
+                    // Prefer a synced (timestamped) result across all fuzzy
+                    // matches; a plain result is a last-resort fallback so a
+                    // wrong song's lyrics are never shown.
+                    if let Some(lrc) = pick_best_result(&results, want, false) {
+                        return Some(lrc);
+                    }
+                    break;
+                }
+                if attempt == 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
             }
         }
         None
     }
 
-    async fn fetch_lrclib_title(&self, title: &str) -> Option<LrcData> {
-        if title.is_empty() {
+    async fn fetch_lrclib_title(&self, want: &Lookup<'_>) -> Option<LrcData> {
+        if want.title.trim().is_empty() {
             return None;
         }
-        let url = format!("{}/search?q={}", LRCLIB_API, encode(title));
+        let url = format!("{}/search?q={}", LRCLIB_API, encode(want.title));
 
         let resp = self.client.get(&url).send().await.ok()?;
         if !resp.status().is_success() {
@@ -562,9 +628,10 @@ impl LyricsManager {
         }
 
         let results: Vec<serde_json::Value> = resp.json().await.ok()?;
-        // Prefer a synced (timestamped) result across all title fuzzy
-        // matches; plain results are a last-resort fallback.
-        pick_best_result(&results, |_, track_name| fuzzy_match(track_name, title))
+        // Title-only is the narrow fallback for a track with no artist tag.
+        // It requires the same normalized title (and the same duration when
+        // one is known) rather than a loose fuzzy hit by any artist.
+        pick_best_result(&results, want, true)
     }
 }
 
@@ -632,36 +699,207 @@ fn has_timed_lines(lrc: &LrcData) -> bool {
     lrc.lines.iter().any(|l| l.timestamp >= 0.0)
 }
 
-/// Pick the best candidate from already-match-checked lrclib results. A
-/// candidate with genuinely timestamped lines (the synced/LRC variant) wins
-/// even when it appears after a plain one; otherwise the first plain
-/// candidate is used as a fallback.
+/// The metadata a lookup is trying to match against. lrclib returns a list,
+/// not a single answer, and the first fuzzy hit is often a different version
+/// of the song rather than the one that is playing.
+struct Lookup<'a> {
+    artist: &'a str,
+    title: &'a str,
+    album: &'a str,
+    duration: f64,
+}
+
+impl<'a> Lookup<'a> {
+    fn new(artist: &'a str, title: &'a str, album: &'a str, duration: f64) -> Self {
+        Self {
+            artist,
+            title,
+            album,
+            duration,
+        }
+    }
+
+    fn for_track(track: &'a TrackInfo) -> Self {
+        Self {
+            artist: &track.artist,
+            title: &track.title,
+            album: &track.album,
+            duration: track_duration(track),
+        }
+    }
+}
+
+fn track_duration(track: &TrackInfo) -> f64 {
+    if track.duration >= 1.0 {
+        track.duration
+    } else {
+        track.actual_duration.filter(|d| *d >= 1.0).unwrap_or(0.0)
+    }
+}
+
+fn normalized_similarity(a: &str, b: &str) -> f64 {
+    jaro_winkler_similarity(&normalize_for_match(a), &normalize_for_match(b))
+}
+
+/// The lead artist, without a featuring credit or a comma-separated guest.
+///
+/// Provider metadata often says `"Drake, Future"` or `"Drake feat. Rihanna"`
+/// while lrclib has the track under one of those names. Comparing only the
+/// full credit misses a valid match and used to send the lookup into a
+/// title-only fallback, which is where an unrelated artist's song could win.
+fn primary_artist(artist: &str) -> &str {
+    let artist = artist.trim();
+    let head = artist.split(',').next().unwrap_or(artist).trim();
+    let lower = head.to_ascii_lowercase();
+    let mut cut = head.len();
+    for marker in [
+        " feat. ",
+        " feat ",
+        " ft. ",
+        " ft ",
+        " featuring ",
+        " with ",
+    ] {
+        if let Some(pos) = lower.find(marker) {
+            cut = cut.min(pos);
+        }
+    }
+    head[..cut].trim()
+}
+
+fn artist_similarity(candidate: &str, wanted: &str) -> f64 {
+    let candidate_primary = primary_artist(candidate);
+    let wanted_primary = primary_artist(wanted);
+    normalized_similarity(candidate, wanted)
+        .max(normalized_similarity(candidate_primary, wanted))
+        .max(normalized_similarity(candidate, wanted_primary))
+        .max(normalized_similarity(candidate_primary, wanted_primary))
+}
+
+/// Version words present in a title/album pair. A live recording, remix,
+/// acoustic take or karaoke track is not the same lyrics even when the artist
+/// and the base title match.
+fn version_tags(title: &str, album: &str) -> Vec<&'static str> {
+    let text = format!("{title} {album}").to_lowercase();
+    let words: Vec<&str> = text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    VERSION_TAGS
+        .iter()
+        .copied()
+        .filter(|tag| words.iter().any(|w| w == tag))
+        .collect()
+}
+
+/// Score one lrclib record against the track that is playing. Returning `None`
+/// is a rejection, not a low score: a candidate that disagrees on artist,
+/// title, version, or duration cannot be the right lyrics.
+fn candidate_score(result: &serde_json::Value, want: &Lookup<'_>, title_only: bool) -> Option<f64> {
+    let artist = result.get("artistName").and_then(|v| v.as_str())?;
+    let title = result.get("trackName").and_then(|v| v.as_str())?;
+    let album = result
+        .get("albumName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let duration = result
+        .get("duration")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    if want.title.trim().is_empty() {
+        return None;
+    }
+
+    let title_similarity = normalized_similarity(title, want.title);
+    if title_only {
+        // No artist to corroborate a fuzzy title. Require the same title
+        // spelled the same way after normalization.
+        if normalize_for_match(title) != normalize_for_match(want.title) {
+            return None;
+        }
+    } else if title_similarity < FUZZY_THRESHOLD {
+        return None;
+    }
+
+    let mut score = title_similarity * 4.0;
+    if !title_only {
+        let artist_similarity = artist_similarity(artist, want.artist);
+        if artist_similarity < FUZZY_THRESHOLD {
+            return None;
+        }
+        score += artist_similarity * 3.0;
+    }
+
+    if version_tags(title, album) != version_tags(want.title, want.album) {
+        return None;
+    }
+
+    if !want.album.trim().is_empty() && !album.trim().is_empty() {
+        let album_similarity = normalized_similarity(album, want.album);
+        if album_similarity >= FUZZY_THRESHOLD {
+            score += album_similarity * 2.0;
+        } else {
+            // A different album is common for a valid single/compilation
+            // release, so this is a demotion, not a rejection. Duration still
+            // has to agree.
+            score -= 1.0;
+        }
+    }
+
+    if want.duration >= 1.0 {
+        if duration < 1.0 {
+            // A title-only match with no duration has nothing left to
+            // distinguish it from every other song with that title.
+            if title_only {
+                return None;
+            }
+        } else {
+            let tolerance = if title_only {
+                TITLE_ONLY_TOLERANCE
+            } else {
+                DURATION_TOLERANCE
+            };
+            let difference = (want.duration - duration).abs();
+            if difference > tolerance {
+                return None;
+            }
+            score += (1.0 - difference / tolerance) * 4.0;
+        }
+    }
+
+    Some(score)
+}
+
+/// Pick the highest-scoring candidate from lrclib results. A candidate with
+/// genuinely timestamped lines (the synced/LRC variant) wins over a plain one
+/// regardless of score; within each class, the closest recording wins.
 fn pick_best_result(
     results: &[serde_json::Value],
-    accept: impl Fn(&str, &str) -> bool,
+    want: &Lookup<'_>,
+    title_only: bool,
 ) -> Option<LrcData> {
-    let mut fallback = None;
+    let mut synced: Option<(f64, LrcData)> = None;
+    let mut plain: Option<(f64, LrcData)> = None;
+
     for result in results {
-        let Some(artist_name) = result.get("artistName").and_then(|v| v.as_str()) else {
+        let Some(score) = candidate_score(result, want, title_only) else {
             continue;
         };
-        let Some(track_name) = result.get("trackName").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        if !accept(artist_name, track_name) {
-            continue;
-        }
         let Some(lrc) = parse_lrclib_response(result) else {
             continue;
         };
-        if has_timed_lines(&lrc) {
-            return Some(lrc);
-        }
-        if fallback.is_none() {
-            fallback = Some(lrc);
+        let slot = if has_timed_lines(&lrc) {
+            &mut synced
+        } else {
+            &mut plain
+        };
+        if slot.as_ref().is_none_or(|(best, _)| score > *best) {
+            *slot = Some((score, lrc));
         }
     }
-    fallback
+
+    synced.or(plain).map(|(_, lrc)| lrc)
 }
 
 fn parse_lrclib_response(json: &serde_json::Value) -> Option<LrcData> {
@@ -1162,13 +1400,71 @@ mod tests {
                 "plainLyrics": "I'm blinded by the lights",
             }),
         ];
-        let lrc = pick_best_result(&results, |a, t| a == artist && t == title)
-            .expect("a result should be picked");
+        let want = Lookup::new(artist, title, "", 0.0);
+        let lrc = pick_best_result(&results, &want, false).expect("a result should be picked");
         assert!(has_timed_lines(&lrc));
         assert_eq!(lrc.lines[0].timestamp, 5.0);
 
-        // No fuzzy-matching result -> nothing is served.
-        assert!(pick_best_result(&results, |_, _| false).is_none());
+        // A different artist is not a match, even with the same title.
+        let other = Lookup::new("Another Artist", title, "", 0.0);
+        assert!(pick_best_result(&results, &other, false).is_none());
+    }
+
+    #[test]
+    fn lrclib_prefers_the_playing_recording_over_the_first_hit() {
+        // The live take appears first and has the same duration. It must not
+        // win just because the search returned it first.
+        let results = vec![
+            serde_json::json!({
+                "artistName": "The Band",
+                "trackName": "The Song (Live)",
+                "albumName": "Live at Somewhere",
+                "duration": 240,
+                "syncedLyrics": "[00:05.00]live words",
+            }),
+            serde_json::json!({
+                "artistName": "The Band",
+                "trackName": "The Song",
+                "albumName": "The Album",
+                "duration": 240,
+                "syncedLyrics": "[00:05.00]studio words",
+            }),
+        ];
+        let want = Lookup::new("The Band", "The Song", "The Album", 240.0);
+        let lrc = pick_best_result(&results, &want, false).expect("a result should be picked");
+        assert_eq!(lrc.lines[0].text, "studio words");
+    }
+
+    #[test]
+    fn lrclib_title_only_needs_the_same_title_and_duration() {
+        let results = vec![
+            serde_json::json!({
+                "artistName": "Other Artist",
+                "trackName": "The Song",
+                "duration": 300,
+                "syncedLyrics": "[00:05.00]wrong words",
+            }),
+            serde_json::json!({
+                "artistName": "Right Artist",
+                "trackName": "The Song",
+                "duration": 241,
+                "syncedLyrics": "[00:05.00]right words",
+            }),
+        ];
+        let want = Lookup::new("", "The Song", "", 240.0);
+        let lrc = pick_best_result(&results, &want, true).expect("a result should be picked");
+        assert_eq!(lrc.lines[0].text, "right words");
+    }
+
+    #[test]
+    fn lrclib_matches_a_featured_artist_credit() {
+        let results = vec![serde_json::json!({
+            "artistName": "Drake",
+            "trackName": "Song",
+            "syncedLyrics": "[00:05.00]words",
+        })];
+        let want = Lookup::new("Drake, Future", "Song", "", 0.0);
+        assert!(pick_best_result(&results, &want, false).is_some());
     }
 
     #[test]
@@ -1253,6 +1549,19 @@ mod tests {
             manager.cache_path(manager.track_cache_key(&a).as_deref().unwrap()),
             manager.cache_path(manager.track_cache_key(&b).as_deref().unwrap())
         );
+
+        // Same artist and title, different recording: the cache entry must not
+        // be shared, because a timed hit is served before the network.
+        let live = TrackInfo {
+            album: "Live at Somewhere".to_string(),
+            duration: 300.0,
+            ..b.clone()
+        };
+        assert_ne!(
+            manager.cache_path(manager.track_cache_key(&b).as_deref().unwrap()),
+            manager.cache_path(manager.track_cache_key(&live).as_deref().unwrap())
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

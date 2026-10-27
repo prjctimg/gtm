@@ -123,6 +123,18 @@ impl App {
     /// and the manual one bound to the lyrics key — so both know a provider track
     /// has to be searched by artist and title rather than by path.
     pub(crate) fn fetch_lyrics(&mut self, track: &TrackInfo) {
+        // A live stream's queue row is the station, not the song on air. The
+        // path stays the same for the whole session, so fetching from
+        // `current_track` would either answer for the station name or keep the
+        // previous song's lyrics. Resolve the live title/artist instead.
+        if crate::footer::is_live_stream(&track.path) {
+            match self.live_lyrics_query() {
+                Some((artist, title)) => self.search_lyrics(&artist, &title, None, None),
+                None => self.invalidate_lyrics(),
+            }
+            return;
+        }
+
         let (track_id, path) = (track.id, Some(track.path.clone()));
         match lyrics_query(track) {
             Some((artist, title)) => self.search_lyrics(
@@ -133,6 +145,49 @@ impl App {
             ),
             None => self.library_lyrics(track_id, path),
         }
+    }
+
+    /// The current live song as `(artist, title)`, derived from the ICY title
+    /// and the station's tracklist. `None` until the stream has published a
+    /// song, so the station's own name is never searched for lyrics.
+    fn live_lyrics_query(&self) -> Option<(String, String)> {
+        if self.state.radio_title.as_deref().is_none_or(str::is_empty) {
+            return None;
+        }
+        let (title, artist) = self.live_track()?;
+        let title = title.trim();
+        if title.is_empty() {
+            return None;
+        }
+        let artist = artist.trim();
+        if !artist.is_empty() {
+            return Some((artist.to_string(), title.to_string()));
+        }
+        // ICY often packs "Artist - Title" into one string. Split it only when
+        // no separate artist was published, so a real title containing a dash
+        // is left alone.
+        if let Some((artist, song)) = title.split_once(" - ") {
+            let (artist, song) = (artist.trim(), song.trim());
+            if !artist.is_empty() && !song.is_empty() {
+                return Some((artist.to_string(), song.to_string()));
+            }
+        }
+        Some((String::new(), title.to_string()))
+    }
+
+    /// Drop the displayed lyrics without starting a fetch. Used when the
+    /// playing track (or live song) changed while automatic lyrics were off:
+    /// leaving the old lines in place made the next `l` press toggle the pane
+    /// onto the previous track's lyrics, because it only fetches when the
+    /// current value is empty.
+    pub(crate) fn invalidate_lyrics(&mut self) {
+        self.lyrics.current = None;
+        self.lyrics.kind = LyricsKind::None;
+        self.lyrics.pending_gen = None;
+        self.lyrics.fetching = false;
+        self.lyrics.scroll = 0;
+        self.lyrics.row = None;
+        self.lyrics.manual_scroll = false;
     }
 
     /// Warm the daemon's on-disk lyrics cache for a synced playlist row,
