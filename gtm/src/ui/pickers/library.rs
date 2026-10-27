@@ -8,6 +8,69 @@
 use crate::providers::playlist::PlaylistNameWrite;
 use crate::ui::*;
 
+/// Width of the cover column in the metadata editor when there is room for it.
+const EDIT_COVER_W: u16 = 24;
+
+/// Columns the editable fields need before the cover is allowed beside them.
+const EDIT_FIELDS_MIN_W: u16 = 16;
+
+/// Below this the side cover is too narrow to read, so it moves above the
+/// fields instead of vanishing.
+const EDIT_SIDE_COVER_MIN_W: u16 = 12;
+
+/// Rows of artwork in the stacked narrow layout.
+const EDIT_STACK_COVER_H: u16 = 8;
+
+/// One blank row between stacked artwork and the first field.
+const EDIT_STACK_GAP: u16 = 1;
+
+/// Split the metadata editor into its field list and artwork.
+///
+/// A side-by-side cover needs `EDIT_FIELDS_MIN_W` columns for the values. When
+/// the pane is narrower than that, the artwork used to be dropped entirely
+/// (`cover_col_w = 0`), which made a 20-column terminal look as if the track
+/// had no cover. Anything too narrow for a useful column now gets a centred
+/// cover above the fields, so both the image and the labels remain usable.
+fn edit_metadata_areas(content: Rect) -> (Rect, Rect) {
+    let side_cover_w = content
+        .width
+        .saturating_sub(EDIT_FIELDS_MIN_W)
+        .min(EDIT_COVER_W);
+    if side_cover_w >= EDIT_SIDE_COVER_MIN_W {
+        let hchunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(side_cover_w)])
+            .split(content);
+        let col = hchunks[1];
+        let cover_h = (col.width / 2).max(1).min(col.height);
+        let cover_area = Rect {
+            x: col.x,
+            y: col.y + col.height.saturating_sub(cover_h),
+            width: col.width,
+            height: cover_h,
+        };
+        return (hchunks[0], cover_area);
+    }
+
+    // Seven fields plus the gap; the cover gives way first on short panes.
+    let cover_h = EDIT_STACK_COVER_H.min(content.height.saturating_sub(8));
+    let cover_w = (cover_h * 2).min(content.width);
+    let cover_area = Rect {
+        x: content.x + content.width.saturating_sub(cover_w) / 2,
+        y: content.y,
+        width: cover_w,
+        height: cover_h,
+    };
+    let gap = if cover_h > 0 { EDIT_STACK_GAP } else { 0 };
+    let list_area = Rect {
+        x: content.x,
+        y: content.y + cover_h.saturating_add(gap),
+        width: content.width,
+        height: content.height.saturating_sub(cover_h.saturating_add(gap)),
+    };
+    (list_area, cover_area)
+}
+
 impl Pickers {
     /// The library categories, moved out of the left pane (Alt+.). Up/Down move
     /// the cursor, typing searches the list, Enter switches to the highlighted
@@ -378,23 +441,8 @@ impl Pickers {
             "Track #",
         ];
 
-        const COVER_W_EDIT: u16 = 24;
-        let vchunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0)])
-            .split(inner);
-        let content = vchunks[0];
-        let cover_col_w = if content.width > COVER_W_EDIT + 2 {
-            COVER_W_EDIT
-        } else {
-            0
-        };
-        let hchunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(cover_col_w)])
-            .split(content);
-        let list_area = hchunks[0];
-        let cover_area = hchunks[1];
+        let content = inner;
+        let (list_area, cover_area) = edit_metadata_areas(content);
 
         let mut lines: Vec<Line> = Vec::new();
         let cursor_style = cursor_span_style(app);
@@ -424,17 +472,10 @@ impl Pickers {
         let para = Paragraph::new(lines);
         f.render_widget(para, list_area);
 
-        if cover_area.width > 0 {
-            let cover_h = 12u16.min(cover_area.height);
-            let c_area = Rect {
-                x: cover_area.x,
-                y: cover_area.y + cover_area.height.saturating_sub(cover_h),
-                width: cover_area.width,
-                height: cover_h,
-            };
+        if cover_area.width > 0 && cover_area.height > 0 {
             Render::cover(
                 f,
-                c_area,
+                cover_area,
                 app.metadata.cover_stateful.as_mut(),
                 app.metadata.cover.as_deref(),
                 app.theme.fg_dim,
@@ -537,5 +578,66 @@ impl Pickers {
             }
         }
         f.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn content(width: u16, height: u16) -> Rect {
+        Rect {
+            x: 3,
+            y: 5,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn a_narrow_editor_stacks_the_cover_instead_of_dropping_it() {
+        let content = content(16, 20);
+        let (list, cover) = edit_metadata_areas(content);
+
+        assert_eq!(cover.width, 16, "the cover should shrink to the pane");
+        assert_eq!(cover.height, 8);
+        assert_eq!(list.width, content.width, "fields keep the full width");
+        assert!(
+            cover.y + cover.height <= list.y,
+            "stacked artwork must not overlap the fields"
+        );
+        assert!(list.height >= 7, "all seven fields still fit");
+    }
+
+    #[test]
+    fn a_medium_editor_keeps_the_cover_beside_the_fields() {
+        let content = content(32, 20);
+        let (list, cover) = edit_metadata_areas(content);
+
+        assert_eq!(list.width, EDIT_FIELDS_MIN_W);
+        assert_eq!(cover.width, 16);
+        assert_eq!(cover.height, 8, "the cover keeps its 2:1 cell aspect");
+        assert_eq!(cover.x, content.x + list.width);
+    }
+
+    #[test]
+    fn a_wide_editor_does_not_stretch_the_cover_past_its_column() {
+        let content = content(80, 20);
+        let (list, cover) = edit_metadata_areas(content);
+
+        assert_eq!(cover.width, EDIT_COVER_W);
+        assert_eq!(cover.height, EDIT_COVER_W / 2);
+        assert_eq!(list.width, content.width - EDIT_COVER_W);
+    }
+
+    #[test]
+    fn a_short_editor_gives_the_rows_to_the_fields() {
+        let content = content(16, 8);
+        let (list, cover) = edit_metadata_areas(content);
+
+        assert_eq!(cover.width, 0, "there is no row to spare for artwork");
+        assert_eq!(cover.height, 0);
+        assert_eq!(list.y, content.y);
+        assert_eq!(list.height, content.height);
     }
 }
