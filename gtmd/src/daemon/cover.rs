@@ -469,18 +469,56 @@ impl Cover {
 
     /// Fetch an image URL through the cover cache, so a tracklist-advertised
     /// image reuses the same disk store as every other cover.
+    ///
+    /// Requests for the same URL are serialized, so the second one is a cache
+    /// hit instead of a second download. The whole cover cache is one mutex, so
+    /// without this every queued request fetched again before the first could
+    /// store its result: a single cursor sweep asked for the same chart art
+    /// from the preloader and from the card, and paid for both.
     async fn url_cover(inner: &DaemonInner, url: &str) -> Option<Vec<u8>> {
-        let mut guard = inner.cover_cache().await;
-        let cache = guard.as_mut()?;
-        let client = Self::image_client();
-        let hit = cache
-            .get_url(url, || {
-                let client = client.clone();
-                let url = url.to_string();
-                async move { Self::fetch_image(&client, &url).await }
-            })
-            .await?;
-        Some(hit.data)
+        let gate = Self::url_gate(inner, url).await;
+        let hold = gate.lock().await;
+        let hit = {
+            let mut guard = inner.cover_cache().await;
+            match guard.as_mut() {
+                Some(cache) => {
+                    let client = Self::image_client();
+                    cache
+                        .get_url(url, || {
+                            let client = client.clone();
+                            let url = url.to_string();
+                            async move { Self::fetch_image(&client, &url).await }
+                        })
+                        .await
+                }
+                None => None,
+            }
+        };
+        drop(hold);
+        Self::release_gate(inner, url, &gate).await;
+        Some(hit?.data)
+    }
+
+    /// The gate for one URL, created on first use.
+    async fn url_gate(inner: &DaemonInner, url: &str) -> CoverGate {
+        let mut gates = inner.cover_gates.lock().await;
+        gates
+            .entry(url.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    /// Drop a gate once no request is waiting on it. A waiter still holds a
+    /// clone, so removing it early would let the next arrival start a second
+    /// download before the waiter reaches the cache.
+    async fn release_gate(inner: &DaemonInner, url: &str, gate: &CoverGate) {
+        let mut gates = inner.cover_gates.lock().await;
+        let idle = gates
+            .get(url)
+            .is_some_and(|held| Arc::ptr_eq(held, gate) && Arc::strong_count(held) == 2);
+        if idle {
+            gates.remove(url);
+        }
     }
 
     /// Fetch an arbitrary image URL as base64, through the same disk cache

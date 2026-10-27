@@ -54,6 +54,54 @@ pub(crate) fn cover_gen() -> u64 {
     GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Cache key for an image URL, namespaced so it cannot collide with a library
+/// id.
+fn url_mem_key(url: &str) -> String {
+    let mut key = String::with_capacity(url.len() + 2);
+    key.push_str("u:");
+    key.push_str(url);
+    key
+}
+
+/// Cache key for a library track's cover.
+fn track_mem_key(id: i64) -> String {
+    format!("t:{id}")
+}
+
+impl App {
+    /// URL cover bytes already held, shared by chart rows and library previews.
+    pub(crate) fn cached_url(&mut self, url: &str) -> Option<Vec<u8>> {
+        self.cover_mem.get(&url_mem_key(url)).cloned()
+    }
+
+    /// Cover bytes already held for a library row.
+    pub(crate) fn cached_track(&mut self, id: i64) -> Option<Vec<u8>> {
+        self.cover_mem.get(&track_mem_key(id)).cloned()
+    }
+
+    /// File a URL cover so the next visit paints without another request.
+    pub(crate) fn remember_url(&mut self, url: &str, bytes: &[u8]) {
+        let key = url_mem_key(url);
+        self.cover_warm.remove(&key);
+        self.cover_mem.put(key, bytes.to_vec());
+    }
+
+    /// File a library-row cover so the next visit paints from memory.
+    pub(crate) fn remember_track(&mut self, id: i64, bytes: &[u8]) {
+        let key = track_mem_key(id);
+        self.cover_warm.remove(&key);
+        self.cover_mem.put(key, bytes.to_vec());
+    }
+
+    /// Finish a preloader request, keeping the bytes or just releasing the slot.
+    pub(crate) fn finish_warm(&mut self, key: String, bytes: Option<Vec<u8>>) {
+        self.cover_warm.remove(&key);
+        if let Some(bytes) = bytes {
+            self.cover_mem.put(key, bytes);
+        }
+    }
+}
+
 impl App {
     /// The image protocol for `bytes`, decoded once.
     ///
@@ -307,13 +355,8 @@ impl App {
 
         // Repaint from the last fetch of this id before anything else, so a
         // scroll back onto it does not blank while a fresh request is in
-        // flight. Mirrors the url latch in `fetch_url_cover`.
-        if let Some(bytes) = self
-            .popup_id_cover
-            .as_ref()
-            .filter(|(id, _)| *id == tid)
-            .map(|(_, b)| b.clone())
-        {
+        // flight. Mirrors the url cache hit in `fetch_url_cover`.
+        if let Some(bytes) = self.cached_track(tid) {
             self.track_popup_cover = Some(bytes);
             self.popup_cover_sync();
             self.cover_art_dirty = true;
@@ -496,15 +539,10 @@ impl App {
             return;
         }
         // Repaint from what we still hold, which is what makes the latch safe.
-        // The latch keys the bytes by their url: a hit repaints without a
+        // The cache keys the bytes by their url: a hit repaints without a
         // request, and a miss re-fetches, so a url whose image failed is not
         // memoised as a hit.
-        if let Some(bytes) = self
-            .popup_cover_bytes
-            .as_ref()
-            .filter(|(u, _)| u == &url)
-            .map(|(_, b)| b.clone())
-        {
+        if let Some(bytes) = self.cached_url(&url) {
             self.track_popup_cover = Some(bytes);
             self.popup_cover_sync();
             self.cover_art_dirty = true;
@@ -537,18 +575,18 @@ impl App {
     ///
     /// The card shows one row's cover at a time, so without this every step of
     /// the scroll is a blank card until its request comes back — the list moves
-    /// faster than the network. The daemon's image cache absorbs the repeats, so
-    /// the fetch the card then makes is a hit. Mirrors the local-library warm
-    /// above, which has ids rather than URLs.
-    pub fn preload_chart_covers(&self) {
-        if no_image_protocol() {
+    /// faster than the network. Replies fill the client cache, and the fetch the
+    /// card then makes paints from it. Mirrors the local-library warm above,
+    /// which has ids rather than URLs.
+    pub fn preload_chart_covers(&mut self) {
+        if no_image_protocol() || self.cover_warm.len() >= COVER_WARM_ENTRIES {
             return;
         }
         let first = self.list_scroll;
         let last = first
             .saturating_add(self.viewport_items.max(8))
             .saturating_add(3);
-        let urls: Vec<String> = match self.track_info_kind() {
+        let mut urls: Vec<String> = match self.track_info_kind() {
             TrackInfoKind::Chart => self.charts.charts
                 [first.min(self.charts.charts.len())..last.min(self.charts.charts.len())]
                 .iter()
@@ -562,15 +600,31 @@ impl App {
                 .collect(),
             _ => return,
         };
+        let mut seen = std::collections::HashSet::new();
+        urls.retain(|url| {
+            let key = url_mem_key(url);
+            !self.cover_mem.contains(&key)
+                && !self.cover_warm.contains(&key)
+                && !self.charts.row_fetch.pending(url)
+                && !self.spotify_popup_slot.pending(url)
+                && seen.insert(key)
+        });
+        let room = COVER_WARM_ENTRIES.saturating_sub(self.cover_warm.len());
+        urls.truncate(room);
         if urls.is_empty() {
             return;
         }
+        for url in &urls {
+            self.cover_warm.insert(url_mem_key(url));
+        }
         let client = self.client.clone();
+        let ipc = self.ipc_tx.clone();
         tokio::spawn(async move {
             for url in urls {
                 // A miss is a cache miss like any other; warming is best-effort
                 // and never reports.
-                let _ = client.image_cover(&url).await;
+                let bytes = client.image_cover(&url).await.ok().flatten();
+                let _ = ipc.send(IpcResult::CoverWarm(bytes, url_mem_key(&url)));
             }
         });
     }
@@ -853,9 +907,9 @@ impl App {
     }
 
     /// Preload the cover art for the rows a short scroll ahead of the cursor, so
-    /// fast scrolling (e.g. holding an arrow key) warms the daemon's disk/LRU
-    /// cache and the on-selection fetch becomes a cache hit. Fires in the
-    /// background and never blocks the UI or surfaces errors.
+    /// fast scrolling (e.g. holding an arrow key) warms the daemon and fills the
+    /// client cache, making the on-selection fetch a hit. Fires in the background
+    /// and never blocks the UI or surfaces errors.
     ///
     /// Called on every cursor move in every category, and each one starts from
     /// what the current list actually holds rather than assuming a shape: a
@@ -863,6 +917,9 @@ impl App {
     /// are album images. Both are named by URL, so they go out as image
     /// requests; only a local row has an id to look up.
     pub fn preload_row_covers(&mut self) {
+        if no_image_protocol() {
+            return;
+        }
         self.preload_spot_covers();
         // Chart rows have no library id, so `track_id_at` finds nothing for
         // them and the loop below would warm nothing.
@@ -890,18 +947,51 @@ impl App {
                 urls.push(url);
             }
         }
+        let mut seen = std::collections::HashSet::new();
+        ids.retain(|id| {
+            let key = track_mem_key(*id);
+            !self.cover_mem.contains(&key)
+                && !self.cover_warm.contains(&key)
+                && !self.popup_slot.pending(id)
+                && seen.insert(key)
+        });
+        let mut seen = std::collections::HashSet::new();
+        urls.retain(|url| {
+            let key = url_mem_key(url);
+            !self.cover_mem.contains(&key)
+                && !self.cover_warm.contains(&key)
+                && !self.spotify_popup_slot.pending(url)
+                && !self.charts.row_fetch.pending(url)
+                && seen.insert(key)
+        });
+        let room = COVER_WARM_ENTRIES.saturating_sub(self.cover_warm.len());
+        let id_room = ids.len().min(room);
+        ids.truncate(id_room);
+        urls.truncate(room - id_room);
+        for id in &ids {
+            self.cover_warm.insert(track_mem_key(*id));
+        }
+        for url in &urls {
+            self.cover_warm.insert(url_mem_key(url));
+        }
         if ids.is_empty() && urls.is_empty() {
             return;
         }
         let client = self.client.clone();
+        let ipc = self.ipc_tx.clone();
         tokio::spawn(async move {
             for id in ids {
                 // Errors (track without cover / daemon lookup fail) are fine:
                 // a warm miss is simply skipped next time.
-                let _ = client.art().cover(id).await;
+                let bytes = match client.art().cover(id).await {
+                    Ok(Some(encoded)) => b64(encoded),
+                    _ => None,
+                };
+                let _ = ipc.send(IpcResult::CoverWarm(bytes, track_mem_key(id)));
             }
             for url in urls {
-                let _ = client.image_cover(&url).await;
+                let bytes = client.image_cover(&url).await.ok().flatten();
+                let _ = ipc.send(IpcResult::CoverWarm(bytes, url_mem_key(&url)));
             }
         });
     }
@@ -937,6 +1027,15 @@ impl App {
         if self.charts.row_shown.as_deref() == Some(url.as_str()) && self.charts.row_cover.is_some()
         {
             self.charts.row_cover_index = Some(index);
+            return;
+        }
+        if let Some(bytes) = self.cached_url(&url) {
+            self.charts.row_cover = Some(bytes);
+            self.charts.row_cover_index = Some(index);
+            self.charts.row_shown = Some(url);
+            self.charts.row_fetch.clear();
+            self.chart_cover_sync();
+            self.cover_art_dirty = true;
             return;
         }
         if self.charts.row_fetch.pending(&url) {

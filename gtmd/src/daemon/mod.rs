@@ -75,6 +75,8 @@ use crate::youtube::{YoutubeManager, download_into};
 
 type ClientId = u64;
 type ReplyTx = mpsc::UnboundedSender<(u64, DaemonRes)>;
+pub(crate) type CoverGate = Arc<tokio::sync::Mutex<()>>;
+pub(crate) type CoverGates = std::collections::HashMap<String, CoverGate>;
 
 pub mod charts;
 pub mod cover;
@@ -1824,6 +1826,10 @@ pub(crate) struct DaemonInner {
     /// the next track to start. Replaced whole on every push.
     pub(crate) pushed: Arc<tokio::sync::Mutex<Vec<DaemonEvent>>>,
     pub(crate) cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
+    /// One gate per URL currently being fetched. The cover cache is a single
+    /// mutex, so two surfaces requesting the same image would otherwise queue
+    /// behind each other and each fetch it before the first stored the result.
+    pub(crate) cover_gates: tokio::sync::Mutex<CoverGates>,
     pub(crate) lyrics_manager: tokio::sync::Mutex<Option<LyricsManager>>,
     /// `Arc` so a detached scrobble can own the client without borrowing the
     /// whole daemon state. See [`Cmd::scrobble_detached`].
@@ -2393,6 +2399,7 @@ impl Daemon {
             event_tx: event_tx.clone(),
             pushed: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             cover_cache: tokio::sync::Mutex::new(None),
+            cover_gates: tokio::sync::Mutex::new(CoverGates::new()),
             cover_provider_override: tokio::sync::Mutex::new(None),
             #[cfg(feature = "mpris")]
             mpris: tokio::sync::Mutex::new(None),

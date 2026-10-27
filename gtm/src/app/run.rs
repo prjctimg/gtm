@@ -1284,11 +1284,13 @@ impl App {
                         }
                     }
                     IpcResult::PopupCoverArt(cover, track_id, fetch_gen) => {
+                        if let Some(bytes) = &cover {
+                            self.remember_track(track_id, bytes);
+                        }
                         if !no_image_protocol()
                             && self.popup_track_id == Some(track_id)
                             && self.popup_slot.matches(fetch_gen)
                         {
-                            self.popup_id_cover = cover.clone().map(|bytes| (track_id, bytes));
                             self.track_popup_cover = cover;
                             self.popup_cover_sync();
                             self.cover_art_dirty = true;
@@ -1326,11 +1328,13 @@ impl App {
                         }
                     }
                     IpcResult::SpotifyPopupCover(cover, url, fetch_gen) => {
+                        if let Some(bytes) = &cover {
+                            self.remember_url(&url, bytes);
+                        }
                         if !no_image_protocol()
                             && self.spotify_popup_slot.id.as_deref() == Some(&url)
                             && self.spotify_popup_slot.matches(fetch_gen)
                         {
-                            self.popup_cover_bytes = cover.clone().map(|bytes| (url, bytes));
                             self.track_popup_cover = cover;
                             self.popup_cover_sync();
                             self.cover_art_dirty = true;
@@ -1408,6 +1412,9 @@ impl App {
                         // Same guards as the Spotify row cover: the reply has to
                         // match the url still being awaited and the generation
                         // the cursor is on, or a slow reply paints the wrong row.
+                        if let Some(bytes) = &cover {
+                            self.remember_url(&url, bytes);
+                        }
                         if !no_image_protocol()
                             && self.charts.row_fetch.id.as_deref() == Some(&url)
                             && self.charts.row_fetch.matches(fetch_gen)
@@ -1435,6 +1442,7 @@ impl App {
                             tracing::debug!("dropped a stale chart cover for {url}");
                         }
                     }
+                    IpcResult::CoverWarm(cover, key) => self.finish_warm(key, cover),
                     IpcResult::SpotifyListCover(cover, url, fetch_gen) => {
                         if !no_image_protocol()
                             && self.spotify.list_fetch.id.as_deref() == Some(&url)

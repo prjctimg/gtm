@@ -69,6 +69,11 @@ pub(crate) use crate::ui::{
 };
 pub(crate) use crate::visualizer::{AudioVisualizer, VisualizerPreset};
 pub const NUM_SETTINGS_CATEGORIES: usize = 3;
+/// Covers held by the client, shared by chart rows and library previews.
+/// Bounded because "All Tracks" is a union of whole playlists.
+pub(crate) const COVER_MEM_ENTRIES: usize = 64;
+/// Cover preloader requests allowed in flight at once.
+pub(crate) const COVER_WARM_ENTRIES: usize = 128;
 /// The library views, in the order the left pane lists them.
 ///
 /// All Tracks, Albums, Artists and Genres were four of these. They are one view
@@ -690,15 +695,13 @@ pub struct App {
     /// In-flight fetch slot for the Spotify drill-down popup cover, keyed by
     /// the track's album-image URL instead of a local library id.
     pub(crate) spotify_popup_slot: FetchSlot<String>,
-    /// The last url-addressed popup cover fetched, kept so scrolling back onto
-    /// it repaints instead of showing a blank card. One entry on purpose: it is
-    /// a cursor-move memo, not a cache, and "All Tracks" is a union of whole
-    /// playlists that would make a growing map hold the library in RAM.
-    pub(crate) popup_cover_bytes: Option<(String, Vec<u8>)>,
-    /// Last fetched library-id cover, mirroring [`App::popup_cover_bytes`] for
-    /// the id path: a fast scroll back onto a row repaints it instead of
-    /// blanking while a fresh request is in flight.
-    pub(crate) popup_id_cover: Option<(i64, Vec<u8>)>,
+    /// Covers already fetched, keyed by image URL or library id and shared by
+    /// chart rows and library previews so scrolling back repaints instead of
+    /// blanking while a new request is in flight.
+    pub(crate) cover_mem: lru::LruCache<String, Vec<u8>>,
+    /// Cover fetches the preloader has already started. Held only until the
+    /// reply lands, so a cursor sweep does not duplicate an in-flight GET.
+    pub(crate) cover_warm: std::collections::HashSet<String>,
     /// Cover art for the SearchLibrary picker preview window.
     pub picker_preview_cover: Option<Vec<u8>>,
     pub picker_preview_stateful: Option<StatefulProtocol>,
@@ -755,6 +758,10 @@ pub(crate) enum IpcResult {
     /// pane's card and the popup card are two surfaces drawing two slots, and a
     /// shared variant meant whichever replied last cleared the other's image.
     ChartRowCover(Option<Vec<u8>>, String, u64),
+    /// Bytes fetched by the background cover preloader, keyed by its cache key.
+    /// Not a display slot: the row that asked may already be gone, so this only
+    /// fills the cache for the next visit.
+    CoverWarm(Option<Vec<u8>>, String),
     /// Album cover bytes for the highlighted Spotify drill-down row, keyed by
     /// its image URL (guarded via `spotify_popup_slot`).
     SpotifyPopupCover(Option<Vec<u8>>, String, u64),
@@ -1680,8 +1687,8 @@ impl App {
             popup_cover_stateful: None,
             popup_slot: FetchSlot::default(),
             spotify_popup_slot: FetchSlot::default(),
-            popup_cover_bytes: None,
-            popup_id_cover: None,
+            cover_mem: lru::LruCache::new(std::num::NonZeroUsize::new(COVER_MEM_ENTRIES).unwrap()),
+            cover_warm: std::collections::HashSet::new(),
             picker_preview_cover: None,
             picker_preview_stateful: None,
             picker_slot: FetchSlot::default(),

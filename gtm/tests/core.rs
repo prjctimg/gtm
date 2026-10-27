@@ -4127,7 +4127,37 @@ fn charts_and_radio_rows_all_describe_themselves() {
     // The rows of a loaded chart are warmed around the cursor, not just the one
     // under it: the card shows a single row's art, so without this every step
     // of a scroll is a blank card.
-    assert!(cover.contains("pub fn preload_chart_covers(&self) {"));
+    assert!(cover.contains("pub fn preload_chart_covers(&mut self) {"));
+    // A warm is only useful if its bytes survive the trip. The preloader must
+    // answer through the cache, and both the chart card and a remote library
+    // preview must consult it before starting another image request.
+    assert!(
+        cover.contains("let _ = ipc.send(IpcResult::CoverWarm(bytes, url_mem_key(&url)));"),
+        "the preloader still throws its cover bytes away"
+    );
+    assert!(
+        cover.contains("if let Some(bytes) = self.cached_url(&url) {"),
+        "no URL-cover cache hit path, so every visit fetches again"
+    );
+    assert!(
+        cover.contains("if let Some(bytes) = self.cached_track(tid) {"),
+        "library rows still use a one-entry memo instead of the shared cache"
+    );
+    assert!(
+        cover.contains("let _ = ipc.send(IpcResult::CoverWarm(bytes, track_mem_key(id)));"),
+        "the local preloader still throws its cover bytes away"
+    );
+    assert!(
+        run.contains("IpcResult::CoverWarm(cover, key) => self.finish_warm(key, cover),"),
+        "preloader replies never reach the cache"
+    );
+    // The daemon is the only layer that can coalesce requests from different
+    // client surfaces before either has bytes to cache.
+    let daemon_cover = include_str!("../../gtmd/src/daemon/cover.rs");
+    assert!(
+        daemon_cover.contains("let gate = Self::url_gate(inner, url).await;"),
+        "same-URL cover requests are not coalesced, so they download twice"
+    );
     // Warmed from every cursor move, keyed on the loaded rows rather than on a
     // category index: the chart list is three levels deep and only the last has
     // rows, so a category test either fired on the wrong level or not at all.
