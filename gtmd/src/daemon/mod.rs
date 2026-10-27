@@ -286,6 +286,14 @@ impl Cmd {
         // Bump first so any in-flight auto-advance/crossfade task sees a
         // session change and backs out before it touches state.
         inner.play_session.fetch_add(1, Ordering::Release);
+        // The outgoing track keeps sounding while the replacement is prepared;
+        // its transport events must not advance the queue or overwrite state.
+        let preparing = PreparingGuard::new(&inner.preparing);
+        // A selected track supersedes an automatic crossfade. Restore the
+        // outgoing track and discard the partially faded-in standby instead of
+        // letting the crossfade finish underneath the new load.
+        inner.mixer.lock().await.cancel_crossfade();
+        *inner.crossfade_loaded_for.lock().await = None;
         // Playing anything that is not a station takes the output away from
         // radio for good, including on an auto-advance: `step_next` cycles
         // `radio_history` whenever it lands on a station, so leaving the ring
@@ -300,8 +308,11 @@ impl Cmd {
             // librespot connects and plays as one step. The saved row names the
             // track, so the UI shows it and pressing play connects.
             if silent {
+                drop(preparing);
                 return Self::restore_remote(inner, path, start_pos).await;
             }
+            // The stream path takes over the guard itself.
+            drop(preparing);
             return Cmd::play_stream(inner, path, start_pos, auto_advanced, queue_index).await;
         }
         if parse_remote_path(path).is_some() {
@@ -312,24 +323,18 @@ impl Cmd {
             // The track is named and positioned from the saved state; pressing
             // play connects.
             if silent {
+                drop(preparing);
                 return Self::restore_remote(inner, path, start_pos).await;
             }
+            // The remote path takes over the guard itself.
+            drop(preparing);
             return Cmd::play_remote(inner, path, start_pos, auto_advanced, queue_index).await;
         }
-        // Local file: halt any active librespot stream so it stops decoding.
-        inner.stream.lock().await.reset();
-        {
-            let mut mixer = inner.mixer.lock().await;
-            mixer.stop()?;
-        }
-        *inner.crossfade_loaded_for.lock().await = None;
-        {
-            let mut state = inner.state.write().await;
-            if state.status != PlaybackStatus::Stopped {
-                state.stop()?;
-            }
-        }
-
+        // Local file: open, probe and metadata-resolve the incoming track
+        // while the outgoing one is still sounding. Nothing is stopped until
+        // the decoded source is ready to hand to the mixer. The guard keeps the
+        // outgoing transport's Finished/Error events from advancing or
+        // overwriting state during that window.
         let path_owned = path.to_string();
         let path_for_blocking = path_owned.clone();
         let source =
@@ -337,18 +342,10 @@ impl Cmd {
                 .await
                 .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
                 .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
-
-        let dur = {
-            let mut mixer = inner.mixer.lock().await;
-            // `load_active_decoded` leaves the player paused, so a silent load
-            // is just the load: the source is decoded and positioned and nothing
-            // reaches the output.
-            mixer.load_active_decoded(source, start_pos)?;
-            if !silent {
-                mixer.play()?;
-            }
-            mixer.duration()
-        };
+        let dur_hint = source
+            .total_duration()
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
 
         // Reuse metadata already held by the queue or the current track instead
         // of re-resolving from disk/library on every play. Stepping through a
@@ -367,25 +364,29 @@ impl Cmd {
             })
         };
         let track = match queued {
-            Some(t) if t.duration > 0.0 || dur <= 0.0 => t,
-            _ => Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur).await,
+            Some(t) if t.duration > 0.0 || dur_hint <= 0.0 => t,
+            _ => {
+                Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur_hint).await
+            }
         };
 
-        // Scrobble previous track before switching. The state guard is taken
-        // and dropped in a single scoped block so it is always released (a
-        // second write() below would otherwise deadlock when there was no
-        // previous track to scrobble).
-        let (prev_track, prev_pos) = {
-            let mut state = inner.state.write().await;
-            let prev = state.current_track.take();
-            let pos = state.time_pos.max(0.0);
-            (prev, pos)
+        // The source is prepared; only now does the old output go away. The
+        // mixer loads the replacement paused, so the outgoing librespot stream
+        // can keep sounding until the local source has been primed.
+        let dur = {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.load_active_decoded(source, start_pos)?;
+            mixer.duration()
         };
-        if let Some(prev_track) = prev_track {
-            Cmd::scrobble_detached(inner, &prev_track, prev_pos).await;
-            let mut state = inner.state.write().await;
-            state.current_track = Some(prev_track); // Restore for potential re-play
+        // Stop librespot only after the incoming local source is ready. Doing
+        // this before the load would cut a Spotify track while the replacement
+        // was still being prepared.
+        inner.stream.lock().await.reset();
+        if !silent {
+            inner.mixer.lock().await.play()?;
         }
+
+        Self::stop_current_for_play(inner, !silent).await?;
 
         let mut state = inner.state.write().await;
         queue::promote(&mut state, &track.path, queue_index);
@@ -419,9 +420,40 @@ impl Cmd {
             );
         }
 
+        // The new track owns transport events from here. Do not keep the
+        // preparation guard through the Last.fm handshake: a short track could
+        // finish while that call is in flight and its Finished event would be
+        // discarded, leaving the queue stalled.
+        drop(preparing);
+
         // Update Last.fm now playing
         Self::announce_now_playing(inner).await;
         Ok(DaemonRes::Ok)
+    }
+
+    /// Leave the current track only after its replacement is ready to play.
+    ///
+    /// Captures the outgoing track and position for Last.fm first, then applies
+    /// the state transition. The scrobble itself is detached, so it cannot
+    /// delay the first sample of the incoming track.
+    async fn stop_current_for_play(inner: &DaemonInner, scrobble: bool) -> Result<(), CoreError> {
+        let (prev_track, prev_pos) = {
+            let mut state = inner.state.write().await;
+            let previous = if scrobble {
+                state.current_track.clone()
+            } else {
+                None
+            };
+            let pos = state.time_pos.max(0.0);
+            if state.status != PlaybackStatus::Stopped {
+                state.stop()?;
+            }
+            (previous, pos)
+        };
+        if let Some(track) = prev_track {
+            Cmd::scrobble_detached(inner, &track, prev_pos).await;
+        }
+        Ok(())
     }
 
     /// Name a restored network source without connecting to it.
@@ -600,6 +632,8 @@ impl Cmd {
         queue_index: Option<usize>,
     ) -> Result<DaemonRes, CoreError> {
         inner.play_session.fetch_add(1, Ordering::Release);
+        // The outgoing transport is stale while librespot connects and primes.
+        let preparing = PreparingGuard::new(&inner.preparing);
         // Read every gate and the client under one lock, then refresh the token
         // off-lock so a stalled Spotify request cannot block every other
         // transport command.
@@ -624,7 +658,9 @@ impl Cmd {
             // resolves the metadata for any linked account and a yt-dlp search
             // resolves the rest, so the row plays like any other remote instead
             // of refusing: refusing here is what left a queue full of rows that
-            // looked playable and were not.
+            // looked playable and were not. The fallback owns its own
+            // preparation guard.
+            drop(preparing);
             return Self::play_spotify_fallback(
                 inner,
                 uri_path,
@@ -649,31 +685,11 @@ impl Cmd {
         };
         let config_dir = inner.config.config_dir.clone();
 
-        {
-            let mut mixer = inner.mixer.lock().await;
-            mixer.stop()?;
-        }
-        *inner.crossfade_loaded_for.lock().await = None;
-        {
-            let mut state = inner.state.write().await;
-            if state.status != PlaybackStatus::Stopped {
-                state.stop()?;
-            }
-        }
-
-        // Scrobble whatever was playing before the stream is swapped out.
-        let (prev_track, prev_pos) = {
-            let mut state = inner.state.write().await;
-            let prev = state.current_track.take();
-            let pos = state.time_pos.max(0.0);
-            (prev, pos)
-        };
-        if let Some(prev_track) = prev_track {
-            Cmd::scrobble_detached(inner, &prev_track, prev_pos).await;
-            let mut state = inner.state.write().await;
-            state.current_track = Some(prev_track);
-        }
-
+        // Ask librespot for the stream while the previous track is still
+        // sounding. The returned source is not consumed until the mixer primes
+        // it below; librespot's single-player design is why this path cannot
+        // overlap two provider streams, but a local outgoing track is not
+        // interrupted while the request is in flight.
         let source = {
             let mut stream = inner.stream.lock().await;
             match stream
@@ -696,7 +712,8 @@ impl Cmd {
             let mut mixer = inner.mixer.lock().await;
             // A decode thread drains the provider source, so its network waits
             // can never stall the output callback, and the ring primes before
-            // this returns so "playing" means audio exists.
+            // this returns so "playing" means audio exists. The outgoing player
+            // is stopped inside this call only after the new ring is primed.
             if let Err(e) =
                 mixer.load_active_stream(Box::new(source), start_pos, duration_hint.unwrap_or(0.0))
             {
@@ -706,8 +723,10 @@ impl Cmd {
             mixer.duration()
         };
 
-        let mut state = inner.state.write().await;
-        let mut track = queue::selected_track(&state, uri_path, queue_index);
+        let mut track = {
+            let state = inner.state.read().await;
+            queue::selected_track(&state, uri_path, queue_index)
+        };
         let track = match track.as_mut() {
             Some(t) => {
                 t.duration = dur;
@@ -720,6 +739,10 @@ impl Cmd {
                 ..Default::default()
             },
         };
+
+        Self::stop_current_for_play(inner, true).await?;
+
+        let mut state = inner.state.write().await;
         queue::promote(&mut state, uri_path, queue_index);
         state.play(track.clone(), source_for_path(&track.path))?;
         state.time_pos = start_pos;
@@ -734,6 +757,7 @@ impl Cmd {
             dur,
             source_for_path(&track.path),
         );
+        drop(preparing);
         Self::announce_now_playing(inner).await;
         Ok(DaemonRes::Ok)
     }
@@ -750,35 +774,13 @@ impl Cmd {
         queue_index: Option<usize>,
     ) -> Result<DaemonRes, CoreError> {
         inner.play_session.fetch_add(1, Ordering::Release);
+        // Resolving and opening the transport can take seconds; keep the
+        // outgoing track's transport events from advancing the queue meanwhile.
+        let preparing = PreparingGuard::new(&inner.preparing);
         let resolved = resolve_remote(inner, path).await?;
         let (url, live) = (resolved.url, resolved.live);
         let kind = parse_remote_path(path)
             .ok_or_else(|| CoreError::Daemon(format!("{path} is not a remote provider path")))?;
-
-        {
-            let mut mixer = inner.mixer.lock().await;
-            mixer.stop()?;
-        }
-        *inner.crossfade_loaded_for.lock().await = None;
-        {
-            let mut state = inner.state.write().await;
-            if state.status != PlaybackStatus::Stopped {
-                state.stop()?;
-            }
-        }
-
-        // Scrobble whatever was playing before the remote stream starts.
-        let (prev_track, prev_pos) = {
-            let mut state = inner.state.write().await;
-            let prev = state.current_track.take();
-            let pos = state.time_pos.max(0.0);
-            (prev, pos)
-        };
-        if let Some(prev_track) = prev_track {
-            Cmd::scrobble_detached(inner, &prev_track, prev_pos).await;
-            let mut state = inner.state.write().await;
-            state.current_track = Some(prev_track);
-        }
 
         // Fetch + probe the provider's stream off the async thread. Live radio
         // does not reconnect for seeks; podcast streams do. Reset any stale
@@ -809,9 +811,11 @@ impl Cmd {
 
         // Favour the existing queue entry's metadata (built client-side from
         // provider data); fall back to a default shaped by the provider kind.
-        let mut state = inner.state.write().await;
-        let mut queue_meta = queue::selected_track(&state, path, queue_index);
-        let track = match queue_meta.as_mut() {
+        let mut track = {
+            let state = inner.state.read().await;
+            queue::selected_track(&state, path, queue_index)
+        };
+        let track = match track.as_mut() {
             Some(t) => {
                 if dur > 0.0 {
                     t.duration = dur;
@@ -858,6 +862,10 @@ impl Cmd {
                 }
             }
         };
+
+        Self::stop_current_for_play(inner, true).await?;
+
+        let mut state = inner.state.write().await;
         queue::promote(&mut state, path, queue_index);
         state.play(track.clone(), source_for_path(&track.path))?;
         state.time_pos = start_pos;
@@ -876,6 +884,7 @@ impl Cmd {
             source_for_path(&track.path),
         );
 
+        drop(preparing);
         Self::announce_now_playing(inner).await;
         Ok(DaemonRes::Ok)
     }
@@ -1235,6 +1244,13 @@ impl Cmd {
         };
         let pos = pos.clamp(0.0, duration.max(0.0));
         tracing::debug!("cmd_seek: requested position={}", pos);
+        // Reloading a source while the old one is still audible has the same
+        // stale-transport window as a track change: suppress the old source's
+        // Finished/Error, and discard any automatic crossfade for a successor
+        // the seek has just superseded.
+        let _preparing = PreparingGuard::new(&inner.preparing);
+        inner.mixer.lock().await.cancel_crossfade();
+        *inner.crossfade_loaded_for.lock().await = None;
         if path.starts_with("spotify:") {
             return Cmd::seek_stream(inner, &path, pos, duration, was_paused).await;
         }
@@ -1888,6 +1904,11 @@ pub(crate) struct DaemonInner {
     /// capture it at spawn time and abort if it has changed, preventing a
     /// stale auto-advance from overwriting a user-initiated playback switch.
     pub(crate) play_session: Arc<AtomicU64>,
+    /// True while a play command is opening, decoding or priming its incoming
+    /// source. The outgoing track is deliberately still sounding during that
+    /// step, so transport events it produces must not advance the queue or
+    /// overwrite the new track.
+    pub(crate) preparing: AtomicBool,
     pub(crate) health: Arc<HealthTracker>,
     pub(crate) active_clients: AtomicUsize,
     pub(crate) internal_req_tx: mpsc::UnboundedSender<DaemonReq>,
@@ -1954,6 +1975,29 @@ impl DaemonInner {
             ));
         }
         guard.clone()
+    }
+}
+
+/// Marks a playback source as being prepared for the lifetime of a `play`
+/// call, restoring the previous flag on every exit path (including the nested
+/// `play_with` call Spotify's fallback makes).
+struct PreparingGuard<'a> {
+    flag: &'a AtomicBool,
+    previous: bool,
+}
+
+impl<'a> PreparingGuard<'a> {
+    fn new(flag: &'a AtomicBool) -> Self {
+        Self {
+            flag,
+            previous: flag.swap(true, Ordering::AcqRel),
+        }
+    }
+}
+
+impl Drop for PreparingGuard<'_> {
+    fn drop(&mut self) {
+        self.flag.store(self.previous, Ordering::Release);
     }
 }
 
@@ -2378,6 +2422,7 @@ impl Daemon {
             sleep_gen: Arc::new(AtomicU64::new(0)),
             sleep_at_end: Arc::new(AtomicBool::new(false)),
             play_session: Arc::new(AtomicU64::new(0)),
+            preparing: AtomicBool::new(false),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             active_clients: AtomicUsize::new(0),
             internal_req_tx,
@@ -4939,6 +4984,15 @@ impl Daemon {
                 return;
             }
         };
+
+        // While a play command is opening/priming its incoming source, the
+        // outgoing source is still running on purpose. Its Finished/Error
+        // events are stale and must not advance the queue; position ticks are
+        // stale too, and suppressing them also stops the old track's tail from
+        // starting a crossfade for a successor the user has already replaced.
+        if inner.preparing.load(Ordering::Acquire) {
+            return;
+        }
 
         match ev {
             AudioEvent::Position(pos) => {

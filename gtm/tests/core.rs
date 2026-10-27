@@ -3063,9 +3063,7 @@ fn crossfade_advances_exactly_once_at_full_volume() {
         "swap_active_standby still reads the outgoing (ramped-to-zero) volume"
     );
     assert!(
-        pulse.contains(
-            "let vol = volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)));"
-        ),
+        pulse.contains("volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)))"),
         "the swap does not use the user's volume"
     );
     // The ALSA mixer was always right; PulseAudio now matches it.
@@ -3093,6 +3091,47 @@ fn crossfade_advances_exactly_once_at_full_volume() {
     assert!(
         daemon.contains("if inner.crossfade_loaded_for.lock().await.take().is_none() {"),
         "finish_crossfade does not claim the crossfade latch atomically"
+    );
+}
+
+/// A selected track must be opened, decoded and primed before the outgoing
+/// source is stopped. The tempting shortcut — stop first, then load — makes a
+/// slow file or provider start audible as a hole between tracks.
+#[test]
+fn selected_play_prepares_before_stopping_outgoing() {
+    let daemon = include_str!("../../gtmd/src/daemon/mod.rs");
+    let start = daemon.find("async fn play_with(").expect("no play_with");
+    let end = daemon
+        .find("async fn stop_current_for_play(")
+        .expect("no stop_current_for_play");
+    let local = &daemon[start..end];
+
+    let decode = local.find("AudioMixer::decode_file").expect("no decode");
+    let load = local
+        .find("mixer.load_active_decoded(source, start_pos)?")
+        .expect("no local load");
+    let reset = local
+        .find("inner.stream.lock().await.reset()")
+        .expect("no librespot reset");
+    let play = local
+        .find("inner.mixer.lock().await.play()?")
+        .expect("no local play");
+    let stop = local
+        .find("Self::stop_current_for_play(inner, !silent)")
+        .expect("no delayed state stop");
+
+    assert!(decode < load, "the source is loaded before it is decoded");
+    assert!(
+        load < reset,
+        "librespot is stopped before the incoming local source is primed"
+    );
+    assert!(
+        reset < play,
+        "the local source starts before the outgoing librespot stream is stopped"
+    );
+    assert!(
+        play < stop,
+        "state is stopped before the replacement source is audible"
     );
 }
 

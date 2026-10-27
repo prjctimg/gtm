@@ -190,6 +190,18 @@ impl Mixer for DeferredMixer {
         }
     }
 
+    fn cancel_crossfade(&mut self) {
+        // No device has been opened yet, so there is no crossfade to cancel.
+        // Calling `ensure_mut` here would defeat the deferred initialisation
+        // for a silent restore or an idle play command.
+        if self.inner.get().is_none() {
+            return;
+        }
+        if let Ok(m) = self.ensure_mut() {
+            m.cancel_crossfade();
+        }
+    }
+
     fn drop_active(&mut self) {
         if let Ok(m) = self.ensure_mut() {
             m.drop_active();

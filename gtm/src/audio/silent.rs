@@ -163,6 +163,11 @@ impl Mixer for NullMixer {
         *self.crossfading.lock().unwrap() = false;
     }
 
+    fn cancel_crossfade(&mut self) {
+        *self.crossfading.lock().unwrap() = false;
+        *self.standby_loaded.lock().unwrap() = false;
+    }
+
     fn drop_active(&mut self) {
         *self.crossfading.lock().unwrap() = false;
         *self.standby_loaded.lock().unwrap() = false;

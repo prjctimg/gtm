@@ -33,7 +33,11 @@ use crate::shared::{MAX_VOLUME, volume_ratio};
 pub(crate) const STREAM_PREBUFFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub trait Mixer: Send + Sync {
+    /// Open, decode and prebuffer `path`, then make it active. The outgoing
+    /// source must keep playing until the replacement has real audio ready.
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()>;
+    /// Load an already-opened decoded source, prebuffering it before the
+    /// outgoing source is stopped.
     fn load_active_decoded(
         &mut self,
         source: Box<dyn Source<Item = f32> + Send>,
@@ -42,9 +46,8 @@ pub trait Mixer: Send + Sync {
     /// Load a provider-decoded sample source (Spotify via librespot) as the
     /// active source. A decode thread owns draining it into the ring buffer,
     /// so a source that blocks waiting on the network can never stall the
-    /// output callback. Unlike [`Self::load_active_decoded`] this waits for
-    /// the ring to prime before returning, and keeps the real track duration so
-    /// seeking and position reporting still work.
+    /// output callback. This waits for the ring to prime before returning and
+    /// keeps the real track duration so seeking and position reporting work.
     fn load_active_stream(
         &mut self,
         source: Box<dyn Source<Item = f32> + Send>,
@@ -86,6 +89,12 @@ pub trait Mixer: Send + Sync {
     fn start_crossfade(&mut self, duration_secs: f64);
     fn is_crossfading(&self) -> bool;
     fn force_complete_crossfade(&mut self);
+    /// Abandon an in-flight crossfade without changing tracks.
+    ///
+    /// The outgoing source stays active and returns to the user's volume; the
+    /// incoming standby is silenced and discarded. Used when a new selected
+    /// track arrives while an automatic transition is already under way.
+    fn cancel_crossfade(&mut self);
     fn drop_active(&mut self);
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>>;
     fn current_peak_level(&self) -> f32;
@@ -256,6 +265,9 @@ impl Mixer for AudioMixer {
     }
     fn force_complete_crossfade(&mut self) {
         self.force_complete_crossfade()
+    }
+    fn cancel_crossfade(&mut self) {
+        self.cancel_crossfade()
     }
     fn drop_active(&mut self) {
         self.drop_active()
@@ -574,17 +586,12 @@ impl AudioMixer {
             PREBUFFER_SAMPLES_REDUCED
         };
         self.first_track = false;
-        Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
 
-        let vol = volume_ratio(self.volume.load(Ordering::SeqCst));
-        self.active().stop();
-        self.active().set_volume(vol);
-
+        // Open, probe and prime the incoming source before touching the
+        // outgoing one. The old track keeps sounding through this whole step,
+        // so a slow disk or header probe can no longer punch a silent gap into
+        // a user-selected track change.
         let dur = Self::probe_duration(path)?;
-        if dur > 0.0 {
-            *self.duration.lock().unwrap() = dur;
-        }
-
         let (control, source, handle) = Self::start_decode_thread(
             path,
             &self.eq_gains,
@@ -596,6 +603,17 @@ impl AudioMixer {
             &self.wave,
             prebuffer,
         )?;
+
+        self.cancel_crossfade();
+        Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
+
+        let vol = volume_ratio(self.volume.load(Ordering::SeqCst));
+        self.active().stop();
+        self.active().set_volume(vol);
+
+        if dur > 0.0 {
+            *self.duration.lock().unwrap() = dur;
+        }
 
         self.active().append(self.apply_mono(Box::new(source)));
 
@@ -616,27 +634,14 @@ impl AudioMixer {
         source: Box<dyn Source<Item = f32> + Send>,
         start_pos: f64,
     ) -> AudioResult<()> {
-        Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
-
-        let vol = volume_ratio(self.volume.load(Ordering::SeqCst));
-        self.active().stop();
-        self.active().set_volume(vol);
-
-        if let Some(ref dur) = source.total_duration() {
-            *self.duration.lock().unwrap() = dur.as_secs_f64();
-        }
-        let source = self.wrap_source(source);
-        self.active().append(self.apply_mono(source));
-
-        self.active_control = None;
-
-        *self.position.lock().unwrap() = start_pos;
-        *self.start_time.lock().unwrap() = None;
-        *self.start_pos.lock().unwrap() = start_pos;
-        self.playing.store(false, Ordering::SeqCst);
-        self.crossfade_start = None;
-
-        Ok(())
+        // A decoded source is still only decoded lazily. Drain it into a ring
+        // and wait for real samples before stopping the outgoing player, so a
+        // slow disk or an expensive EQ chain cannot create a silent gap.
+        let duration = source
+            .total_duration()
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        self.load_active_stream(source, start_pos, duration)
     }
 
     /// Launch a decode thread that reads samples from a live byte transport
@@ -719,12 +724,9 @@ impl AudioMixer {
         reopen: Option<Box<dyn StreamingReopen>>,
         start_pos: f64,
     ) -> AudioResult<()> {
-        Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
-
-        let vol = volume_ratio(self.volume.load(Ordering::SeqCst));
-        self.active().stop();
-        self.active().set_volume(vol);
-
+        // The reader is opened and primed into its own ring while the outgoing
+        // source is still playing. Only once the new transport has real audio
+        // buffered do we stop the old player and hand the ring over.
         let (control, source, handle) = Self::start_decode_reader(
             reader,
             reopen,
@@ -736,6 +738,13 @@ impl AudioMixer {
             &self.spectrum,
             &self.wave,
         )?;
+
+        self.cancel_crossfade();
+        Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
+
+        let vol = volume_ratio(self.volume.load(Ordering::SeqCst));
+        self.active().stop();
+        self.active().set_volume(vol);
 
         // Live streams have no meaningful total duration; zero both so the
         // Finished stall-guard is permanently disabled for this source.
@@ -782,12 +791,9 @@ impl AudioMixer {
         start_pos: f64,
         duration_secs: f64,
     ) -> AudioResult<()> {
-        Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
-
-        let vol = volume_ratio(self.volume.load(Ordering::SeqCst));
-        self.active().stop();
-        self.active().set_volume(vol);
-
+        // Provider sources are drained into their own ring first. The outgoing
+        // track stays active until that ring is primed, so connecting and
+        // waiting for the provider cannot silence it.
         let (control, ring, handle) = Self::start_decode_stream(
             source,
             &self.eq_gains,
@@ -798,6 +804,13 @@ impl AudioMixer {
             &self.spectrum,
             &self.wave,
         )?;
+
+        self.cancel_crossfade();
+        Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
+
+        let vol = volume_ratio(self.volume.load(Ordering::SeqCst));
+        self.active().stop();
+        self.active().set_volume(vol);
 
         if duration_secs > 0.0 {
             *self.duration.lock().unwrap() = duration_secs;
@@ -1091,6 +1104,23 @@ impl AudioMixer {
         new_standby.set_volume(0.0);
         new_standby.pause();
         Self::stop_decode_thread(&self.standby_control, &mut self.standby_decode_handle);
+    }
+
+    pub fn cancel_crossfade(&mut self) {
+        let crossfading = self.crossfade_start.take().is_some();
+        if !crossfading && self.standby_control.is_none() && self.standby().empty() {
+            return;
+        }
+        if crossfading {
+            // The ramp may already have lowered the outgoing player; restore
+            // the user's volume before keeping it as the active track.
+            let vol = volume_ratio(self.volume.load(Ordering::SeqCst));
+            self.active().set_volume(vol);
+        }
+        self.standby().set_volume(0.0);
+        self.standby().stop();
+        Self::stop_decode_thread(&self.standby_control, &mut self.standby_decode_handle);
+        self.standby_duration = 0.0;
     }
 
     pub fn force_complete_crossfade(&mut self) {

@@ -242,6 +242,8 @@ pub struct PulseAudioMixer {
 
     crossfade_start: Option<Instant>,
     crossfade_duration: f64,
+    /// Duration of the source staged in `standby`; promoted on a crossfade.
+    standby_duration: f64,
     pending_pause: bool,
     pause_fade_start: Option<Instant>,
     stored_volume: u8,
@@ -278,6 +280,7 @@ impl PulseAudioMixer {
             last_reported_pos: f64::NEG_INFINITY,
             crossfade_start: None,
             crossfade_duration: 0.0,
+            standby_duration: 0.0,
             pending_pause: false,
             pause_fade_start: None,
             stored_volume: MAX_VOLUME,
@@ -338,6 +341,55 @@ impl PulseAudioMixer {
             .total_duration()
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0))
+    }
+
+    /// Swap the prepared standby stream into the active slot without ever
+    /// silencing the outgoing stream before the incoming one is ready.
+    ///
+    /// Load paths stage their decode thread and prebuffer in the standby ring
+    /// first. Only after that has succeeded does this stop the old feed, take
+    /// the incoming control/handle, and move it to the active slot. A selected
+    /// track therefore cannot leave the output silent while it is opened,
+    /// probed, or primed.
+    fn promote_prepared_standby(&mut self, start_pos: f64, duration: Option<f64>, audible: bool) {
+        // Stop the outgoing decode only now; its stream was still draining the
+        // existing ring up to this point.
+        self.active_mut().stop_decode();
+        Self::set_stream_volume(self.active(), 0);
+        self.active().cork();
+
+        // The incoming handles must be taken before the toggle: afterwards
+        // `standby_mut()` refers to the outgoing stream.
+        let control = self.standby_mut().control.take();
+        let handle = self.standby_mut().decode_handle.take();
+
+        self.is_a_active = !self.is_a_active;
+        self.active_mut().control = control;
+        self.active_mut().decode_handle = handle;
+        let vol = if audible {
+            volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)))
+        } else {
+            0
+        };
+        Self::set_stream_volume(self.active(), vol);
+        self.active().uncork();
+
+        // The old active stream is the new standby: discard whatever was
+        // queued and leave it corked until the next staged load.
+        self.standby().flush();
+        self.standby().cork();
+        Self::set_stream_volume(self.standby(), 0);
+        Self::reset_ring(self.standby());
+
+        if let Some(duration) = duration {
+            *self.duration.lock().unwrap() = duration;
+        }
+        *self.position.lock().unwrap() = start_pos;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = start_pos;
+        self.playing.store(false, Ordering::SeqCst);
+        self.crossfade_start = None;
+        self.standby_duration = 0.0;
     }
 
     fn wrap_source(
@@ -528,47 +580,28 @@ impl PulseAudioMixer {
         stream.stream_volume.store(vol, Ordering::Relaxed);
     }
 
-    fn swap_active_standby(&mut self) {
-        // The user's volume, not `get_mixer_volume()`: the crossfade ramp has
-        // just eased the outgoing stream to 0, so reading it here handed that
-        // 0 to the incoming stream and silenced the whole next track.
-        let vol = volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)));
-
-        self.active_mut().stop_decode();
-
-        self.is_a_active = !self.is_a_active;
-
-        Self::set_stream_volume(self.active(), vol);
-        self.active().uncork();
-        self.standby().flush();
-        self.standby().cork();
-        Self::set_stream_volume(self.standby(), 0);
-
-        self.active_mut().control = self.standby_mut().control.take();
-        self.active_mut().decode_handle = self.standby_mut().decode_handle.take();
-
-        *self.start_time.lock().unwrap() = Some(Instant::now());
-        *self.start_pos.lock().unwrap() = 0.0;
-        self.playing.store(true, Ordering::SeqCst);
+    /// Drop samples and the end marker left by the previous source before a
+    /// new decode thread starts filling this ring.
+    fn reset_ring(stream: &PaStreamState) {
+        stream.ring.flush();
+        stream.ring.set_finished(false);
     }
 }
 
 impl Mixer for PulseAudioMixer {
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()> {
-        self.active_mut().stop_decode();
-
-        self.active().cork();
-        self.active().flush();
-        Self::set_stream_volume(self.active(), 0);
-
         let dur = Self::probe_duration(path)?;
-        if dur > 0.0 {
-            *self.duration.lock().unwrap() = dur;
-        }
+
+        // Stage in the standby stream while the outgoing track keeps playing.
+        self.standby_mut().stop_decode();
+        Self::reset_ring(self.standby());
+        self.standby().cork();
+        self.standby().flush();
+        Self::set_stream_volume(self.standby(), 0);
 
         let (control, handle) = Self::start_decode(
             path,
-            &self.active().ring,
+            &self.standby().ring,
             &self.eq_gains,
             &self.eq_enabled,
             &self.pre_gain,
@@ -579,22 +612,17 @@ impl Mixer for PulseAudioMixer {
         )?;
 
         let client = self._client.clone();
-        self.active_mut().reconfigure(
+        self.standby_mut().reconfigure(
             &client,
             control.sample_rate.load(Ordering::Relaxed),
             control.channels.load(Ordering::Relaxed),
         )?;
-        self.active_mut().control = Some(control);
-        self.active_mut().decode_handle = Some(handle);
+        self.standby_mut().control = Some(control);
+        self.standby_mut().decode_handle = Some(handle);
+        self.standby().cork();
+        Self::set_stream_volume(self.standby(), 0);
 
-        self.active().uncork();
-
-        *self.position.lock().unwrap() = start_pos;
-        *self.start_time.lock().unwrap() = None;
-        *self.start_pos.lock().unwrap() = start_pos;
-        self.playing.store(false, Ordering::SeqCst);
-        self.crossfade_start = None;
-
+        self.promote_prepared_standby(start_pos, (dur > 0.0).then_some(dur), false);
         Ok(())
     }
 
@@ -603,67 +631,33 @@ impl Mixer for PulseAudioMixer {
         source: Box<dyn Source<Item = f32> + Send>,
         start_pos: f64,
     ) -> AudioResult<()> {
-        self.active_mut().stop_decode();
-
-        self.active().cork();
-        self.active().flush();
-        Self::set_stream_volume(self.active(), 0);
-
-        if let Some(ref dur) = source.total_duration() {
-            *self.duration.lock().unwrap() = dur.as_secs_f64();
-        }
-
-        let rate = source.sample_rate().get();
-        let channels = source.channels().get();
-        let client = self._client.clone();
-        self.active_mut().reconfigure(&client, rate, channels)?;
-        let source = self.wrap_source(source);
-
-        let ring = self.active().ring.clone();
-        let handle = std::thread::Builder::new()
-            .name("gtm-pa-feed".into())
-            .spawn(move || {
-                for sample in source {
-                    while !ring.push(sample) {
-                        // Ring full (PA consumer drains it): nap instead of
-                        // spinning to keep the feed thread off a hot core.
-                        std::thread::sleep(std::time::Duration::from_micros(50));
-                    }
-                }
-                ring.set_finished(true);
-            })
-            .expect("failed to spawn PA feed thread");
-
-        self.active_mut().control = Some(Arc::new(DecodeControl::new()));
-        self.active_mut().decode_handle = Some(handle);
-
-        self.active().uncork();
-
-        *self.position.lock().unwrap() = start_pos;
-        *self.start_time.lock().unwrap() = None;
-        *self.start_pos.lock().unwrap() = start_pos;
-        self.playing.store(false, Ordering::SeqCst);
-        self.crossfade_start = None;
-
-        Ok(())
+        // A decoded source still decodes lazily, so run it through the same
+        // prebuffering stream path as a provider source.
+        let duration = source
+            .total_duration()
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        self.load_active_stream(source, start_pos, duration)
     }
 
     fn load_active_reader(
         &mut self,
         reader: Box<dyn std::io::Read + Send>,
         reopen: Option<Box<dyn StreamingReopen>>,
-        _start_pos: f64,
+        start_pos: f64,
     ) -> AudioResult<()> {
-        self.active_mut().stop_decode();
-
-        self.active().cork();
-        self.active().flush();
-        Self::set_stream_volume(self.active(), 0);
+        // Open and prime the transport in the standby ring while the outgoing
+        // track remains audible.
+        self.standby_mut().stop_decode();
+        Self::reset_ring(self.standby());
+        self.standby().cork();
+        self.standby().flush();
+        Self::set_stream_volume(self.standby(), 0);
 
         let (control, handle) = Self::start_decode_reader(
             reader,
             reopen,
-            &self.active().ring,
+            &self.standby().ring,
             &self.eq_gains,
             &self.eq_enabled,
             &self.pre_gain,
@@ -673,26 +667,20 @@ impl Mixer for PulseAudioMixer {
         )?;
 
         let client = self._client.clone();
-        self.active_mut().reconfigure(
+        self.standby_mut().reconfigure(
             &client,
             control.sample_rate.load(Ordering::Relaxed),
             control.channels.load(Ordering::Relaxed),
         )?;
-        self.active_mut().control = Some(control);
-        self.active_mut().decode_handle = Some(handle);
-
-        self.active().uncork();
+        self.standby_mut().control = Some(control);
+        self.standby_mut().decode_handle = Some(handle);
+        self.standby().cork();
+        Self::set_stream_volume(self.standby(), 0);
 
         // Live streams have no meaningful total duration; zero it so the
         // Finished stall-guard is permanently disabled for this source and a
         // genuine EOF ends it via the ring's `finished` flag instead.
-        *self.duration.lock().unwrap() = 0.0;
-        *self.position.lock().unwrap() = 0.0;
-        *self.start_time.lock().unwrap() = None;
-        *self.start_pos.lock().unwrap() = 0.0;
-        self.playing.store(false, Ordering::SeqCst);
-        self.crossfade_start = None;
-
+        self.promote_prepared_standby(start_pos, Some(0.0), false);
         Ok(())
     }
 
@@ -702,15 +690,18 @@ impl Mixer for PulseAudioMixer {
         start_pos: f64,
         duration_secs: f64,
     ) -> AudioResult<()> {
-        self.active_mut().stop_decode();
-
-        self.active().cork();
-        self.active().flush();
-        Self::set_stream_volume(self.active(), 0);
+        // Prime the provider source in the standby ring before stopping the
+        // outgoing stream. A slow provider start therefore cannot silence the
+        // track that is already playing.
+        self.standby_mut().stop_decode();
+        Self::reset_ring(self.standby());
+        self.standby().cork();
+        self.standby().flush();
+        Self::set_stream_volume(self.standby(), 0);
 
         let (control, handle) = Self::start_decode_stream(
             source,
-            &self.active().ring,
+            &self.standby().ring,
             &self.eq_gains,
             &self.eq_enabled,
             &self.pre_gain,
@@ -720,29 +711,24 @@ impl Mixer for PulseAudioMixer {
         )?;
 
         let client = self._client.clone();
-        self.active_mut().reconfigure(
+        self.standby_mut().reconfigure(
             &client,
             control.sample_rate.load(Ordering::Relaxed),
             control.channels.load(Ordering::Relaxed),
         )?;
-        self.active_mut().control = Some(control);
-        self.active_mut().decode_handle = Some(handle);
-
-        self.active().uncork();
+        self.standby_mut().control = Some(control);
+        self.standby_mut().decode_handle = Some(handle);
+        self.standby().cork();
+        Self::set_stream_volume(self.standby(), 0);
 
         // A provider track has a real length, so keep it for the Finished
         // stall-guard and position reporting; zero it only if unknown.
-        *self.duration.lock().unwrap() = if duration_secs > 0.0 {
+        let duration = if duration_secs > 0.0 {
             duration_secs
         } else {
             0.0
         };
-        *self.position.lock().unwrap() = start_pos;
-        *self.start_time.lock().unwrap() = None;
-        *self.start_pos.lock().unwrap() = start_pos;
-        self.playing.store(false, Ordering::SeqCst);
-        self.crossfade_start = None;
-
+        self.promote_prepared_standby(start_pos, Some(duration), false);
         Ok(())
     }
 
@@ -759,10 +745,12 @@ impl Mixer for PulseAudioMixer {
     }
     fn load_standby(&mut self, path: &str) -> AudioResult<()> {
         self.standby_mut().stop_decode();
+        Self::reset_ring(self.standby());
 
         self.standby().cork();
         self.standby().flush();
         Self::set_stream_volume(self.standby(), 0);
+        self.standby_duration = Self::probe_duration(path).unwrap_or(0.0);
 
         let (control, handle) = Self::start_decode(
             path,
@@ -794,10 +782,15 @@ impl Mixer for PulseAudioMixer {
         source: Box<dyn Source<Item = f32> + Send>,
     ) -> AudioResult<()> {
         self.standby_mut().stop_decode();
+        Self::reset_ring(self.standby());
 
         self.standby().cork();
         self.standby().flush();
         Self::set_stream_volume(self.standby(), 0);
+        self.standby_duration = source
+            .total_duration()
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
 
         let rate = source.sample_rate().get();
         let channels = source.channels().get();
@@ -949,70 +942,39 @@ impl Mixer for PulseAudioMixer {
         self.crossfade_start.is_some()
     }
 
+    fn cancel_crossfade(&mut self) {
+        let crossfading = self.crossfade_start.take().is_some();
+        if !crossfading && self.standby().control.is_none() && self.standby().ring.available() == 0
+        {
+            return;
+        }
+        // Keep the outgoing stream, restore its user volume if a ramp had
+        // started, and discard the partially faded-in standby.
+        if crossfading {
+            let vol = volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)));
+            Self::set_stream_volume(self.active(), vol);
+            self.active().uncork();
+        }
+        self.standby().flush();
+        Self::set_stream_volume(self.standby(), 0);
+        self.standby().cork();
+        self.standby_mut().stop_decode();
+        Self::reset_ring(self.standby());
+        self.standby_duration = 0.0;
+    }
+
     fn force_complete_crossfade(&mut self) {
         if self.crossfade_start.is_none() {
             return;
         }
-        self.crossfade_start = None;
-        // The *user's* volume, not the outgoing stream's current one. By the
-        // time a crossfade completes, `step_crossfade` has eased the outgoing
-        // stream down to 0, so carrying its volume across muted the incoming
-        // stream and the next track played in silence. The ALSA mixer has
-        // always read the user's volume here for exactly this reason.
-        let vol = volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)));
-
-        self.active_mut().stop_decode();
-        Self::set_stream_volume(self.active(), 0);
-        self.active().cork();
-
-        self.is_a_active = !self.is_a_active;
-
-        Self::set_stream_volume(self.active(), vol);
-        self.active().uncork();
-
-        self.standby().flush();
-        Self::set_stream_volume(self.standby(), 0);
-        self.standby().cork();
-
-        self.active_mut().control = self.standby_mut().control.take();
-        self.active_mut().decode_handle = self.standby_mut().decode_handle.take();
-
-        *self.start_time.lock().unwrap() = Some(Instant::now());
-        *self.start_pos.lock().unwrap() = 0.0;
-        self.playing.store(true, Ordering::SeqCst);
+        self.swap_active_standby();
     }
 
     fn drop_active(&mut self) {
         if self.crossfade_start.is_none() {
             return;
         }
-        self.crossfade_start = None;
-        // The *user's* volume, not the outgoing stream's current one. By the
-        // time a crossfade completes, `step_crossfade` has eased the outgoing
-        // stream down to 0, so carrying its volume across muted the incoming
-        // stream and the next track played in silence. The ALSA mixer has
-        // always read the user's volume here for exactly this reason.
-        let vol = volume_from_ratio(volume_ratio(self.user_volume.load(Ordering::SeqCst)));
-
-        self.active_mut().stop_decode();
-        Self::set_stream_volume(self.active(), 0);
-        self.active().cork();
-
-        self.is_a_active = !self.is_a_active;
-
-        Self::set_stream_volume(self.active(), vol);
-        self.active().uncork();
-
-        self.standby().flush();
-        Self::set_stream_volume(self.standby(), 0);
-        self.standby().cork();
-
-        self.active_mut().control = self.standby_mut().control.take();
-        self.active_mut().decode_handle = self.standby_mut().decode_handle.take();
-
-        *self.start_time.lock().unwrap() = Some(Instant::now());
-        *self.start_pos.lock().unwrap() = 0.0;
-        self.playing.store(true, Ordering::SeqCst);
+        self.swap_active_standby();
     }
 
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>> {
@@ -1105,6 +1067,14 @@ impl Mixer for PulseAudioMixer {
 }
 
 impl PulseAudioMixer {
+    /// Promote the standby that the crossfade just completed.
+    fn swap_active_standby(&mut self) {
+        let duration = self.standby_duration;
+        self.promote_prepared_standby(0.0, Some(duration), true);
+        *self.start_time.lock().unwrap() = Some(Instant::now());
+        self.playing.store(true, Ordering::SeqCst);
+    }
+
     fn step_crossfade(&mut self) -> bool {
         let start = match self.crossfade_start {
             Some(s) => s,
