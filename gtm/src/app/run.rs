@@ -816,9 +816,10 @@ impl App {
                 // Fetch cover art when needed: for display (no_image_protocol
                 // check) OR for reactive-theming palette extraction.
                 self.fetch_np_cover();
-                // Auto-fetch lyrics on track change if enabled and (pane
-                // visible or auto-fetch enabled). A live stream's path never
-                // changes, so `live_advanced` is a track change there too.
+                // Auto-fetch lyrics (or a podcast transcript) on track change
+                // if enabled and (pane visible or auto-fetch enabled). A live
+                // stream's path never changes, so `live_advanced` is a track
+                // change there too.
                 //
                 // Keyed on a *different* track, not on every `PlaybackStarted`.
                 // A `PlaybackStarted` fires for a crossfade and for the same
@@ -829,7 +830,7 @@ impl App {
                     && (self.auto_fetch_lyrics || self.lyrics.show)
                     && let Some(track) = self.state.current_track.clone()
                 {
-                    self.fetch_lyrics(&track);
+                    self.fetch_lyrics(&track, false);
                 } else if track_changed || live_advanced {
                     // Automatic fetch is off (and the pane is hidden): the old
                     // lines no longer belong to what is playing. Clear them so
@@ -1552,22 +1553,64 @@ impl App {
                         self.list_cover_sync();
                         self.metadata_cover_sync();
                     }
-                    IpcResult::PodcastTranscript(lyrics, title) => {
+                    IpcResult::PodcastTranscript {
+                        lyrics,
+                        label,
+                        fetch_gen,
+                        target,
+                        error,
+                    } => {
+                        if Some(fetch_gen) != self.lyrics.pending_gen {
+                            // A newer lyrics/transcript request owns the pane.
+                            continue;
+                        }
+                        if let Some(want) = target.as_deref() {
+                            let now = self.state.current_track.as_ref().map(|t| t.path.as_str());
+                            if now != Some(want) {
+                                // The episode changed before its transcript
+                                // landed. Release the guard so the next `l` can
+                                // fetch instead of seeing a fetch forever in
+                                // flight.
+                                self.lyrics.pending_gen = None;
+                                self.lyrics.fetching = false;
+                                continue;
+                            }
+                        }
                         self.lyrics.pending_gen = None;
-                        self.lyrics.current = lyrics.or(Some(LrcData {
-                            title: Some(title.clone()),
-                            artist: None,
-                            album: None,
-                            lines: vec![LrcLine {
-                                timestamp: 0.0,
-                                text: "Transcript was empty".to_string(),
-                                words: Vec::new(),
-                            }],
-                        }));
-                        self.lyrics.kind = LyricsKind::Transcript;
                         self.lyrics.fetching = false;
-                        self.lyrics.scroll = self.current_lyric_index();
-                        self.lyrics.show = true;
+                        match lyrics.filter(|l| !l.lines.is_empty()) {
+                            Some(lyrics) => {
+                                self.lyrics.current = Some(lyrics);
+                                self.lyrics.kind = LyricsKind::Transcript;
+                                // The transcript is timed; opening it mid-episode
+                                // starts on the line being spoken.
+                                self.lyrics.scroll = self.current_lyric_index();
+                            }
+                            None => {
+                                self.lyrics.current = Some(LrcData {
+                                    title: Some(label),
+                                    artist: None,
+                                    album: None,
+                                    lines: vec![LrcLine {
+                                        timestamp: 0.0,
+                                        text: "No transcript published for this episode"
+                                            .to_string(),
+                                        words: Vec::new(),
+                                    }],
+                                });
+                                self.lyrics.kind = LyricsKind::Missing;
+                                self.lyrics.scroll = 0;
+                            }
+                        }
+                        if let Some(e) = error {
+                            self.notify_typed(
+                                "Podcast",
+                                e,
+                                NotificationKind::Error,
+                                true,
+                                NotifType::System,
+                            );
+                        }
                     }
                     IpcResult::Lyrics(lyrics, lyrics_gen, for_path) => {
                         let now_playing =

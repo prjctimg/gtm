@@ -447,7 +447,7 @@ impl App {
             }
             TuiCommand::FetchLyrics => {
                 if let Some(track) = self.state.current_track.clone() {
-                    self.fetch_lyrics(&track);
+                    self.fetch_lyrics(&track, true);
                 }
             }
             TuiCommand::SetSleepTimer(minutes, stop_immediately) => {

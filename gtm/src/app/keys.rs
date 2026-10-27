@@ -2851,27 +2851,14 @@ impl App {
                             self.pickers.close_top();
                             self.lyrics.show = true;
                             self.lyrics.pane_focus = true;
-                            self.lyrics.fetching = true;
                             let label = ep
                                 .map(|e| e.title)
                                 .filter(|t| !t.trim().is_empty())
                                 .unwrap_or_else(|| "this episode".to_string());
-                            let c = self.client.clone();
-                            let ipc = self.ipc_tx.clone();
-                            let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                match c.podcast().transcript(&feed_id, idx).await {
-                                    Ok(lyrics) => {
-                                        let _ = ipc.send(IpcResult::PodcastTranscript(
-                                            Some(lyrics),
-                                            label,
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        let _ = ipc
-                                            .send(IpcResult::Error(format!("No transcript: {e}")));
-                                    }
-                                }
-                            }));
+                            // `None` target: this transcript was asked for by
+                            // name, so it stays on screen even if another track
+                            // starts before it lands.
+                            self.start_podcast_transcript(feed_id, idx, label, None, true);
                         } else {
                             self.notify_typed(
                                 "Podcast",

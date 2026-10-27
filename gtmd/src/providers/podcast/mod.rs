@@ -552,10 +552,12 @@ impl PodcastManager {
     /// Fetch and parse an episode's transcript.
     ///
     /// Every transcript the feed offers is tried in preference order, because a
-    /// feed that offers several is not obliged to keep them all reachable: the
-    /// first one that yields a non-empty parse wins, and a failure to reach the
-    /// first is a fallthrough rather than the answer. A feed with none is an
-    /// error the caller can say out loud, not an empty pane.
+    /// feed that offers several is not obliged to keep them all reachable: a
+    /// failure to reach the first is a fallthrough rather than the answer. The
+    /// first timed parse wins even if it is ranked below a plain one, because a
+    /// transcript with no timestamps cannot follow playback; a plain parse is
+    /// kept only as a fallback. A feed with none is an error the caller can say
+    /// out loud, not an empty pane.
     pub async fn fetch_transcript(
         &self,
         feed_id: &str,
@@ -577,6 +579,12 @@ impl PodcastManager {
         let mut ranked: Vec<&PodcastTranscript> = episode.transcripts.iter().collect();
         ranked.sort_by_key(|t| t.rank());
         let mut last = String::from("no usable transcript");
+        // A feed can publish a readable plain-text transcript and a timed VTT
+        // side by side. Returning the first non-empty one made the result
+        // depend on feed order, so the lyrics clock had nothing to follow.
+        // Keep the first plain transcript only as a fallback and return as soon
+        // as any transcript has timestamps.
+        let mut untimed: Option<LrcData> = None;
         for t in ranked {
             let body = match (&t.text, &t.url) {
                 // Inline first: no network, and it cannot be a stale copy.
@@ -591,17 +599,24 @@ impl PodcastManager {
                 _ => continue,
             };
             let parsed = vtt::parse_transcript(&body);
-            if !parsed.lines.is_empty() {
-                return Ok(LrcData {
-                    title: episode.title.clone().into(),
-                    artist: Some(episode.feed_title.clone()),
-                    album: None,
-                    lines: parsed.lines,
-                });
+            if parsed.lines.is_empty() {
+                last = "transcript was empty".into();
+                continue;
             }
-            last = "transcript was empty".into();
+            let lrc = LrcData {
+                title: episode.title.clone().into(),
+                artist: Some(episode.feed_title.clone()),
+                album: None,
+                lines: parsed.lines,
+            };
+            if lrc.lines.iter().any(|line| line.timestamp >= 0.0) {
+                return Ok(lrc);
+            }
+            if untimed.is_none() {
+                untimed = Some(lrc);
+            }
         }
-        Err(last)
+        untimed.ok_or(last)
     }
 
     /// GET a transcript body, size-capped like a feed.
@@ -1532,5 +1547,57 @@ Hello]]></podcast:transcript>
         assert!(!hollow.is_present(), "an empty body is not a transcript");
         b.text = Some("WEBVTT".into());
         assert!(b.is_present());
+    }
+
+    /// A feed may rank a plain transcript first and publish the timed VTT
+    /// second. Returning the first non-empty parse left the pane untimed, so
+    /// the clock could never move it. The timed version has to win.
+    #[tokio::test]
+    async fn a_timed_transcript_wins_over_a_ranked_plain_one() {
+        let mut manager = PodcastManager::new(std::env::temp_dir());
+        manager.feeds.push(SubscribedFeed {
+            id: "feed".into(),
+            url: "https://example.com/feed.xml".into(),
+            title: "Show".into(),
+            image_url: None,
+        });
+        manager.episodes.insert(
+            "feed".into(),
+            vec![PodcastEpisode {
+                feed_id: "feed".into(),
+                feed_title: "Show".into(),
+                id: "episode".into(),
+                title: "Episode".into(),
+                url: "https://example.com/episode.mp3".into(),
+                duration_secs: Some(60),
+                published: None,
+                description: None,
+                image_url: None,
+                transcripts: vec![
+                    PodcastTranscript {
+                        url: None,
+                        text: Some("A plain transcript".into()),
+                        kind: Some("text/plain".into()),
+                        rel: Some("captions".into()),
+                    },
+                    PodcastTranscript {
+                        url: None,
+                        text: Some(
+                            "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nA timed line\n".into(),
+                        ),
+                        kind: Some("text/vtt".into()),
+                        rel: None,
+                    },
+                ],
+            }],
+        );
+
+        let lyrics = manager
+            .fetch_transcript("feed", 0)
+            .await
+            .expect("a transcript should be found");
+        assert_eq!(lyrics.lines.len(), 1);
+        assert_eq!(lyrics.lines[0].timestamp, 1.0);
+        assert_eq!(lyrics.lines[0].text, "A timed line");
     }
 }

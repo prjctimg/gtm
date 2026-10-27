@@ -18,6 +18,24 @@ pub(crate) fn lyrics_query(track: &TrackInfo) -> Option<(String, String)> {
     }
 }
 
+/// Split a synthetic podcast row path (`podcast://<feed-id>/<index>`) into the
+/// feed and episode it addresses.
+///
+/// A podcast row is not a song: its artist is the feed title and its title is
+/// the episode, so searching for lyrics by those fields would either miss or,
+/// worse, find an unrelated song with the episode's name. The path is the only
+/// reliable way back to the episode whose transcript should be shown.
+pub(crate) fn podcast_episode(path: &str) -> Option<(String, usize)> {
+    let rest = path.strip_prefix("podcast://")?;
+    let (feed_id, index) = rest.split_once('/').unwrap_or((rest, "0"));
+    let feed_id = feed_id.trim();
+    if feed_id.is_empty() {
+        return None;
+    }
+    let episode_index = index.parse::<usize>().ok()?;
+    Some((feed_id.to_string(), episode_index))
+}
+
 /// Index of the active time-synced lyric line for a playback position.
 /// Untimed lines (timestamp < 0) are skipped for matching but keep their
 /// index so the highlight tracks timed lines correctly.
@@ -122,7 +140,27 @@ impl App {
     /// Both entry points go through here — the automatic fetch on a track change
     /// and the manual one bound to the lyrics key — so both know a provider track
     /// has to be searched by artist and title rather than by path.
-    pub(crate) fn fetch_lyrics(&mut self, track: &TrackInfo) {
+    ///
+    /// For a podcast, `manual` makes a transcript failure visible. The episode
+    /// picker's `t` key goes one step further and passes no target, so its
+    /// transcript is accepted even if another track starts; automatic requests
+    /// are pinned to the episode they were made for and stay silent when the
+    /// episode simply has no transcript.
+    pub(crate) fn fetch_lyrics(&mut self, track: &TrackInfo, manual: bool) {
+        // A podcast episode has a transcript, not lyrics. Its artist/title are
+        // the show and episode, so the normal search would at best miss and at
+        // worst match a song that happens to share the episode's name.
+        if let Some((feed_id, episode_index)) = podcast_episode(&track.path) {
+            self.start_podcast_transcript(
+                feed_id,
+                episode_index,
+                track.title.clone(),
+                Some(track.path.clone()),
+                manual,
+            );
+            return;
+        }
+
         // A live stream's queue row is the station, not the song on air. The
         // path stays the same for the whole session, so fetching from
         // `current_track` would either answer for the station name or keep the
@@ -188,6 +226,39 @@ impl App {
         self.lyrics.scroll = 0;
         self.lyrics.row = None;
         self.lyrics.manual_scroll = false;
+    }
+
+    /// Fetch one episode's transcript through the same generation guard the
+    /// lyrics pane uses.
+    ///
+    /// `target` is the playing row for an automatic fetch, and `None` for the
+    /// episode picker's `t` key. The daemon parses VTT/SRT/JSON into timed
+    /// lines, so the existing lyric clock moves the transcript without any
+    /// separate playback path.
+    pub(crate) fn start_podcast_transcript(
+        &mut self,
+        feed_id: String,
+        episode_index: usize,
+        label: String,
+        target: Option<String>,
+        manual: bool,
+    ) {
+        let fetch_gen = self.begin_lyrics();
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            let (lyrics, error) = match client.podcast().transcript(&feed_id, episode_index).await {
+                Ok(lyrics) => (Some(lyrics), None),
+                Err(e) => (None, manual.then(|| format!("No transcript: {e}"))),
+            };
+            let _ = ipc_tx.send(IpcResult::PodcastTranscript {
+                lyrics,
+                label,
+                fetch_gen,
+                target,
+                error,
+            });
+        });
     }
 
     /// Warm the daemon's on-disk lyrics cache for a synced playlist row,
@@ -330,5 +401,21 @@ mod tests {
     fn partial_metadata_falls_back_to_the_daemon() {
         let t = track("spotify:track:4cOdK2wGLETKBW3PvgPWqT", "", "Get Lucky");
         assert_eq!(lyrics_query(&t), None);
+    }
+
+    #[test]
+    fn a_podcast_row_names_its_feed_and_episode() {
+        assert_eq!(
+            podcast_episode("podcast://0123456789abcdef/7"),
+            Some(("0123456789abcdef".to_string(), 7))
+        );
+        // The daemon's own parser treats a missing index as episode zero.
+        assert_eq!(
+            podcast_episode("podcast://feed"),
+            Some(("feed".to_string(), 0))
+        );
+        assert_eq!(podcast_episode("podcast:///3"), None);
+        assert_eq!(podcast_episode("podcast://feed/not-a-number"), None);
+        assert_eq!(podcast_episode("https://example.com/episode.mp3"), None);
     }
 }

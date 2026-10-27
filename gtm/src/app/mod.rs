@@ -779,12 +779,21 @@ pub(crate) enum IpcResult {
     Lyrics(Option<LrcData>, u64, Option<String>),
     /// A podcast episode's transcript, shown in the lyrics pane.
     ///
-    /// Deliberately not `Lyrics`: that variant is gated on a per-track
-    /// generation so a response that arrives after the track changed is
-    /// dropped. A transcript is not for the track that happens to be playing —
-    /// it was asked for by name — so gating it would throw away exactly the
-    /// fetch the user waited for.
-    PodcastTranscript(Option<LrcData>, String),
+    /// Gated like [`Lyrics`](Self::Lyrics) by `fetch_gen`, so a reply that
+    /// arrives after another track or transcript was requested is dropped. A
+    /// manual `t` request has no `target` and is accepted even when the episode
+    /// is not the one playing, because it was asked for by name. An automatic
+    /// request carries the track path it belongs to and is rejected if that is
+    /// no longer what is playing. `error` is reported only for manual requests:
+    /// most episodes have no transcript, and saying so on every episode would
+    /// be noise.
+    PodcastTranscript {
+        lyrics: Option<LrcData>,
+        label: String,
+        fetch_gen: u64,
+        target: Option<String>,
+        error: Option<String>,
+    },
     LibraryTracks(Vec<TrackInfo>),
     MostPlayed(Vec<TrackInfo>),
     Favourites(Vec<TrackInfo>),
