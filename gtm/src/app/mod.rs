@@ -577,6 +577,20 @@ pub struct App {
     pub reactive_theme: bool,
     pub reactive_theme_intensity: f32,
     pub(crate) reactive_palette: Option<ReactivePalette>,
+    /// Palette of the highlighted playlist row, used only while nothing is
+    /// playing. The daemon's palette belongs to the track on air, which is a
+    /// different row (or no row at all) when the user is browsing.
+    pub(crate) browse_palette: Option<ReactivePalette>,
+    /// Identity of the cover that produced [`Self::browse_palette`], so a frame
+    /// that did not move the cursor does not decode the same image again.
+    pub(crate) browse_palette_key: Option<String>,
+    /// Identity of the playlist row whose cover is on (or awaited for) the info
+    /// card. Set by `update_track_popup`, read by `sync_browse_palette`.
+    pub(crate) browse_cover_key: Option<String>,
+    /// A row whose palette-only cover request has already been tried. Only
+    /// used when the terminal cannot display images: there the cover is
+    /// fetched solely for its colors, so a miss must not re-ask every frame.
+    pub(crate) browse_cover_tried: Option<String>,
     pub last_action_name: Option<(String, std::time::Instant)>,
     pub footer_title_scroll: usize,
     /// strftime-style format string for the footer `Time` module.
@@ -1622,6 +1636,10 @@ impl App {
             reactive_theme: prefs.reactive_theme,
             reactive_theme_intensity: prefs.reactive_theme_intensity,
             reactive_palette: None,
+            browse_palette: None,
+            browse_palette_key: None,
+            browse_cover_key: None,
+            browse_cover_tried: None,
             last_action_name: None,
             footer_title_scroll: 0,
             footer_time_format: if prefs.time_format.is_empty() {

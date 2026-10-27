@@ -308,8 +308,39 @@ impl App {
 
         self.track_popup_visible = valid;
         if !valid {
+            self.browse_cover_key = None;
             self.clear_popup_cover();
             return;
+        }
+
+        // The playlist preview palette is keyed on the row, not on the cover
+        // bytes: the same album can be reached from several rows, and a row can
+        // be repainted from the in-memory cache without a new reply. The URL is
+        // part of the key because provider rows share `id == 0` and are named
+        // only by that artwork address.
+        let new_browse_key =
+            if self.library_category == LIB_PLAYLISTS && kind == TrackInfoKind::Track {
+                maybe_track.as_ref().map(|(id, path)| {
+                    format!(
+                        "{id}\u{1f}{path}\u{1f}{}",
+                        remote_url.as_deref().unwrap_or("")
+                    )
+                })
+            } else {
+                None
+            };
+        if self.browse_cover_key != new_browse_key {
+            let leaving_browse = self.browse_cover_key.is_some() && new_browse_key.is_none();
+            self.browse_cover_key = new_browse_key;
+            self.browse_cover_tried = None;
+            // A palette-only request has no card to fill. Its reply is only
+            // accepted while the playlist row is still the browse target, so
+            // leaving the view must release the slots or a later visit would
+            // see the old request as permanently in flight.
+            if leaving_browse && no_image_protocol() {
+                self.popup_slot.clear();
+                self.spotify_popup_slot.clear();
+            }
         }
 
         if kind == TrackInfoKind::SpotifyTrack {
@@ -389,7 +420,7 @@ impl App {
         // flight, and leaving the previous row's bytes on the card put one
         // track's artwork under another track's title for as long as the fetch
         // took.
-        if no_image_protocol() || self.popup_slot.pending(&tid) {
+        if (no_image_protocol() && !self.browse_theme_active()) || self.popup_slot.pending(&tid) {
             self.track_popup_cover = None;
             self.popup_cover_stateful = None;
             return;
@@ -535,7 +566,12 @@ impl App {
             self.clear_popup_cover();
             return;
         };
-        if no_image_protocol() {
+        if no_image_protocol() && !self.browse_theme_active() {
+            // The row may have changed while playback owns the theme. Its
+            // predecessor's bytes must not be mistaken for this row's palette
+            // once playback stops.
+            self.track_popup_cover = None;
+            self.popup_cover_stateful = None;
             return;
         }
         // Repaint from what we still hold, which is what makes the latch safe.
@@ -1001,7 +1037,14 @@ impl App {
     }
 
     pub(crate) fn popup_cover_sync(&mut self) {
-        self.popup_cover_stateful = self.protocol(self.track_popup_cover.as_deref());
+        // In a terminal with no image protocol the bytes may still be here for
+        // a palette-only preview; decoding them into a stateful protocol would
+        // be work nothing can draw.
+        self.popup_cover_stateful = if no_image_protocol() {
+            None
+        } else {
+            self.protocol(self.track_popup_cover.as_deref())
+        };
     }
 
     /// Fetch the highlighted chart row's cover for the left pane's info slot.

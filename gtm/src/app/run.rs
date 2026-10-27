@@ -1295,7 +1295,11 @@ impl App {
                         if let Some(bytes) = &cover {
                             self.remember_track(track_id, bytes);
                         }
-                        if !no_image_protocol()
+                        // Accept a palette-only reply even if playback started
+                        // while it was in flight: the bytes are what the idle
+                        // playlist preview needs, and dropping the reply would
+                        // leave its slot claimed for the rest of the session.
+                        if (!no_image_protocol() || self.browse_cover_key.is_some())
                             && self.popup_track_id == Some(track_id)
                             && self.popup_slot.matches(fetch_gen)
                         {
@@ -1313,12 +1317,16 @@ impl App {
                                 // itself names an image. That is the other half
                                 // of the blank card in "All Tracks": the URL was
                                 // known the whole time and only ever consulted for
-                                // rows with no local path at all.
-                                if let Some(url) = self.popup_row_art_url() {
-                                    self.fetch_url_cover(Some(url));
-                                } else {
-                                    // Also retry for groups/albums/artists
-                                    self.update_track_popup();
+                                // rows with no local path at all. A palette-only
+                                // fetch has no card to fill, so it stops here
+                                // rather than chasing a fallback it cannot show.
+                                if !no_image_protocol() {
+                                    if let Some(url) = self.popup_row_art_url() {
+                                        self.fetch_url_cover(Some(url));
+                                    } else {
+                                        // Also retry for groups/albums/artists
+                                        self.update_track_popup();
+                                    }
                                 }
                             }
                         }
@@ -1339,7 +1347,7 @@ impl App {
                         if let Some(bytes) = &cover {
                             self.remember_url(&url, bytes);
                         }
-                        if !no_image_protocol()
+                        if (!no_image_protocol() || self.browse_cover_key.is_some())
                             && self.spotify_popup_slot.id.as_deref() == Some(&url)
                             && self.spotify_popup_slot.matches(fetch_gen)
                         {
@@ -1833,6 +1841,11 @@ impl App {
             // Hover preview: runs every frame so a rest of the configured length
             // starts the row under the cursor, even though no event marks it.
             self.poll_preview();
+            // The highlighted playlist row can become the reactive source
+            // without a cursor move: playback stops, an async cover lands, or
+            // the user crosses from another view into the playlist. One
+            // reconciliation keeps the theme tied to what the list names.
+            self.sync_browse_palette();
 
             // Detect state changes.
             //

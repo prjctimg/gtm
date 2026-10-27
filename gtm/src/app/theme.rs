@@ -1,7 +1,32 @@
 use crate::app::*;
 use crate::audio::eq::{PRE_GAIN_MAX_DB, PRE_GAIN_MIN_DB, PRE_GAIN_STEP_DB};
-use crate::reactive::{ReactivePalette, from_hex};
+use crate::reactive::{ReactivePalette, extract_palette, from_hex};
 use crate::ui::pre_gain_label;
+
+/// The palette the live theme should be derived from.
+///
+/// The track on air always wins: its artwork is the one the playback surface
+/// names. Only while nothing is playing does the highlighted playlist row
+/// supply the palette, so scrolling a list previews each track's colours
+/// without making them fight a real track's theme. Everywhere else the live
+/// palette stays up, which is the idle behaviour every non-playlist view had
+/// before the preview existed.
+fn palette_in_effect<'a>(
+    reactive_theme: bool,
+    playing: bool,
+    browsing_playlist: bool,
+    live: Option<&'a ReactivePalette>,
+    browse: Option<&'a ReactivePalette>,
+) -> Option<&'a ReactivePalette> {
+    if !reactive_theme {
+        return None;
+    }
+    if browsing_playlist && !playing {
+        browse
+    } else {
+        live
+    }
+}
 
 impl App {
     /// Snapshot of the user-facing preferences resolved from current indices.
@@ -174,10 +199,100 @@ impl App {
         };
         let light = entry.light;
         let base = entry.theme;
-        self.theme = match (self.reactive_theme, self.reactive_palette) {
-            (true, Some(pal)) => derive_theme(&base, &pal, light, self.reactive_theme_intensity),
-            _ => base,
+        let pal = palette_in_effect(
+            self.reactive_theme,
+            self.state.current_track.is_some(),
+            self.browse_target_is_playlist(),
+            self.reactive_palette.as_ref(),
+            self.browse_palette.as_ref(),
+        );
+        let theme = match pal {
+            Some(pal) => derive_theme(&base, pal, light, self.reactive_theme_intensity),
+            None => base,
         };
+        self.theme = theme;
+    }
+
+    /// Whether the highlighted row is a track inside the Playlists view.
+    ///
+    /// The view has three levels: groups, a group's rows, and the tracks of a
+    /// named playlist. Only the last two carry tracks; the group list and the
+    /// opened-playlist list are names, and neither has a palette to preview.
+    fn browse_target_is_playlist(&self) -> bool {
+        self.library_category == LIB_PLAYLISTS && self.track_info_kind() == TrackInfoKind::Track
+    }
+
+    /// Whether the highlighted playlist row is the current reactive source.
+    pub(crate) fn browse_theme_active(&self) -> bool {
+        self.reactive_theme
+            && self.state.current_track.is_none()
+            && self.browse_target_is_playlist()
+    }
+
+    /// Re-read the highlighted playlist row's cover into the preview palette.
+    ///
+    /// Called once per frame because the inputs are asynchronous: the cursor
+    /// move sets the row key, the cover reply lands later, and playback can
+    /// start or stop without either. The stored key makes the common case a
+    /// comparison rather than another image decode; extraction only happens
+    /// when the cover belongs to a row whose palette is not already in use.
+    ///
+    /// A blank cover while a request is still in flight keeps the previous
+    /// palette, so fast scrolling does not flash the base theme between rows.
+    /// Once the row settles without artwork, the palette is cleared and the
+    /// base preset returns.
+    pub(crate) fn sync_browse_palette(&mut self) {
+        if !self.browse_theme_active() {
+            self.clear_browse_palette();
+            return;
+        }
+        let Some(key) = self.browse_cover_key.clone() else {
+            self.clear_browse_palette();
+            return;
+        };
+        let Some(bytes) = self.track_popup_cover.as_deref() else {
+            if self.popup_slot.version.is_some() || self.spotify_popup_slot.version.is_some() {
+                return;
+            }
+            // A terminal without an image protocol never fetches the card's
+            // cover for display, so the palette needs its own one-shot fetch.
+            // The latch stops a row with no artwork from being re-asked every
+            // frame; a row change clears it in `update_track_popup`.
+            if no_image_protocol()
+                && self.track_popup_visible
+                && self.browse_cover_tried.as_deref() != Some(key.as_str())
+            {
+                self.update_track_popup();
+                if self.browse_cover_key.as_deref() == Some(key.as_str()) {
+                    self.browse_cover_tried = Some(key);
+                }
+                return;
+            }
+            self.clear_browse_palette();
+            return;
+        };
+        if self.browse_palette_key.as_deref() == Some(key.as_str()) {
+            return;
+        }
+        let pal = extract_palette(bytes);
+        let changed = self.browse_palette != pal;
+        self.browse_palette = pal;
+        self.browse_palette_key = Some(key);
+        if changed {
+            self.apply_reactive();
+            self.data_dirty = true;
+        }
+    }
+
+    /// Drop a preview palette and put whatever now owns the theme back.
+    fn clear_browse_palette(&mut self) {
+        if self.browse_palette.is_none() && self.browse_palette_key.is_none() {
+            return;
+        }
+        self.browse_palette = None;
+        self.browse_palette_key = None;
+        self.apply_reactive();
+        self.data_dirty = true;
     }
 
     /// Cycle the reactive background wash strength between presets, persist,
@@ -366,5 +481,70 @@ impl App {
                 Err(e) => self_err(&ipc_tx, format!("audio output: {e}")),
             }
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn palette(primary: [u8; 3]) -> ReactivePalette {
+        ReactivePalette {
+            primary,
+            secondary: [0, 0, 0],
+            tertiary: [0, 0, 0],
+        }
+    }
+
+    #[test]
+    fn an_idle_playlist_previews_the_highlighted_row() {
+        let live = palette([255, 0, 0]);
+        let browse = palette([0, 0, 255]);
+
+        let got = palette_in_effect(true, false, true, Some(&live), Some(&browse));
+
+        assert_eq!(got, Some(&browse));
+    }
+
+    #[test]
+    fn a_playing_track_keeps_its_own_palette() {
+        let live = palette([255, 0, 0]);
+        let browse = palette([0, 0, 255]);
+
+        let got = palette_in_effect(true, true, true, Some(&live), Some(&browse));
+
+        assert_eq!(
+            got,
+            Some(&live),
+            "playback must win over the row under the cursor"
+        );
+    }
+
+    #[test]
+    fn an_idle_non_playlist_keeps_the_last_live_palette() {
+        let live = palette([255, 0, 0]);
+
+        let got = palette_in_effect(true, false, false, Some(&live), None);
+
+        assert_eq!(
+            got,
+            Some(&live),
+            "leaving the playlist must not reset the existing idle theme"
+        );
+    }
+
+    #[test]
+    fn a_disabled_reactive_theme_ignores_every_palette() {
+        let live = palette([255, 0, 0]);
+        let browse = palette([0, 0, 255]);
+
+        assert_eq!(
+            palette_in_effect(false, true, true, Some(&live), Some(&browse)),
+            None
+        );
+        assert_eq!(
+            palette_in_effect(false, false, true, Some(&live), Some(&browse)),
+            None
+        );
     }
 }

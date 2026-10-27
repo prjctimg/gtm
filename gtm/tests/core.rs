@@ -2918,8 +2918,16 @@ fn the_now_playing_cover_has_one_protocol() {
         cover.contains("self.protocol(self.np_cover.image.as_deref())"),
         "the now-playing cover builds its own protocol rather than the shared one"
     );
+    // The popup's bytes can also exist only to seed the idle playlist palette
+    // in a terminal without an image protocol, so that one sync skips the
+    // decoder. It must still go through the shared decoder whenever it does
+    // decode.
+    assert!(
+        cover.contains("self.popup_cover_stateful = if no_image_protocol() {")
+            && cover.contains("self.protocol(self.track_popup_cover.as_deref())"),
+        "the popup cover bypassed the shared decoder"
+    );
     for sync in [
-        "popup_cover_stateful = self.protocol(self.track_popup_cover.as_deref())",
         "queue.preview_cover_stateful = self.protocol(self.queue.preview_cover.as_deref())",
         "picker_preview_stateful = self.protocol(self.picker_preview_cover.as_deref())",
         "metadata.cover_stateful = self.protocol(self.metadata.cover.as_deref())",
