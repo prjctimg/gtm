@@ -22,6 +22,13 @@ use gtm::shared::track::LrcData;
 pub mod vtt;
 
 const CONFIG_FILE: &str = "podcast.json";
+/// Marks that the current default-feed set has been offered to this config.
+///
+/// Without it there is no way to tell a fresh install from a user who removed a
+/// default on purpose: re-seeding every empty file would resurrect every
+/// unsubscribe at the next start. A version in the name means a later release
+/// can deliberately merge a new set once.
+const DEFAULTS_MARKER: &str = "podcast-defaults-v1";
 const CONFIG_PERMS: u32 = 0o600;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 // Some shows publish their whole archive in one document: Stuff You Should
@@ -47,6 +54,10 @@ const DEFAULT_PODCAST_FEEDS: &[(&str, &str)] = &[
     (
         "Lex Fridman Podcast",
         "https://lexfridman.com/feed/podcast/",
+    ),
+    (
+        "The Diary Of A CEO with Steven Bartlett",
+        "https://rss2.flightcast.com/xmsftuzjjykcmqwolaqn6mdn",
     ),
     (
         "WTF with Marc Maron",
@@ -124,60 +135,113 @@ impl PodcastManager {
         self.config_dir.join(CONFIG_FILE)
     }
 
+    fn defaults_marker_path(&self) -> PathBuf {
+        self.config_dir.join(DEFAULTS_MARKER)
+    }
+
+    /// The default subscriptions, ready to persist.
+    fn default_feeds() -> Vec<SubscribedFeed> {
+        DEFAULT_PODCAST_FEEDS
+            .iter()
+            .map(|(title, url)| SubscribedFeed {
+                id: feed_id(url),
+                url: url.to_string(),
+                title: title.to_string(),
+                image_url: None,
+            })
+            .collect()
+    }
+
     /// Load subscriptions at daemon startup.
+    ///
+    /// A config written before the marker existed gets every default it does
+    /// not already have, exactly once. After that the marker is the record of
+    /// the offer: an empty file is an empty subscription list, not a fresh
+    /// install, so a user who removed a default does not get it back.
     pub fn load(&mut self) {
+        let merged = self.defaults_marker_path().exists();
         let raw = match std::fs::read_to_string(self.config_path()) {
             Ok(r) => r,
             Err(_) => {
-                let mut seeded = Vec::new();
-                for (title, url) in DEFAULT_PODCAST_FEEDS {
-                    seeded.push(SubscribedFeed {
-                        id: feed_id(url),
-                        url: url.to_string(),
-                        title: title.to_string(),
-                        image_url: None,
-                    });
-                }
-                self.feeds = seeded;
-                let _ = self.save();
-                info!("seeded {} default podcast feeds", self.feeds.len());
+                // A missing config is a first run, or a deliberate reset by
+                // deleting the file; both want the full default set.
+                self.seed_defaults();
                 return;
             }
         };
         match serde_json::from_str::<Vec<SubscribedFeed>>(&raw) {
             Ok(feeds) => {
                 self.feeds = feeds;
-                if self.feeds.is_empty() {
-                    let mut seeded = Vec::new();
-                    for (title, url) in DEFAULT_PODCAST_FEEDS {
-                        seeded.push(SubscribedFeed {
-                            id: feed_id(url),
-                            url: url.to_string(),
-                            title: title.to_string(),
-                            image_url: None,
-                        });
-                    }
-                    self.feeds = seeded;
-                    let _ = self.save();
-                    info!("seeded {} default podcast feeds", self.feeds.len());
-                } else {
+                if merged {
                     info!("loaded {} podcast feeds", self.feeds.len());
+                } else {
+                    self.merge_missing_defaults();
                 }
             }
             Err(e) => {
                 warn!("ignoring corrupt podcast config: {e}");
-                let mut seeded = Vec::new();
-                for (title, url) in DEFAULT_PODCAST_FEEDS {
-                    seeded.push(SubscribedFeed {
-                        id: feed_id(url),
-                        url: url.to_string(),
-                        title: title.to_string(),
-                        image_url: None,
-                    });
-                }
-                self.feeds = seeded;
-                let _ = self.save();
+                self.seed_defaults();
             }
+        }
+    }
+
+    fn seed_defaults(&mut self) {
+        self.feeds = Self::default_feeds();
+        match self.save() {
+            Ok(()) => {
+                self.mark_defaults_merged();
+                info!("seeded {} default podcast feeds", self.feeds.len());
+            }
+            Err(e) => warn!("could not write default podcast feeds: {e}"),
+        }
+    }
+
+    /// Add the defaults an older config does not already have.
+    ///
+    /// URL identity alone is not enough: a feed can change hosts without
+    /// changing its name, and the same show may already be subscribed under
+    /// the old address. Matching the title as well keeps the migration from
+    /// adding a second copy of The Daily or Stuff You Should Know.
+    fn merge_missing_defaults(&mut self) {
+        let mut added = 0usize;
+        for (title, url) in DEFAULT_PODCAST_FEEDS {
+            let id = feed_id(url);
+            let title_key = feed_title_key(title);
+            let present = self
+                .feeds
+                .iter()
+                .any(|f| f.id == id || feed_title_key(&f.title) == title_key);
+            if present {
+                continue;
+            }
+            self.feeds.push(SubscribedFeed {
+                id,
+                url: url.to_string(),
+                title: title.to_string(),
+                image_url: None,
+            });
+            added += 1;
+        }
+        if added > 0 {
+            match self.save() {
+                Ok(()) => {
+                    self.mark_defaults_merged();
+                    info!("added {added} new default podcast feeds");
+                }
+                Err(e) => {
+                    // Leave the marker unwritten so the next start retries the
+                    // merge rather than permanently dropping the new feeds.
+                    warn!("could not merge default podcast feeds: {e}");
+                }
+            }
+        } else {
+            self.mark_defaults_merged();
+        }
+    }
+
+    fn mark_defaults_merged(&self) {
+        if let Err(e) = std::fs::write(self.defaults_marker_path(), b"1\n") {
+            warn!("could not write podcast defaults marker: {e}");
         }
     }
 
@@ -646,6 +710,16 @@ impl PodcastManager {
 /// Stable feed id derived from the feed URL.
 pub fn feed_id(url: &str) -> String {
     format!("{:x}", md5::compute(url.as_bytes()))
+}
+
+/// Case-insensitive title identity used only when merging the default set.
+///
+/// The URL is the stable id once a feed is subscribed; the title is the extra
+/// check for a show whose feed address changed between releases. Punctuation
+/// and spacing are left alone: the defaults and the feed's own `<title>` agree
+/// closely enough, and normalising them would risk folding two real shows.
+fn feed_title_key(title: &str) -> String {
+    title.trim().to_lowercase()
 }
 
 /// Strips query strings from an audio URL for stable episode ids.
@@ -1599,5 +1673,144 @@ Hello]]></podcast:transcript>
         assert_eq!(lyrics.lines.len(), 1);
         assert_eq!(lyrics.lines[0].timestamp, 1.0);
         assert_eq!(lyrics.lines[0].text, "A timed line");
+    }
+
+    fn temp_config_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("gtm-podcast-{tag}-{}-{nanos}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp config dir");
+        dir
+    }
+
+    fn write_feeds(dir: &std::path::Path, feeds: &[SubscribedFeed]) {
+        std::fs::write(
+            dir.join(CONFIG_FILE),
+            serde_json::to_string_pretty(feeds).expect("serialize feeds"),
+        )
+        .expect("write feeds");
+    }
+
+    /// A config from before the marker gets the shows it is missing, without
+    /// duplicating a show whose feed address changed, and the next start leaves
+    /// a deliberate unsubscribe alone.
+    #[test]
+    fn a_legacy_config_is_merged_once_then_respects_unsubscribes() {
+        let dir = temp_config_dir("merge");
+        let old_daily = "https://feeds.simplecast.com/54nAGcIl";
+        let existing = vec![
+            SubscribedFeed {
+                id: feed_id("https://example.com/custom.xml"),
+                url: "https://example.com/custom.xml".into(),
+                title: "A Custom Show".into(),
+                image_url: None,
+            },
+            SubscribedFeed {
+                id: feed_id(old_daily),
+                url: old_daily.into(),
+                title: "The Daily".into(),
+                image_url: None,
+            },
+            SubscribedFeed {
+                id: feed_id("https://feeds.megaphone.fm/stuffyoushouldknow"),
+                url: "https://feeds.megaphone.fm/stuffyoushouldknow".into(),
+                title: "stuff you should know".into(),
+                image_url: None,
+            },
+        ];
+        write_feeds(&dir, &existing);
+
+        let mut manager = PodcastManager::new(dir.clone());
+        manager.load();
+
+        let daily = manager
+            .feeds
+            .iter()
+            .filter(|f| feed_title_key(&f.title) == "the daily")
+            .count();
+        let sysk = manager
+            .feeds
+            .iter()
+            .filter(|f| feed_title_key(&f.title) == "stuff you should know")
+            .count();
+        assert_eq!(daily, 1, "a renamed feed address must not duplicate a show");
+        assert_eq!(sysk, 1, "title identity is case-insensitive");
+        assert!(
+            manager
+                .feeds
+                .iter()
+                .any(|f| f.title == "The Diary Of A CEO with Steven Bartlett"),
+            "the new show is added"
+        );
+        assert!(
+            manager
+                .feeds
+                .iter()
+                .any(|f| f.title == "Lex Fridman Podcast"),
+            "a requested show missing from the old config is added"
+        );
+        assert!(
+            manager.feeds.iter().any(|f| f.title == "A Custom Show"),
+            "the user's own subscription is untouched"
+        );
+        assert!(
+            dir.join(DEFAULTS_MARKER).exists(),
+            "the merge is recorded so it cannot run again"
+        );
+
+        manager
+            .feeds
+            .retain(|f| f.title != "The Diary Of A CEO with Steven Bartlett");
+        manager.save().expect("save after unsubscribe");
+
+        let mut restarted = PodcastManager::new(dir.clone());
+        restarted.load();
+        assert!(
+            !restarted
+                .feeds
+                .iter()
+                .any(|f| f.title == "The Diary Of A CEO with Steven Bartlett"),
+            "an unsubscribed default must not return after a restart"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Once the offer has been made, an empty list means the user removed every
+    /// feed. Re-seeding it would undo every unsubscribe at once.
+    #[test]
+    fn an_empty_config_after_the_offer_stays_empty() {
+        let dir = temp_config_dir("empty");
+        write_feeds(&dir, &[]);
+        std::fs::write(dir.join(DEFAULTS_MARKER), b"1\n").expect("marker");
+
+        let mut manager = PodcastManager::new(dir.clone());
+        manager.load();
+
+        assert!(manager.feeds.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_fresh_config_seeds_every_default() {
+        let dir = temp_config_dir("fresh");
+
+        let mut manager = PodcastManager::new(dir.clone());
+        manager.load();
+
+        assert_eq!(manager.feeds.len(), DEFAULT_PODCAST_FEEDS.len());
+        assert!(dir.join(DEFAULTS_MARKER).exists());
+        assert!(
+            manager
+                .feeds
+                .iter()
+                .any(|f| f.title.contains("Diary Of A CEO")),
+            "the release that introduced the show seeds it too"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
