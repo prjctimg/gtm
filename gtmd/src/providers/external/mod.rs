@@ -21,7 +21,7 @@ use gtm::providers::external::{
 use crate::config::ProviderConfig;
 use crate::providers::external::{
     bilibili::BilibiliProvider, mixcloud::MixcloudProvider, netease::NetEaseProvider,
-    soundcloud::SoundCloudProvider, ytmusic::YtDlpSearchProvider,
+    soundcloud::SoundCloudProvider, subsonic::SubsonicProvider, ytmusic::YtDlpSearchProvider,
 };
 
 /// All configured and unconfigured providers, in catalogue order.
@@ -52,8 +52,10 @@ impl ProviderRegistry {
                     "mixcloud" => Arc::new(MixcloudProvider::new(config)),
                     "bilibili" => Arc::new(BilibiliProvider::new(config)),
                     "netease" => Arc::new(NetEaseProvider::new(config)),
-                    "bandcamp" | "qobuz" | "tidal" | "yandex" | "xiaoyuzhou" | "navidrome"
-                    | "lyrion" | "plex" | "jellyfin" | "emby" | "audiobookshelf" => {
+                    "navidrome" | "lyrion" | "bandcamp" | "emby" | "audiobookshelf" => {
+                        Arc::new(SubsonicProvider::new(spec.id, config))
+                    }
+                    "qobuz" | "tidal" | "yandex" | "xiaoyuzhou" | "plex" | "jellyfin" => {
                         Arc::new(UnconfiguredProvider::new(
                             spec,
                             "configured, but this build has no client for it".to_string(),
@@ -264,5 +266,6 @@ pub mod bilibili;
 pub mod mixcloud;
 pub mod netease;
 pub mod soundcloud;
+pub mod subsonic;
 pub mod ytmp;
 pub mod ytmusic;
