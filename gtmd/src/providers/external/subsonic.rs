@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use gtm::providers::external::{
@@ -82,16 +81,16 @@ impl SubsonicProvider {
             ("c".to_string(), "gtm".to_string()),
             ("f".to_string(), "json".to_string()),
         ];
-        if let Some(t) = &cfg.token {
-            if !t.is_empty() {
-                // Try token auth first; some servers use token differently
-                params.push(("t".to_string(), t.clone()));
-                let salt: String = (0..6)
-                    .map(|_| format!("{:x}", fastrand::u8(..16)))
-                    .collect();
-                params.push(("s".to_string(), salt));
-                return params;
-            }
+        if let Some(t) = &cfg.token
+            && !t.is_empty()
+        {
+            // Try token auth first; some servers use token differently
+            params.push(("t".to_string(), t.clone()));
+            let salt: String = (0..6)
+                .map(|_| format!("{:x}", fastrand::u8(..16)))
+                .collect();
+            params.push(("s".to_string(), salt));
+            return params;
         }
         let salt: String = (0..6)
             .map(|_| format!("{:x}", fastrand::u8(..16)))
