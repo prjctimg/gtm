@@ -16,6 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
+use crate::providers::external::{ProviderPlaylist, ProviderSource, ProviderTrack};
 use crate::providers::playlist::{
     NewPlaylist, PlaylistId, PlaylistItem, PlaylistSlot, PlaylistSource,
 };
@@ -497,6 +498,11 @@ impl DaemonClient {
         Charts { client: self }
     }
 
+    /// External catalogue providers (Qobuz, Tidal, media servers, ...).
+    pub fn providers(&self) -> Providers<'_> {
+        Providers { client: self }
+    }
+
     /// Playlist writes, in provider-neutral terms.
     pub fn playlists(&self) -> Playlists<'_> {
         Playlists { client: self }
@@ -910,6 +916,94 @@ impl<'a> Library<'a> {
         self.client
             .send_ok(DaemonReq::Library {
                 action: LibraryAction::UpdateMetadata { track_id, patch },
+            })
+            .await
+    }
+}
+
+pub struct Providers<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Providers<'a> {
+    /// Every catalogue provider, including the ones that still need setup.
+    pub async fn sources(&self) -> Result<Vec<ProviderSource>> {
+        match self.client.send_raw(DaemonReq::ProviderSources).await? {
+            DaemonRes::ProviderSourcesRes { sources } => Ok(sources),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    pub async fn search(
+        &self,
+        provider: &str,
+        query: &str,
+        limit: u16,
+    ) -> Result<Vec<ProviderTrack>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::ProviderSearch {
+                provider: provider.into(),
+                query: query.into(),
+                limit,
+            })
+            .await?;
+        match res {
+            DaemonRes::ProviderTracksRes { tracks } => Ok(tracks),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    pub async fn playlists(&self, provider: &str) -> Result<Vec<ProviderPlaylist>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::ProviderPlaylists {
+                provider: provider.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::ProviderPlaylistsRes { playlists } => Ok(playlists),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    pub async fn playlist_tracks(&self, provider: &str, id: &str) -> Result<Vec<ProviderTrack>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::ProviderPlaylistTracks {
+                provider: provider.into(),
+                id: id.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::ProviderTracksRes { tracks } => Ok(tracks),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    pub async fn play(&self, track: &ProviderTrack) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::ProviderPlay {
+                provider: track.provider.clone(),
+                id: track.id.clone(),
+                title: track.title.clone(),
+                artist: track.artist.clone(),
+                album: track.album.clone(),
+                duration_secs: track.duration_secs,
+            })
+            .await
+    }
+
+    pub async fn like(&self, track: &ProviderTrack) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::ProviderLike {
+                provider: track.provider.clone(),
+                id: track.id.clone(),
+                title: track.title.clone(),
             })
             .await
     }

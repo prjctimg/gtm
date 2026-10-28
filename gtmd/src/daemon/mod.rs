@@ -60,6 +60,7 @@ use crate::library::{Library, extract_metadata};
 use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
 use crate::network;
 use crate::podcast::PodcastManager;
+use crate::providers::external::ProviderRegistry;
 use crate::providers::playlists::PlaylistRegistry;
 use crate::providers::spotify::cmd::{OwnedMeta, StreamMeta};
 use crate::providers::spotify::cover::{PRELOAD_LEAD, preload};
@@ -87,6 +88,7 @@ pub mod lastfm;
 pub mod library;
 pub mod lyrics;
 pub mod podcast;
+pub mod provider;
 pub mod queue_cmd;
 pub mod radio;
 pub mod scrobble;
@@ -106,6 +108,7 @@ pub(crate) use lastfm::*;
 pub(crate) use library::*;
 pub(crate) use lyrics::*;
 pub(crate) use podcast::*;
+pub(crate) use provider::*;
 pub(crate) use queue_cmd::*;
 pub(crate) use radio::*;
 pub(crate) use scrobble::*;
@@ -852,6 +855,14 @@ impl Cmd {
                     RemoteKind::YtDlp { url } => {
                         let label = ytdlp_label(url).unwrap_or("YouTube");
                         (label, label, label)
+                    }
+                    // A provider row normally carries its real metadata on the
+                    // queue entry. This is only the fallback for a caller that
+                    // played a bare path: the provider's name is the truthful
+                    // label, and the id is a better title than "Track".
+                    RemoteKind::Provider { provider, id } => {
+                        let name = gtm::shared::external::provider_name(provider);
+                        (id.as_str(), name, name)
                     }
                 };
                 TrackInfo {
@@ -1808,6 +1819,10 @@ pub(crate) struct DaemonInner {
     pub(crate) state: Arc<RwLock<DaemonState>>,
     pub(crate) mixer: tokio::sync::Mutex<Box<dyn Mixer>>,
     pub(crate) config: DaemonConfig,
+    /// Catalogue providers, built once at startup from `config.toml`. Setup
+    /// restarts the daemon, so a rebuilt config is a new registry rather than a
+    /// half-swapped set of clients under a running request.
+    pub(crate) providers: Arc<ProviderRegistry>,
     /// Runtime cover-provider override. `None` means the value baked into
     /// `config` (from config.toml at startup) applies; the TUI switches it
     /// live via `DaemonReq::SetCoverProvider` without a restart.
@@ -2175,6 +2190,10 @@ fn is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::RadioCountries { .. }
             | DaemonReq::RadioByCountry { .. }
             | DaemonReq::RadioTracklist { .. }
+            | DaemonReq::ProviderSources
+            | DaemonReq::ProviderSearch { .. }
+            | DaemonReq::ProviderPlaylists { .. }
+            | DaemonReq::ProviderPlaylistTracks { .. }
             | DaemonReq::Search { .. }
             | DaemonReq::Queue {
                 action: QueueAction::List,
@@ -2224,6 +2243,7 @@ fn request_is_playback(req: &DaemonReq) -> bool {
             | DaemonReq::SpotifyVolume { .. }
             | DaemonReq::PodcastPlay { .. }
             | DaemonReq::RadioPlay { .. }
+            | DaemonReq::ProviderPlay { .. }
     )
 }
 
@@ -2386,6 +2406,7 @@ impl Daemon {
         let (art_tx, art_rx) = mpsc::unbounded_channel();
 
         let config_dir = config.config_dir.clone();
+        let providers = Arc::new(ProviderRegistry::new(&config.providers));
         let audio_backend_name = match config.audio_backend {
             #[cfg(feature = "pulseaudio")]
             AudioBackendKind::PulseAudio => "pulseaudio",
@@ -2397,6 +2418,7 @@ impl Daemon {
             state,
             mixer: tokio::sync::Mutex::new(mixer),
             config,
+            providers,
             event_tx: event_tx.clone(),
             pushed: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             cover_cache: tokio::sync::Mutex::new(None),
@@ -3710,6 +3732,29 @@ impl Daemon {
                 Radio::by_country(inner, country, *limit).await
             }
             DaemonReq::RadioTracklist { station_id } => tracklist::fetch(inner, station_id).await,
+            DaemonReq::ProviderSources => Provider::sources(inner).await,
+            DaemonReq::ProviderSearch {
+                provider,
+                query,
+                limit,
+            } => Provider::search(inner, provider, query, *limit).await,
+            DaemonReq::ProviderPlaylists { provider } => Provider::playlists(inner, provider).await,
+            DaemonReq::ProviderPlaylistTracks { provider, id } => {
+                Provider::playlist_tracks(inner, provider, id).await
+            }
+            DaemonReq::ProviderPlay {
+                provider,
+                id,
+                title,
+                artist,
+                album,
+                duration_secs,
+            } => Provider::play(inner, provider, id, title, artist, album, *duration_secs).await,
+            DaemonReq::ProviderLike {
+                provider,
+                id,
+                title,
+            } => Provider::like(inner, provider, id, title).await,
             DaemonReq::SetSleepTimer {
                 minutes,
                 stop_immediately,

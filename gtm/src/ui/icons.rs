@@ -122,6 +122,10 @@ pub(crate) fn source_icon(source: &str, icon_style: &str) -> Option<&'static str
             crate::shared::SRC_RADIO => provider_icon("Radio")?,
             crate::shared::SRC_PODCAST => provider_icon("Podcast")?,
             crate::shared::SRC_LOCAL => provider_icon("Local")?,
+            // A provider track is a track, not a particular service. The music
+            // note is the marker for that category; the provider name lives in
+            // the row and in the now-playing source label.
+            crate::shared::SRC_PROVIDER => "\u{f001}",
             _ => return None,
         });
     }

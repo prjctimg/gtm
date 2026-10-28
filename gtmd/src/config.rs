@@ -65,6 +65,60 @@ pub enum AudioBackendKind {
     PulseAudio,
 }
 
+/// The provider tables read from `config.toml`.
+///
+/// Kept as the parsed document rather than sixteen typed structs: each provider
+/// has its own option names, and an integration should be able to grow a key
+/// without adding a field here first. The typed getters below are the contract;
+/// the raw table stays available for options whose shape is provider-specific.
+#[derive(Debug, Clone, Default)]
+pub struct ProviderConfig {
+    root: Option<toml::Value>,
+}
+
+impl ProviderConfig {
+    pub fn from_toml(root: Option<toml::Value>) -> Self {
+        Self { root }
+    }
+
+    /// The table for one provider, if the config has one.
+    pub fn section(&self, id: &str) -> Option<&toml::Value> {
+        self.root.as_ref()?.get(id)
+    }
+
+    /// Whether a provider was switched on.
+    ///
+    /// A present table without `enabled = false` counts as on: Setup writes the
+    /// key, but a hand-written table that names a server should not be ignored
+    /// because the user omitted a boolean. An explicit `false` is obeyed.
+    pub fn enabled(&self, id: &str) -> bool {
+        match self.section(id) {
+            Some(table) => table
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            None => false,
+        }
+    }
+
+    pub fn string(&self, id: &str, key: &str) -> Option<String> {
+        self.section(id)?
+            .get(key)?
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    }
+
+    pub fn bool(&self, id: &str, key: &str) -> Option<bool> {
+        self.section(id)?.get(key)?.as_bool()
+    }
+
+    pub fn integer(&self, id: &str, key: &str) -> Option<i64> {
+        self.section(id)?.get(key)?.as_integer()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
     pub socket_path: PathBuf,
@@ -104,6 +158,8 @@ pub struct DaemonConfig {
     /// here means the machine starts making noise whenever anything next runs a
     /// `gtm` command -- which nobody asked for, in a room the daemon cannot see.
     pub resume_on_start: bool,
+    /// Provider tables from `config.toml`.
+    pub providers: ProviderConfig,
 }
 
 #[derive(Parser, Debug)]
@@ -261,6 +317,7 @@ impl DaemonConfig {
             .and_then(|v| v.get("resume_on_start"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let providers = ProviderConfig::from_toml(toml.clone());
 
         DaemonConfig {
             resume_on_start,
@@ -279,6 +336,7 @@ impl DaemonConfig {
             cover_cache_bytes,
             web_addr,
             discord_id,
+            providers,
         }
     }
 

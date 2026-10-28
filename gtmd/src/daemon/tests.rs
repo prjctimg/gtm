@@ -152,7 +152,7 @@ fn chart_paths_parse_as_charts_and_keep_the_whole_url() {
 /// the constants are strings.
 #[test]
 fn source_follows_the_path_not_the_vocabulary() {
-    use gtm::shared::{SRC_CHART, SRC_LOCAL, SRC_PODCAST, SRC_RADIO, SRC_SPOTIFY};
+    use gtm::shared::{SRC_CHART, SRC_LOCAL, SRC_PODCAST, SRC_PROVIDER, SRC_RADIO, SRC_SPOTIFY};
 
     assert_eq!(source_for_path("spotify:track:abc"), SRC_SPOTIFY);
     assert_eq!(source_for_path("radio://uuid/Station Name"), SRC_RADIO);
@@ -161,6 +161,7 @@ fn source_follows_the_path_not_the_vocabulary() {
         source_for_path("chart://https://x.example.com/s"),
         SRC_CHART
     );
+    assert_eq!(source_for_path("provider://qobuz/12345"), SRC_PROVIDER);
     // A bare stream is the same evidence a station gives -- no length -- so it
     // is reported as radio rather than guessed at.
     assert_eq!(
@@ -174,9 +175,9 @@ fn source_follows_the_path_not_the_vocabulary() {
 
 /// Every path the daemon routes lands on a value from the documented set.
 ///
-/// The five values are a wire contract that clients match on, so the risk is not
-/// a wrong classification but a classification that invents a sixth value. This
-/// asserts the set is closed over the inputs that exist.
+/// The six values are a wire contract that clients match on, so the risk is not
+/// a wrong classification but a classification that invents a seventh value.
+/// This asserts the set is closed over the inputs that exist.
 #[test]
 fn every_routed_path_classifies_to_a_known_source() {
     use gtm::shared::is_known;
@@ -186,6 +187,7 @@ fn every_routed_path_classifies_to_a_known_source() {
         "radio://uuid/Name",
         "podcast://feed/1",
         "chart://https://x.example.com/a",
+        "provider://tidal/9876",
         "https://stream.example.com/live",
         "/home/me/song.mp3",
         "C:\\Music\\song.flac",

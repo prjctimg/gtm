@@ -71,7 +71,7 @@ client tells them apart on a multiplexed connection:
 
 ### The `source` field
 
-Where the audio came from. Lowercase, from a fixed set of five:
+Where the audio came from. Lowercase, from a fixed set of six:
 
 | Value | Meaning |
 |-------|---------|
@@ -80,6 +80,7 @@ Where the audio came from. Lowercase, from a fixed set of five:
 | `radio` | A Radio Browser or cliamp station, or any other live stream |
 | `podcast` | A podcast episode |
 | `chart` | A charts provider's stream |
+| `provider` | An external catalogue provider track (Qobuz, Tidal, a media server, ...) |
 
 Anything else — including an older daemon that omits the field, and the empty
 string a path the daemon could not classify produces — is an unknown source, and
@@ -181,6 +182,26 @@ Playlist writes that are not specific to one service. Like `queue` and `library`
 `create` mints a playlist on `source` and answers with `playlist_id`; `copy`
 answers the same way. `rename`, `add`, `remove`, `delete` and `subscribe` answer
 with no payload.
+
+### Catalogue providers
+
+The services outside the native Spotify, YouTube and radio paths — Qobuz, Tidal,
+SoundCloud, the media servers, and the rest — expose the same four catalogue
+verbs. `provider_sources` is the read that lists every one of them, including a
+provider whose Setup is unfinished; its `available` and `detail` fields say
+whether a call can work and, when it cannot, what is missing. Capability bits
+are authoritative: a client should not offer a verb the provider does not
+advertise. A queue path for a track is `provider://<provider>/<track id>`; the
+track id keeps every slash and is opaque to the daemon.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `provider_sources` | — | `sources` | — |
+| `provider_search` | `provider` : string, `query` : string, `limit` : uint16 | `tracks` | — |
+| `provider_playlists` | `provider` : string | `playlists` | — |
+| `provider_playlist_tracks` | `provider` : string, `id` : string | `tracks` | — |
+| `provider_play` | `provider`, `id`, `title`, `artist`, `album` : string, `duration_secs` : float | — | `playback_started`, `queue_changed` |
+| `provider_like` | `provider`, `id`, `title` : string | — | — |
 
 ### Search and favourites
 

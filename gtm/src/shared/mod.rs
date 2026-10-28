@@ -28,6 +28,7 @@ pub mod wire;
 // Each provider's wire types live under `providers`; re-exported here so the
 // shared vocabulary stays flat for the rest of the client.
 pub use crate::providers::charts as chart;
+pub use crate::providers::external;
 pub use crate::providers::podcast;
 pub use crate::providers::radio;
 pub use crate::providers::spotify;
@@ -47,7 +48,9 @@ pub use paths::{
 pub use playlist::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
 pub use podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 pub use radio::RadioStation;
-pub use source::{SOURCES, SRC_CHART, SRC_LOCAL, SRC_PODCAST, SRC_RADIO, SRC_SPOTIFY, is_known};
+pub use source::{
+    SOURCES, SRC_CHART, SRC_LOCAL, SRC_PODCAST, SRC_PROVIDER, SRC_RADIO, SRC_SPOTIFY, is_known,
+};
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 pub use theme::{ROLE_NAMES, ReactiveTheme, Roles, THEME_VER, derive};
 pub use track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};

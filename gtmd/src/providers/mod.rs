@@ -13,6 +13,7 @@
 
 pub mod charts;
 pub mod deezer;
+pub mod external;
 pub mod lastfm;
 pub mod lrclib;
 pub mod musicbrainz;

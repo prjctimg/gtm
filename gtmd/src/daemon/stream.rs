@@ -1,5 +1,5 @@
 use super::*;
-use gtm::shared::{SRC_CHART, SRC_LOCAL, SRC_PODCAST, SRC_RADIO, SRC_SPOTIFY};
+use gtm::shared::{SRC_CHART, SRC_LOCAL, SRC_PODCAST, SRC_PROVIDER, SRC_RADIO, SRC_SPOTIFY};
 
 pub(crate) const RESTART_THRESHOLD_SECS: f64 = 3.0;
 
@@ -39,6 +39,16 @@ pub(crate) enum RemoteKind {
     YtDlp {
         url: String,
     },
+    /// A catalogue provider track: `provider://<provider>/<track id>`.
+    ///
+    /// The id is opaque to the daemon; the registry asks the owning client to
+    /// resolve it. Keeping the provider and id in the path is what lets a row
+    /// be replayed or auto-advanced hours later without the client being
+    /// connected, and re-resolves signed URLs that have since expired.
+    Provider {
+        provider: String,
+        id: String,
+    },
 }
 
 pub(crate) fn parse_remote_path(path: &str) -> Option<RemoteKind> {
@@ -65,6 +75,16 @@ pub(crate) fn parse_remote_path(path: &str) -> Option<RemoteKind> {
     // is part of the address.
     if let Some(rest) = path.strip_prefix("chart://") {
         return Some(RemoteKind::Chart { url: rest.into() });
+    }
+    if let Some(rest) = path.strip_prefix("provider://") {
+        let (provider, id) = rest.split_once('/')?;
+        if provider.is_empty() || id.is_empty() {
+            return None;
+        }
+        return Some(RemoteKind::Provider {
+            provider: provider.into(),
+            id: id.into(),
+        });
     }
     if ytdlp_label(path).is_some() {
         return Some(RemoteKind::YtDlp { url: path.into() });
@@ -105,13 +125,26 @@ pub(crate) async fn resolve_remote(
 ) -> Result<RemoteResolved, CoreError> {
     let kind = parse_remote_path(path)
         .ok_or_else(|| CoreError::Daemon(format!("{path} is not a remote provider path")))?;
-    let url = match &kind {
+    // Extractors need a human title for their search fallback, and a provider
+    // may have queued the row under a name the id does not carry. The queue is
+    // the authority when it has the row; an empty title is still valid for
+    // providers that resolve purely by id.
+    let queued_title = {
+        let state = inner.state.read().await;
+        state
+            .queue
+            .iter()
+            .find(|t| t.path == path)
+            .map(|t| t.title.clone())
+            .unwrap_or_default()
+    };
+    let (url, live) = match &kind {
         RemoteKind::Podcast {
             feed_id,
             episode_index,
         } => {
             let mut podcast = inner.podcast.lock().await;
-            match podcast.episode_at(feed_id, *episode_index) {
+            let url = match podcast.episode_at(feed_id, *episode_index) {
                 Some(ep) => ep.url.clone(),
                 None => {
                     // Daemon restarted since the feed was browsed; refresh the
@@ -126,10 +159,11 @@ pub(crate) async fn resolve_remote(
                         .url
                         .clone()
                 }
-            }
+            };
+            (url, false)
         }
         RemoteKind::Radio { station_id, .. } => {
-            if let Some(index) = gtm::shared::custom::parse_custom_id(station_id) {
+            let url = if let Some(index) = gtm::shared::custom::parse_custom_id(station_id) {
                 gtm::shared::custom::station_by_index(index)
                     .map_err(CoreError::Daemon)?
                     .ok_or_else(|| CoreError::Daemon(format!("no custom station {index}")))?
@@ -141,10 +175,11 @@ pub(crate) async fn resolve_remote(
                     .await
                     .map_err(|e| CoreError::Daemon(format!("radio lookup: {e}")))?
                     .url_resolved
-            }
+            };
+            (url, true)
         }
-        RemoteKind::Stream { url } => url.clone(),
-        RemoteKind::Chart { url } => url.clone(),
+        RemoteKind::Stream { url } => (url.clone(), true),
+        RemoteKind::Chart { url } => (url.clone(), true),
         #[cfg(feature = "youtube")]
         RemoteKind::YtDlp { url } => {
             // Resolve via yt-dlp without holding the `YoutubeManager` mutex
@@ -159,7 +194,7 @@ pub(crate) async fn resolve_remote(
             let (_, direct) = crate::youtube::resolve_info_ytdlp(&sem, &gate, &auth, url)
                 .await
                 .map_err(CoreError::Daemon)?;
-            direct
+            (direct, false)
         }
         #[cfg(not(feature = "youtube"))]
         RemoteKind::YtDlp { .. } => {
@@ -167,11 +202,15 @@ pub(crate) async fn resolve_remote(
                 "youtube support is disabled in this build".into(),
             ));
         }
+        RemoteKind::Provider { provider, id } => {
+            let stream = inner
+                .providers
+                .resolve(provider, id, &queued_title)
+                .await
+                .map_err(|e| CoreError::Daemon(format!("{}: {e}", provider)))?;
+            (stream.url, stream.live)
+        }
     };
-    let live = matches!(
-        kind,
-        RemoteKind::Radio { .. } | RemoteKind::Stream { .. } | RemoteKind::Chart { .. }
-    );
     Ok(RemoteResolved { url, live })
 }
 
@@ -195,6 +234,9 @@ impl RemoteKind {
             // as a file. The bytes are remote; the playback is local, and
             // `local` is the marker that means "this ends".
             RemoteKind::YtDlp { .. } => SRC_LOCAL,
+            // A catalogue track has a duration and end, but the bytes are
+            // remote and the row may need re-resolving. `provider` says both.
+            RemoteKind::Provider { .. } => SRC_PROVIDER,
         }
     }
 }

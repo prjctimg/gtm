@@ -11,6 +11,7 @@
 //! fans out over every provider and belongs to none.
 
 pub mod charts;
+pub mod external;
 pub mod lastfm;
 pub mod playlist;
 pub mod podcast;

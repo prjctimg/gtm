@@ -639,6 +639,42 @@ pub enum DaemonReq {
         source_id: String,
         chart_id: String,
     },
+    /// Every external catalogue provider, configured or not.
+    ProviderSources,
+    /// Search one provider's catalogue.
+    ProviderSearch {
+        provider: String,
+        query: String,
+        limit: u16,
+    },
+    /// The user's playlists/albums/shows on one provider.
+    ProviderPlaylists {
+        provider: String,
+    },
+    /// Tracks in one provider playlist.
+    ProviderPlaylistTracks {
+        provider: String,
+        id: String,
+    },
+    /// Resolve and play one provider track.
+    ///
+    /// The metadata is sent with the request because the queue row has to be
+    /// labelled before the provider's network call completes; a row that only
+    /// knows an opaque id shows a blank now-playing pane while it resolves.
+    ProviderPlay {
+        provider: String,
+        id: String,
+        title: String,
+        artist: String,
+        album: String,
+        duration_secs: f64,
+    },
+    /// Save one provider track to the account's likes.
+    ProviderLike {
+        provider: String,
+        id: String,
+        title: String,
+    },
     GetStatus,
     /// Like `GetStatus` but omits the full `default_list` (the whole library)
     /// from the returned state. Used for the client's periodic background
@@ -751,6 +787,12 @@ impl DaemonReq {
             DaemonReq::ChartsList { .. } => "charts_list",
             DaemonReq::ChartsTracks { .. } => "charts_tracks",
             DaemonReq::ChartsSleeve { .. } => "charts_sleeve",
+            DaemonReq::ProviderSources => "provider_sources",
+            DaemonReq::ProviderSearch { .. } => "provider_search",
+            DaemonReq::ProviderPlaylists { .. } => "provider_playlists",
+            DaemonReq::ProviderPlaylistTracks { .. } => "provider_playlist_tracks",
+            DaemonReq::ProviderPlay { .. } => "provider_play",
+            DaemonReq::ProviderLike { .. } => "provider_like",
             DaemonReq::RadioTrackCover { .. } => "radio_track_cover",
             DaemonReq::GetStatus => "get_status",
             DaemonReq::GetStatusLite => "get_status_lite",
@@ -813,6 +855,77 @@ impl DaemonReq {
                 DaemonReq::ChartsSleeve {
                     source_id: x.source_id,
                     chart_id: x.chart_id,
+                }
+            }
+            "provider_sources" => DaemonReq::ProviderSources,
+            "provider_search" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    provider: String,
+                    query: String,
+                    limit: u16,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::ProviderSearch {
+                    provider: x.provider,
+                    query: x.query,
+                    limit: x.limit,
+                }
+            }
+            "provider_playlists" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    provider: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::ProviderPlaylists {
+                    provider: x.provider,
+                }
+            }
+            "provider_playlist_tracks" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    provider: String,
+                    id: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::ProviderPlaylistTracks {
+                    provider: x.provider,
+                    id: x.id,
+                }
+            }
+            "provider_play" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    provider: String,
+                    id: String,
+                    title: String,
+                    artist: String,
+                    album: String,
+                    duration_secs: f64,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::ProviderPlay {
+                    provider: x.provider,
+                    id: x.id,
+                    title: x.title,
+                    artist: x.artist,
+                    album: x.album,
+                    duration_secs: x.duration_secs,
+                }
+            }
+            "provider_like" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    provider: String,
+                    id: String,
+                    title: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::ProviderLike {
+                    provider: x.provider,
+                    id: x.id,
+                    title: x.title,
                 }
             }
             "radio_track_cover" => {
@@ -1858,6 +1971,16 @@ pub enum DaemonRes {
     RadioTrackCoverRes {
         data: Option<String>,
     },
+    /// Every catalogue provider, including the ones with no client yet.
+    ProviderSourcesRes {
+        sources: Vec<crate::providers::external::ProviderSource>,
+    },
+    ProviderPlaylistsRes {
+        playlists: Vec<crate::providers::external::ProviderPlaylist>,
+    },
+    ProviderTracksRes {
+        tracks: Vec<crate::providers::external::ProviderTrack>,
+    },
     CoverArt {
         data: Option<String>,
     },
@@ -1982,6 +2105,15 @@ impl DaemonRes {
                 Some(serde_json::json!({ "chart_id": chart_id, "cover": cover }))
             }
             DaemonRes::RadioTrackCoverRes { data } => Some(serde_json::json!({ "data": data })),
+            DaemonRes::ProviderSourcesRes { sources } => {
+                Some(serde_json::json!({ "sources": sources }))
+            }
+            DaemonRes::ProviderPlaylistsRes { playlists } => {
+                Some(serde_json::json!({ "playlists": playlists }))
+            }
+            DaemonRes::ProviderTracksRes { tracks } => {
+                Some(serde_json::json!({ "tracks": tracks }))
+            }
             DaemonRes::CoverArt { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::CoverCacheStat {
                 disk_bytes,
@@ -2146,6 +2278,9 @@ impl DaemonRes {
                 field!("cover", &cover);
             }
             DaemonRes::RadioTrackCoverRes { data } => field!("data", &data),
+            DaemonRes::ProviderSourcesRes { sources } => field!("sources", &sources),
+            DaemonRes::ProviderPlaylistsRes { playlists } => field!("playlists", &playlists),
+            DaemonRes::ProviderTracksRes { tracks } => field!("tracks", &tracks),
             DaemonRes::CoverArt { data } => field!("data", &data),
             DaemonRes::CoverCacheStat {
                 disk_bytes,
@@ -2434,6 +2569,30 @@ impl DaemonRes {
             "radio_track_cover" => DaemonRes::RadioTrackCoverRes {
                 data: data.get("data").and_then(|v| v.as_str()).map(String::from),
             },
+            "provider_sources" => {
+                match serde_json::from_value::<Vec<crate::providers::external::ProviderSource>>(
+                    field(&data, "sources"),
+                ) {
+                    Ok(sources) => DaemonRes::ProviderSourcesRes { sources },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "provider_playlists" => {
+                match serde_json::from_value::<Vec<crate::providers::external::ProviderPlaylist>>(
+                    field(&data, "playlists"),
+                ) {
+                    Ok(playlists) => DaemonRes::ProviderPlaylistsRes { playlists },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "provider_search" | "provider_playlist_tracks" => {
+                match serde_json::from_value::<Vec<crate::providers::external::ProviderTrack>>(
+                    field(&data, "tracks"),
+                ) {
+                    Ok(tracks) => DaemonRes::ProviderTracksRes { tracks },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
             "charts_sleeve" | "chart_sleeve" => DaemonRes::ChartSleeve {
                 chart_id: field(&data, "chart_id")
                     .as_str()

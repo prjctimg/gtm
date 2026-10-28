@@ -8,6 +8,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use crate::audio::eq::{PRE_GAIN_MAX_DB, PRE_GAIN_MIN_DB};
+use crate::providers::external::{
+    ProviderPlaylist as ExternalPlaylist, ProviderSource, ProviderTrack,
+};
 use crate::providers::playlist::{
     NewPlaylist, PlaylistId, PlaylistItem, PlaylistSlot, PlaylistSource,
 };
@@ -279,6 +282,9 @@ pub enum CliCommand {
     /// Provider playlist commands (Spotify and any other registered source)
     Playlist(ProviderPlaylist),
     #[command(subcommand)]
+    /// Catalogue providers (Qobuz, Tidal, media servers, ...)
+    Providers(ProviderAction),
+    #[command(subcommand)]
     /// Podcast subscriptions (RSS/Atom)
     Podcast(PodcastAction),
     #[command(subcommand)]
@@ -442,6 +448,62 @@ pub enum ProviderPlaylist {
         id: String,
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ProviderAction {
+    /// List catalogue providers and whether they are configured
+    ///
+    /// `list` is an alias because that is the verb every other listing in this
+    /// CLI accepts, and making the provider command the exception helps nobody.
+    #[command(alias = "list")]
+    Sources,
+    /// Search one provider's catalogue
+    Search {
+        #[arg(value_name = "PROVIDER")]
+        provider: String,
+        #[arg(value_name = "QUERY")]
+        query: String,
+        #[arg(long, default_value_t = 25)]
+        limit: u16,
+    },
+    /// List a provider's playlists, albums or saved shows
+    Playlists {
+        #[arg(value_name = "PROVIDER")]
+        provider: String,
+    },
+    /// List the tracks in one provider playlist
+    Tracks {
+        #[arg(value_name = "PROVIDER")]
+        provider: String,
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// Play a provider track
+    Play {
+        #[arg(value_name = "PROVIDER")]
+        provider: String,
+        #[arg(value_name = "ID")]
+        id: String,
+        /// Display title (defaults to the provider's name for the row)
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, default_value = "")]
+        artist: String,
+        #[arg(long, default_value = "")]
+        album: String,
+        #[arg(long, default_value_t = 0.0)]
+        duration: f64,
+    },
+    /// Save a provider track to the account's likes
+    Like {
+        #[arg(value_name = "PROVIDER")]
+        provider: String,
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(long, default_value = "")]
+        title: String,
     },
 }
 
@@ -1524,6 +1586,118 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     Ok(copied.unwrap_or_default())
                 }
             },
+            CliCommand::Providers(action) => match action {
+                ProviderAction::Sources => {
+                    let sources = client
+                        .providers()
+                        .sources()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if json {
+                        serde_json::to_string_pretty(&sources).map_err(|e| e.to_string())
+                    } else {
+                        Ok(sources
+                            .iter()
+                            .map(format_provider_source)
+                            .collect::<Vec<_>>()
+                            .join("\n"))
+                    }
+                }
+                ProviderAction::Search {
+                    provider,
+                    query,
+                    limit,
+                } => {
+                    let tracks = client
+                        .providers()
+                        .search(provider, query, *limit)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if json {
+                        serde_json::to_string_pretty(&tracks).map_err(|e| e.to_string())
+                    } else {
+                        Ok(tracks
+                            .iter()
+                            .map(format_provider_track)
+                            .collect::<Vec<_>>()
+                            .join("\n"))
+                    }
+                }
+                ProviderAction::Playlists { provider } => {
+                    let playlists = client
+                        .providers()
+                        .playlists(provider)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if json {
+                        serde_json::to_string_pretty(&playlists).map_err(|e| e.to_string())
+                    } else {
+                        Ok(playlists
+                            .iter()
+                            .map(format_provider_playlist)
+                            .collect::<Vec<_>>()
+                            .join("\n"))
+                    }
+                }
+                ProviderAction::Tracks { provider, id } => {
+                    let tracks = client
+                        .providers()
+                        .playlist_tracks(provider, id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if json {
+                        serde_json::to_string_pretty(&tracks).map_err(|e| e.to_string())
+                    } else {
+                        Ok(tracks
+                            .iter()
+                            .map(format_provider_track)
+                            .collect::<Vec<_>>()
+                            .join("\n"))
+                    }
+                }
+                ProviderAction::Play {
+                    provider,
+                    id,
+                    title,
+                    artist,
+                    album,
+                    duration,
+                } => {
+                    let track = ProviderTrack {
+                        provider: provider.clone(),
+                        id: id.clone(),
+                        title: title.clone().unwrap_or_default(),
+                        artist: artist.clone(),
+                        album: album.clone(),
+                        duration_secs: *duration,
+                        ..Default::default()
+                    };
+                    client
+                        .providers()
+                        .play(&track)
+                        .await
+                        .map(|()| "ok".to_string())
+                        .map_err(|e| e.to_string())
+                }
+                ProviderAction::Like {
+                    provider,
+                    id,
+                    title,
+                } => {
+                    let track = ProviderTrack {
+                        provider: provider.clone(),
+                        id: id.clone(),
+                        title: title.clone(),
+                        ..Default::default()
+                    };
+                    client
+                        .providers()
+                        .like(&track)
+                        .await
+                        .map(|()| "ok".to_string())
+                        .map_err(|e| e.to_string())
+                }
+            },
             CliCommand::Podcast(action) => match action {
                 PodcastAction::Add { url } => {
                     let feeds = client
@@ -1804,6 +1978,59 @@ fn format_spotify_status(st: &SpotifyStatus) -> String {
         out += &format!(" | error: {e}");
     }
     out
+}
+
+/// One catalogue provider, whether it can answer, and what it supports.
+fn format_provider_source(s: &ProviderSource) -> String {
+    let state = if s.available {
+        s.detail.as_deref().unwrap_or("ready").to_string()
+    } else {
+        format!(
+            "unavailable: {}",
+            s.detail.as_deref().unwrap_or("not configured")
+        )
+    };
+    let caps = [
+        ("search", s.caps.search),
+        ("browse", s.caps.browse),
+        ("playlists", s.caps.playlists),
+        ("write", s.caps.playlist_write),
+        ("like", s.caps.like),
+        ("stream", s.caps.stream),
+    ]
+    .iter()
+    .filter(|(_, on)| *on)
+    .map(|(name, _)| *name)
+    .collect::<Vec<_>>()
+    .join(",");
+    format!("{}\t{}\t{}\t{state}\t{caps}", s.id, s.name, s.kind.label())
+}
+
+fn format_provider_playlist(p: &ExternalPlaylist) -> String {
+    let owner = if p.owner.is_empty() {
+        String::new()
+    } else {
+        format!("\tby {}", p.owner)
+    };
+    let edit = if p.editable { "\teditable" } else { "" };
+    format!(
+        "{}\t{}\t{} tracks{owner}{edit}",
+        p.id, p.name, p.track_count
+    )
+}
+
+fn format_provider_track(t: &ProviderTrack) -> String {
+    let artist = if t.artist.is_empty() {
+        String::new()
+    } else {
+        format!(" \u{2014} {}", t.artist)
+    };
+    let duration = if t.duration_secs > 0.0 {
+        format!(" ({})", format_duration(t.duration_secs.round() as u64))
+    } else {
+        String::new()
+    };
+    format!("{}\t{}{artist}{duration}", t.id, t.title)
 }
 
 /// One registered provider, with the verbs it actually offers.

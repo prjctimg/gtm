@@ -5,7 +5,7 @@
 
 //! The playback source vocabulary — where the audio came from.
 //!
-//! One fact, one string, a fixed set of five. Clients match on the literal, so
+//! One fact, one string, a fixed set of six. Clients match on the literal, so
 //! the set is part of the wire contract and widening it is a protocol change,
 //! not a refactor: see `PLAYBACK_SOURCE.md` and `docs/man/gtmd-ipc.1.md`.
 //!
@@ -25,9 +25,23 @@ pub const SRC_RADIO: &str = "radio";
 pub const SRC_PODCAST: &str = "podcast";
 /// A charts provider's stream.
 pub const SRC_CHART: &str = "chart";
+/// A catalogue provider's track (Qobuz, Tidal, a media server, ...).
+///
+/// Distinct from `local` because the bytes are remote and the row may need
+/// re-resolution on replay; distinct from `radio` because it has a duration and
+/// ends. The client can therefore show the same marker for every external
+/// provider without claiming a particular service it cannot know from the path.
+pub const SRC_PROVIDER: &str = "provider";
 
 /// Every value in the set, in the order the documentation lists them.
-pub const SOURCES: [&str; 5] = [SRC_LOCAL, SRC_SPOTIFY, SRC_RADIO, SRC_PODCAST, SRC_CHART];
+pub const SOURCES: [&str; 6] = [
+    SRC_LOCAL,
+    SRC_SPOTIFY,
+    SRC_RADIO,
+    SRC_PODCAST,
+    SRC_CHART,
+    SRC_PROVIDER,
+];
 
 /// Whether `s` is one of the [`SOURCES`].
 ///
@@ -43,11 +57,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_set_is_exactly_the_documented_five() {
-        assert_eq!(SOURCES.len(), 5);
+    fn the_set_is_exactly_the_documented_six() {
+        assert_eq!(SOURCES.len(), 6);
         assert_eq!(
             SOURCES,
-            ["local", "spotify", "radio", "podcast", "chart"],
+            ["local", "spotify", "radio", "podcast", "chart", "provider"],
             "the wire values are the contract; changing one breaks clients"
         );
     }
