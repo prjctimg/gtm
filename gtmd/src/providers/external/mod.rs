@@ -19,6 +19,10 @@ use gtm::providers::external::{
 };
 
 use crate::config::ProviderConfig;
+use crate::providers::external::{
+    bilibili::BilibiliProvider, mixcloud::MixcloudProvider, netease::NetEaseProvider,
+    soundcloud::SoundCloudProvider, ytmusic::YtDlpSearchProvider,
+};
 
 /// All configured and unconfigured providers, in catalogue order.
 pub struct ProviderRegistry {
@@ -42,14 +46,24 @@ impl ProviderRegistry {
                     format!("not configured \u{2014} run gtm setup {}", spec.id),
                 ))
             } else {
-                // The framework keeps a configured provider visible even while
-                // its concrete client is still a separate integration. Falling
-                // back to "unavailable" is better than silently dropping a
-                // table the user just wrote.
-                Arc::new(UnconfiguredProvider::new(
-                    spec,
-                    "configured, but this build has no client for it".to_string(),
-                ))
+                match spec.id {
+                    "ytmusic" => Arc::new(YtDlpSearchProvider::new(spec, config)),
+                    "soundcloud" => Arc::new(SoundCloudProvider::new(config)),
+                    "mixcloud" => Arc::new(MixcloudProvider::new(config)),
+                    "bilibili" => Arc::new(BilibiliProvider::new(config)),
+                    "netease" => Arc::new(NetEaseProvider::new(config)),
+                    "bandcamp" | "qobuz" | "tidal" | "yandex" | "xiaoyuzhou" | "navidrome"
+                    | "lyrion" | "plex" | "jellyfin" | "emby" | "audiobookshelf" => {
+                        Arc::new(UnconfiguredProvider::new(
+                            spec,
+                            "configured, but this build has no client for it".to_string(),
+                        ))
+                    }
+                    _ => Arc::new(UnconfiguredProvider::new(
+                        spec,
+                        "configured, but this build has no client for it".to_string(),
+                    )),
+                }
             };
             providers.insert(spec.id, provider);
             order.push(spec.id);
@@ -245,3 +259,10 @@ mod tests {
         assert!(err.contains("not configured"));
     }
 }
+
+pub mod bilibili;
+pub mod mixcloud;
+pub mod netease;
+pub mod soundcloud;
+pub mod ytmp;
+pub mod ytmusic;
