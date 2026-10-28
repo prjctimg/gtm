@@ -122,6 +122,10 @@ paru -S gtm-player-bin
 - [gtmd(1)](docs/man/gtmd.1.md)
 - [gtmd-ipc(1)](docs/man/gtmd-ipc.1.md)
 
+### Dependencies
+
+- [Direct dependencies and acknowledgements](docs/dependencies.md)
+
 ## Contributing
 
 See [the contributing guide](CONTRIBUTING.md) and
@@ -146,7 +150,9 @@ This project wouldn't be possible without the amazing open source community!
 - [color-thief](https://crates.io/crates/color-thief)
 - [rustfft](https://crates.io/crates/rustfft)
 - [ratatui](https://ratatui.rs),
-  [ratatui-image](https://crates.io/crates/ratatui-image)
+  [ratatui-image](https://crates.io/crates/ratatui-image),
+  [tachyonfx](https://crates.io/crates/tachyonfx), and
+  [tui-big-text](https://crates.io/crates/tui-big-text)
 - [symphonia](https://crates.io/crates/symphonia),
   [fundsp](https://crates.io/crates/fundsp), and
   [rodio](https://crates.io/crates/rodio)
@@ -155,6 +161,9 @@ This project wouldn't be possible without the amazing open source community!
 - [LRCLIB](https://lrclib.net)
 - [Myx](https://github.com/HaseebKhalid1507/Myx)
 - [spotify-player](https://github.com/aome510/spotify-player)
+
+See [the dependency list](docs/dependencies.md) for the complete set of direct
+crates used by the client and daemon.
 
 <a href="https://www.star-history.com/?repos=prjctimg%2Fgtm&amp;type=date&amp;legend=top-left">
  <picture>
