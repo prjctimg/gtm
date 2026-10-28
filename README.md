@@ -35,7 +35,7 @@
 - **Offline playback**: Resolve Spotify tracks via yt-dlp for
   [downloading](https://gtmd.dev/docs/youtube).
 - **[Internet radio](https://gtmd.dev/docs/radio)**: browse the Radio Browser
-  directory and stream any station
+  and cliamp directories and stream any station
 - **[Podcasts](https://gtmd.dev/docs/podcasts)**: subscribe to RSS/Atom feeds
   and play episodes in order
 - **[Top charts](https://gtmd.dev/docs/library)**: Spotify, Apple and community

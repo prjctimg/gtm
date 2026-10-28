@@ -55,6 +55,12 @@ impl Bound {
 /// Stream resolution goes through the same path as playback, so the source is
 /// selected from the host actually being decoded.
 pub(crate) async fn load(inner: &DaemonInner, station_id: &str) -> RadioTracklist {
+    // cliamp's `/tracks` endpoint is the channel's library, not its recent
+    // history. Its live stream publishes the real now-playing title over ICY,
+    // so an empty list is more honest than showing catalogue order as history.
+    if gtm::shared::radio::cliamp_slug(station_id).is_some() {
+        return RadioTracklist::default();
+    }
     let resolved = match resolve_remote(inner, &format!("radio://{station_id}")).await {
         Ok(r) => r,
         Err(e) => {

@@ -1940,7 +1940,15 @@ impl Render {
                         "No stations in this tag",
                         "Hint: [ and ] switch the Radio scope",
                     ),
-                    RadioLeftScope::All if app.radio.top_pending => (
+                    RadioLeftScope::Cliamp if app.radio.cliamp_pending => (
+                        "Loading cliamp channels…",
+                        "Hint: [ and ] switch the Radio scope",
+                    ),
+                    RadioLeftScope::Cliamp => (
+                        "No cliamp channels",
+                        "Hint: open Radio Browser with / and press r to refresh",
+                    ),
+                    RadioLeftScope::All if app.radio.top_pending || app.radio.cliamp_pending => (
                         "Loading directory stations…",
                         "Hint: saved stations appear first",
                     ),

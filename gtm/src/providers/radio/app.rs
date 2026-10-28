@@ -96,6 +96,17 @@ impl App {
                             .map(|(i, _)| RadioPick::Station(i)),
                     );
                 }
+                if self.radio.cliamp.iter().any(&matches) {
+                    rows.push(RadioPick::Header("cliamp radio"));
+                    rows.extend(
+                        self.radio
+                            .cliamp
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, s)| matches(s))
+                            .map(|(i, _)| RadioPick::Cliamp(i)),
+                    );
+                }
                 let tag_match = |t: &RadioTag| {
                     q.is_empty()
                         || (matches!(filter, RadioFilter::Name | RadioFilter::Tags)
@@ -133,10 +144,10 @@ impl App {
         }
     }
 
-    /// Seed the unified Radio picker's remote lists (Top, Tags, Countries)
-    /// independently in the background, so a partial failure still populates
-    /// the rest. Skips lists that already loaded or are in flight unless
-    /// `force` is set (the `r` refresh key).
+    /// Seed the unified Radio picker's remote lists (Top, cliamp, Tags,
+    /// Countries) independently in the background, so a partial failure still
+    /// populates the rest. Skips lists that already loaded or are in flight
+    /// unless `force` is set (the `r` refresh key).
     pub fn seed_radio_picker(&mut self, force: bool) {
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
@@ -144,6 +155,7 @@ impl App {
             self.radio.top_pending = true;
             let c2 = c.clone();
             let tx2 = ipc_tx.clone();
+            let known_top = self.radio.top.clone();
             tokio::spawn(async move {
                 match c2.radio().top(50).await {
                     Ok(s) => {
@@ -151,6 +163,29 @@ impl App {
                     }
                     Err(e) => {
                         self_err(&tx2, format!("radio top failed: {e}"));
+                        // Clear the spinner; keep the last working list if a
+                        // refresh failed.
+                        let _ = tx2.send(IpcResult::RadioTop(known_top));
+                    }
+                }
+            });
+        }
+        if (force || self.radio.cliamp.is_empty()) && !self.radio.cliamp_pending {
+            self.radio.cliamp_pending = true;
+            let cliamp_c = c.clone();
+            let cliamp_tx = ipc_tx.clone();
+            let known_cliamp = self.radio.cliamp.clone();
+            tokio::spawn(async move {
+                match cliamp_c.radio().cliamp(force).await {
+                    Ok(s) => {
+                        let _ = cliamp_tx.send(IpcResult::RadioCliamp(s));
+                    }
+                    Err(e) => {
+                        self_err(&cliamp_tx, format!("cliamp radio failed: {e}"));
+                        // Release the spinner even when the directory is
+                        // unreachable. Re-emitting the last known list keeps a
+                        // failed refresh from making working channels vanish.
+                        let _ = cliamp_tx.send(IpcResult::RadioCliamp(known_cliamp));
                     }
                 }
             });
@@ -168,6 +203,7 @@ impl App {
                     }
                     Err(e) => {
                         self_err(&tags_tx, format!("radio tags failed: {e}"));
+                        let _ = tags_tx.send(IpcResult::RadioTags(Vec::new()));
                     }
                 }
             });
@@ -180,6 +216,7 @@ impl App {
                     }
                     Err(e) => {
                         self_err(&countries_tx, format!("radio countries failed: {e}"));
+                        let _ = countries_tx.send(IpcResult::RadioCountries(Vec::new()));
                     }
                 }
             });
@@ -291,8 +328,8 @@ impl App {
     ///
     /// The left pane used to list only `radios.toml`, so entering the category
     /// looked like an empty directory until the user found the picker. This
-    /// loads the directory's Top list alongside the saved stations and starts
-    /// every visit on the merged `All` scope.
+    /// loads the directory's Top list and cliamp channels alongside the saved
+    /// stations and starts every visit on the merged `All` scope.
     pub fn prepare_radio_left(&mut self) {
         self.refresh_custom_stations();
         self.radio.left_scope = RadioLeftScope::All;
@@ -318,13 +355,20 @@ impl App {
                     .enumerate()
                     .map(|(i, _)| RadioLeftRow::Custom(i))
                     .collect();
-                for (i, station) in self.radio.top.iter().enumerate() {
-                    let already_saved = self.radio.custom.iter().any(|saved| {
+                let already_saved = |station: &RadioStation| {
+                    self.radio.custom.iter().any(|saved| {
                         saved.uuid.as_deref() == Some(station.id.as_str())
                             || (saved.name.eq_ignore_ascii_case(&station.name)
                                 && saved.url == station.playable_url())
-                    });
-                    if !already_saved {
+                    })
+                };
+                for (i, station) in self.radio.cliamp.iter().enumerate() {
+                    if !already_saved(station) {
+                        rows.push(RadioLeftRow::Cliamp(i));
+                    }
+                }
+                for (i, station) in self.radio.top.iter().enumerate() {
+                    if !already_saved(station) {
                         rows.push(RadioLeftRow::Top(i));
                     }
                 }
@@ -332,6 +376,9 @@ impl App {
             }
             RadioLeftScope::Saved => (0..self.radio.custom.len())
                 .map(RadioLeftRow::Custom)
+                .collect(),
+            RadioLeftScope::Cliamp => (0..self.radio.cliamp.len())
+                .map(RadioLeftRow::Cliamp)
                 .collect(),
             RadioLeftScope::Tag(_) => (0..self.radio.left_stations.len())
                 .map(RadioLeftRow::Tag)
@@ -344,6 +391,7 @@ impl App {
         match row {
             RadioLeftRow::Custom(i) => self.radio.custom.get(i).map(|s| s.name.as_str()),
             RadioLeftRow::Top(i) => self.radio.top.get(i).map(|s| s.name.as_str()),
+            RadioLeftRow::Cliamp(i) => self.radio.cliamp.get(i).map(|s| s.name.as_str()),
             RadioLeftRow::Tag(i) => self.radio.left_stations.get(i).map(|s| s.name.as_str()),
         }
     }
@@ -377,6 +425,11 @@ impl App {
                 directory: true,
                 tracklist: None,
             }),
+            RadioLeftRow::Cliamp(i) => Some(RadioLeftSelection {
+                station: self.radio.cliamp.get(i)?.clone(),
+                directory: true,
+                tracklist: None,
+            }),
             RadioLeftRow::Tag(i) => Some(RadioLeftSelection {
                 station: self.radio.left_stations.get(i)?.clone(),
                 directory: true,
@@ -397,13 +450,18 @@ impl App {
     pub fn radio_left_saved_at(&self, pos: usize) -> Option<&CustomRadioStation> {
         match *self.radio_left_rows().get(pos)? {
             RadioLeftRow::Custom(i) => self.radio.custom.get(i),
-            RadioLeftRow::Top(_) | RadioLeftRow::Tag(_) => None,
+            RadioLeftRow::Top(_) | RadioLeftRow::Cliamp(_) | RadioLeftRow::Tag(_) => None,
         }
     }
 
-    /// The scopes `[` / `]` step through: All, Saved, then each directory tag.
+    /// The scopes `[` / `]` step through: All, Saved, cliamp, then each
+    /// Radio Browser tag.
     fn radio_left_scopes(&self) -> Vec<RadioLeftScope> {
-        let mut scopes = vec![RadioLeftScope::All, RadioLeftScope::Saved];
+        let mut scopes = vec![
+            RadioLeftScope::All,
+            RadioLeftScope::Saved,
+            RadioLeftScope::Cliamp,
+        ];
         scopes.extend(
             self.radio
                 .browse_tags
@@ -433,6 +491,10 @@ impl App {
         self.set_list_pos(0);
         if matches!(next, RadioLeftScope::Tag(_)) {
             self.fetch_left_tag_stations();
+        } else if next == RadioLeftScope::Cliamp && self.radio.cliamp.is_empty() {
+            // A failed earlier seed left this scope with nothing to show;
+            // entering it is a natural retry point.
+            self.seed_radio_picker(false);
         }
         self.update_track_popup();
         self.data_dirty = true;
@@ -492,6 +554,7 @@ impl App {
                 };
                 stations.get(*idx).cloned()
             }
+            RadioPick::Cliamp(idx) => self.radio.cliamp.get(*idx).cloned(),
             _ => None,
         }
     }
@@ -558,6 +621,15 @@ impl App {
                     RadioSection::Root => &self.radio.top,
                 };
                 if let Some(station) = stations.get(i).cloned() {
+                    let c = self.client.clone();
+                    self.pickers.close_top();
+                    tokio::spawn(async move {
+                        let _ = c.radio().play(&station.id, &station.name).await;
+                    });
+                }
+            }
+            Some(RadioPick::Cliamp(i)) => {
+                if let Some(station) = self.radio.cliamp.get(i).cloned() {
                     let c = self.client.clone();
                     self.pickers.close_top();
                     tokio::spawn(async move {

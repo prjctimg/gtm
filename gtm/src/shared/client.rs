@@ -1536,6 +1536,20 @@ impl<'a> Radio<'a> {
         }
     }
 
+    /// The cliamp radio channels, cached by the daemon unless `refresh` asks
+    /// for a fresh read.
+    pub async fn cliamp(&self, refresh: bool) -> Result<Vec<RadioStation>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::RadioCliamp { refresh })
+            .await?;
+        match res {
+            DaemonRes::RadioStationsRes { stations, .. } => Ok(stations),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
     pub async fn play(&self, station_id: &str, station_name: &str) -> Result<()> {
         self.client
             .send_ok(DaemonReq::RadioPlay {

@@ -26,7 +26,7 @@ impl Pickers {
         let (title, pending, empty_msg) = match app.radio.section {
             RadioSection::Root => (
                 " Radio ".to_string(),
-                app.radio.top_pending || app.radio.browse_pending,
+                app.radio.top_pending || app.radio.cliamp_pending || app.radio.browse_pending,
                 "no stations yet \u{2014} press r to refresh",
             ),
             RadioSection::Stations => (
@@ -103,6 +103,12 @@ impl Pickers {
                     })
                     .unwrap_or_default(),
                 RadioPick::Station(idx) => station_at(*idx)
+                    .map(|s| (Self::radio_row(s), false))
+                    .unwrap_or_default(),
+                RadioPick::Cliamp(idx) => app
+                    .radio
+                    .cliamp
+                    .get(*idx)
                     .map(|s| (Self::radio_row(s), false))
                     .unwrap_or_default(),
                 RadioPick::Tag(idx) => app
@@ -249,6 +255,7 @@ impl Pickers {
                 .add_modifier(Modifier::BOLD),
         ))];
         let details: Vec<(&str, String)> = vec![
+            ("about", station.description.clone()),
             ("country", station.country.clone()),
             ("language", station.language.clone()),
             ("codec", station.codec.clone()),
@@ -259,7 +266,14 @@ impl Pickers {
                     .map(|k| format!("{k} kbps"))
                     .unwrap_or_default(),
             ),
-            ("votes", station.votes.to_string()),
+            (
+                "votes",
+                if station.votes > 0 {
+                    station.votes.to_string()
+                } else {
+                    String::new()
+                },
+            ),
             ("tags", station.tags.clone()),
         ];
         // The label column is two spaces plus a nine-wide field, so the value
@@ -289,6 +303,9 @@ impl Pickers {
 
     pub(crate) fn radio_row(s: &RadioStation) -> String {
         let mut row = format!("\u{1f3a7} {}\u{2003}", s.name);
+        if !s.description.is_empty() {
+            row.push_str(&format!("{}\u{2003}", s.description));
+        }
         if !s.country.is_empty() {
             row.push_str(&format!(" \u{1f30d}{} ", s.country));
         }
@@ -298,7 +315,12 @@ impl Pickers {
         if !s.codec.is_empty() {
             row.push_str(&format!(" {} ", s.codec));
         }
-        row.push_str(&format!(" \u{2b50} {}", s.votes));
+        // A zero is not a useful vote count, and directory channels such as
+        // cliamp have no voting at all. Only show the badge when it means
+        // something.
+        if s.votes > 0 {
+            row.push_str(&format!(" \u{2b50} {}", s.votes));
+        }
         if !s.favicon.is_empty() {
             row.push_str(" \u{1f310}");
         }

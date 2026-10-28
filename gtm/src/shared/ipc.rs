@@ -577,6 +577,12 @@ pub enum DaemonReq {
     RadioTop {
         limit: u16,
     },
+    /// The cliamp radio channel directory.
+    RadioCliamp {
+        /// Ignore the daemon's session cache and re-read the directory.
+        #[serde(default)]
+        refresh: bool,
+    },
     RadioPlay {
         station_id: String,
         station_name: String,
@@ -734,6 +740,7 @@ impl DaemonReq {
             DaemonReq::PodcastTranscript { .. } => "podcast_transcript",
             DaemonReq::RadioSearch { .. } => "radio_search",
             DaemonReq::RadioTop { .. } => "radio_top",
+            DaemonReq::RadioCliamp { .. } => "radio_cliamp",
             DaemonReq::RadioPlay { .. } => "radio_play",
             DaemonReq::RadioTags { .. } => "radio_tags",
             DaemonReq::RadioByTag { .. } => "radio_bytag",
@@ -1442,6 +1449,15 @@ impl DaemonReq {
                 }
                 let x: Params = p(params)?;
                 DaemonReq::RadioTop { limit: x.limit }
+            }
+            "radio_cliamp" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    #[serde(default)]
+                    refresh: bool,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::RadioCliamp { refresh: x.refresh }
             }
             "radio_play" => {
                 #[derive(Deserialize)]
@@ -2443,7 +2459,7 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "radio_search" | "radio_top" | "radio_bytag" | "radio_bycountry" => {
+            "radio_search" | "radio_top" | "radio_cliamp" | "radio_bytag" | "radio_bycountry" => {
                 match serde_json::from_value::<Vec<RadioStation>>(field(&data, "stations")) {
                     Ok(stations) => DaemonRes::RadioStationsRes { stations },
                     Err(_) => DaemonRes::Value { value: data },
@@ -2552,7 +2568,7 @@ pub struct HealthReport {
 
 #[cfg(test)]
 mod source_field_tests {
-    use super::DaemonEvent;
+    use super::{DaemonEvent, DaemonReq};
     use crate::shared::{SRC_LOCAL, SRC_RADIO};
 
     fn track_json() -> String {
@@ -2621,6 +2637,17 @@ mod source_field_tests {
     /// `source` is additive on purpose. This pins the exact key set the
     /// pre-existing readers were written against, so a future field cannot
     /// quietly rename or repurpose one of them.
+    /// `refresh` is additive: an older caller can ask for the list without
+    /// knowing the field exists, and the daemon uses its cache.
+    #[test]
+    fn radio_cliamp_refresh_is_optional() {
+        let req = DaemonReq::parse_cmd("radio_cliamp", serde_json::json!({})).unwrap();
+        assert!(matches!(req, DaemonReq::RadioCliamp { refresh: false }));
+        let req =
+            DaemonReq::parse_cmd("radio_cliamp", serde_json::json!({ "refresh": true })).unwrap();
+        assert!(matches!(req, DaemonReq::RadioCliamp { refresh: true }));
+    }
+
     #[test]
     fn the_pre_existing_keys_are_untouched() {
         let v = serde_json::to_value(DaemonEvent::PlaybackStarted {

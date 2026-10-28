@@ -857,6 +857,7 @@ pub(crate) enum IpcResult {
     PodcastEpisodes(Vec<PodcastEpisode>),
     RadioSearch(Vec<RadioStation>),
     RadioTop(Vec<RadioStation>),
+    RadioCliamp(Vec<RadioStation>),
     RadioTags(Vec<RadioTag>),
     RadioCountries(Vec<RadioCountry>),
     RadioBrowseStations(Vec<RadioStation>),

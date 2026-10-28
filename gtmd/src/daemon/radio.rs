@@ -23,6 +23,12 @@ impl Radio {
         Ok(DaemonRes::RadioStationsRes { stations })
     }
 
+    pub async fn cliamp(inner: &DaemonInner, refresh: bool) -> Result<DaemonRes, CoreError> {
+        let radio = inner.radio.lock().await;
+        let stations = radio.cliamp(refresh).await.map_err(CoreError::Daemon)?;
+        Ok(DaemonRes::RadioStationsRes { stations })
+    }
+
     pub async fn tags(inner: &DaemonInner, limit: u16) -> Result<DaemonRes, CoreError> {
         let radio = inner.radio.lock().await;
         let tags = radio.tags(limit).await.map_err(CoreError::Daemon)?;

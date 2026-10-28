@@ -2169,6 +2169,7 @@ fn is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::PodcastStatus
             | DaemonReq::RadioSearch { .. }
             | DaemonReq::RadioTop { .. }
+            | DaemonReq::RadioCliamp { .. }
             | DaemonReq::RadioTags { .. }
             | DaemonReq::RadioByTag { .. }
             | DaemonReq::RadioCountries { .. }
@@ -3697,6 +3698,7 @@ impl Daemon {
             } => Podcast::transcript(inner, feed_id, *episode_index).await,
             DaemonReq::RadioSearch { query, limit } => Radio::search(inner, query, *limit).await,
             DaemonReq::RadioTop { limit } => Radio::top(inner, *limit).await,
+            DaemonReq::RadioCliamp { refresh } => Radio::cliamp(inner, *refresh).await,
             DaemonReq::RadioPlay {
                 station_id,
                 station_name,
@@ -4907,19 +4909,19 @@ impl Daemon {
         };
         // Decide whether to fetch, rebinding on a station change and dropping
         // the binding outright when playback left radio.
-        let (due, left_radio) = {
+        let (due, left_radio, rebound) = {
             let mut guard = inner.radio_list.lock().await;
             match station {
                 None => {
                     *guard = None;
-                    (false, true)
+                    (false, true, false)
                 }
                 Some(ref id) => {
                     if guard.as_ref().is_none_or(|b| b.switched(id)) {
                         *guard = Some(tracklist::Bound::new(id));
-                        (true, false)
+                        (true, false, true)
                     } else {
-                        (guard.as_mut().is_some_and(|b| b.due()), false)
+                        (guard.as_mut().is_some_and(|b| b.due()), false, false)
                     }
                 }
             }
@@ -4940,6 +4942,25 @@ impl Daemon {
                 },
             );
             return;
+        }
+        // A station change owns a new tracklist. Clear the previous station's
+        // rows before the fetch, otherwise a channel with no published list
+        // (cliamp, for example) would keep showing the last station's queue
+        // until its own ICY history happened to replace it.
+        if rebound {
+            let mut state = inner.state.write().await;
+            if !state.radio_tracks.tracks.is_empty() {
+                state.radio_tracks = RadioTracklist::default();
+                state.radio_artist = None;
+                drop(state);
+                Self::push_event(
+                    inner,
+                    DaemonEvent::RadioTracksChanged {
+                        list: Box::new(RadioTracklist::default()),
+                        artist: None,
+                    },
+                );
+            }
         }
         if !due {
             return;

@@ -282,7 +282,7 @@ pub enum CliCommand {
     /// Podcast subscriptions (RSS/Atom)
     Podcast(PodcastAction),
     #[command(subcommand)]
-    /// Internet radio directory (Radio Browser)
+    /// Internet radio directories (Radio Browser and cliamp)
     Radio(RadioAction),
     /// Walk through setting up integration sources that need credentials
     /// (Spotify, Last.fm). With no SERVICE argument the
@@ -459,7 +459,13 @@ pub enum RadioAction {
         #[arg(long, default_value_t = 25)]
         limit: u16,
     },
-    /// Play a station by its Radio Browser id
+    /// List cliamp radio channels
+    Cliamp {
+        /// Ignore the daemon's cached channel list and fetch it again
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Play a station by its Radio Browser or cliamp id
     Play {
         #[arg(value_name = "STATION_ID")]
         station_id: String,
@@ -1612,6 +1618,17 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         );
                     }
                     Ok(format!("{} stations", stations.len()))
+                }
+                RadioAction::Cliamp { refresh } => {
+                    let stations = client
+                        .radio()
+                        .cliamp(*refresh)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    for s in &stations {
+                        println!("{}\t{}\t{}\t{}", s.id, s.name, s.url_resolved, s.tags);
+                    }
+                    Ok(format!("{} cliamp channels", stations.len()))
                 }
                 RadioAction::Play {
                     station_id,

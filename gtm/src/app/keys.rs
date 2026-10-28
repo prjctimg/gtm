@@ -2988,6 +2988,7 @@ impl App {
                             RadioSection::Results => self.radio.search.get(*i).cloned(),
                             RadioSection::Root => self.radio.top.get(*i).cloned(),
                         },
+                        Some(RadioPick::Cliamp(i)) => self.radio.cliamp.get(*i).cloned(),
                         _ => None,
                     };
                     if let Some(station) = station {

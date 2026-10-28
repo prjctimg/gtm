@@ -9,10 +9,28 @@ pub mod picker;
 
 use serde::{Deserialize, Serialize};
 
-/// A radio station from the Radio Browser directory.
+/// Prefix that distinguishes a cliamp radio channel from a Radio Browser uuid.
+///
+/// The two directories both call their handle an `id`, and playback stores the
+/// id in a `radio://` path. A namespace in front of the cliamp slug is what lets
+/// the daemon pick the directory that owns the row when it resolves a stream.
+pub const CLIAMP_ID_PREFIX: &str = "cliamp:";
+
+/// The wire id for a cliamp channel slug.
+pub fn cliamp_station_id(slug: &str) -> String {
+    format!("{CLIAMP_ID_PREFIX}{slug}")
+}
+
+/// The cliamp channel slug inside a wire id, if `id` is one.
+pub fn cliamp_slug(id: &str) -> Option<&str> {
+    id.strip_prefix(CLIAMP_ID_PREFIX)
+        .filter(|slug| !slug.is_empty())
+}
+
+/// A radio station from one of the directory integrations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RadioStation {
-    /// Radio Browser station uuid.
+    /// Directory handle: a Radio Browser uuid or a namespaced cliamp slug.
     pub id: String,
     pub name: String,
     /// Homepage URL of the station, if published.
@@ -39,6 +57,9 @@ pub struct RadioStation {
     /// Favicon URL, when known.
     #[serde(default)]
     pub favicon: String,
+    /// Free-form description, when the directory publishes one.
+    #[serde(default)]
+    pub description: String,
 }
 
 impl RadioStation {
@@ -73,6 +94,7 @@ pub(crate) fn empty_station() -> RadioStation {
         bitrate_kbps: None,
         votes: 0,
         favicon: String::new(),
+        description: String::new(),
     }
 }
 
@@ -241,5 +263,14 @@ mod tests {
     fn query_is_well_formed_without_an_artist() {
         assert_eq!(track("", "Alone").query(), "Alone");
         assert_eq!(track("X", "Alone").query(), "X - Alone");
+    }
+
+    #[test]
+    fn cliamp_ids_round_trip_through_their_namespace() {
+        let id = cliamp_station_id("lofi");
+        assert_eq!(id, "cliamp:lofi");
+        assert_eq!(cliamp_slug(&id), Some("lofi"));
+        assert_eq!(cliamp_slug("cliamp:"), None);
+        assert_eq!(cliamp_slug("not-a-cliamp-id"), None);
     }
 }

@@ -77,7 +77,7 @@ Where the audio came from. Lowercase, from a fixed set of five:
 |-------|---------|
 | `local` | A file on disk |
 | `spotify` | Spotify, via librespot |
-| `radio` | A Radio Browser station, or any other live stream |
+| `radio` | A Radio Browser or cliamp station, or any other live stream |
 | `podcast` | A podcast episode |
 | `chart` | A charts provider's stream |
 
@@ -226,12 +226,13 @@ DSP configuration. Every setter is acknowledged with no payload and reports the 
 
 ### Radio
 
-Directory lookups against radio-browser.info, plus playback and tracklist reads. Directory calls are ordinary network reads and fail when the directory does. `radio_play` is the exception: it takes a station id and starts a non-seekable live stream. Locally stored stations are addressed as `custom:N`, 1-based into `radios.toml` — that file is owned by the `gtm` client and is not writable over IPC. `radio_tracklist` returns an empty `tracks` array when the station publishes none, which is not an error.
+Directory lookups against radio-browser.info and cliamp, plus playback and tracklist reads. Directory calls are ordinary network reads and fail when the directory does. `radio_play` is the exception: it takes a station id and starts a non-seekable live stream. Radio Browser ids are bare UUIDs; cliamp ids are namespaced as `cliamp:<channel>` (for example `cliamp:lofi`). Locally stored stations are addressed as `custom:N`, 1-based into `radios.toml` — that file is owned by the `gtm` client and is not writable over IPC. `radio_tracklist` returns an empty `tracks` array when the station publishes none, which is not an error; cliamp channels deliberately return an empty list because their API exposes a catalogue rather than recent history.
 
 | Command | Request | Response | Emits |
 |---------|---------|----------|-------|
 | `radio_search` | `query` : string, `limit` : uint16 | `stations` | — |
 | `radio_top` | `limit` : uint16 | `stations` | — |
+| `radio_cliamp` | `refresh` : bool (optional, default false) | `stations` | — |
 | `radio_tags` | `limit` : uint16 | `tags` | — |
 | `radio_bytag` | `tag` : string, `limit` : uint16 | `stations` | — |
 | `radio_countries` | `limit` : uint16 | `countries` | — |

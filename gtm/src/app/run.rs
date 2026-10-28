@@ -967,6 +967,13 @@ impl App {
                             self.update_track_popup();
                         }
                     }
+                    IpcResult::RadioCliamp(stations) => {
+                        self.radio.cliamp = stations;
+                        self.radio.cliamp_pending = false;
+                        if self.library_category == LIB_RADIO {
+                            self.update_track_popup();
+                        }
+                    }
                     IpcResult::RadioTags(tags) => {
                         self.radio.browse_tags = tags;
                         self.radio.browse_pending = false;

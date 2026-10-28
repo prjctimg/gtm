@@ -42,8 +42,9 @@ pub enum PickerId {
     PodcastEpisodes,
     /// Podcast feed subscribe form (URL input).
     PodcastSubscribe,
-    /// Unified Radio Browser picker (Alt+R): saved stations, top stations,
-    /// tags/countries drill-down, and a search box filtered by field.
+    /// Unified Radio picker (Alt+R): saved stations, Radio Browser top
+    /// stations, cliamp channels, tags/countries drill-down, and a search box
+    /// filtered by field.
     Radio,
     /// Play an arbitrary HTTP(S) stream URL (Alt+O).
     LoadStream,

@@ -609,6 +609,8 @@ pub enum RadioPick {
     /// Index into the station list of the current section (`top` in the Root
     /// view, `browse_stations`, or `search`).
     Station(usize),
+    /// Index into `radio.cliamp`, the curated cliamp channel list.
+    Cliamp(usize),
     /// Index into `radio.browse_tags` (drill into its stations).
     Tag(usize),
     /// Index into `radio.browse_countries` (drill into its stations).
@@ -623,11 +625,13 @@ pub enum RadioPick {
 /// library pane changed what it is showing.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum RadioLeftScope {
-    /// Saved stations followed by the directory's Top list.
+    /// Saved stations followed by cliamp and the directory's Top list.
     #[default]
     All,
     /// Only stations from `radios.toml`.
     Saved,
+    /// Only channels from the cliamp radio directory.
+    Cliamp,
     /// Stations carrying one Radio Browser tag.
     Tag(String),
 }
@@ -637,6 +641,7 @@ impl RadioLeftScope {
         match self {
             RadioLeftScope::All => "All".to_string(),
             RadioLeftScope::Saved => "Saved".to_string(),
+            RadioLeftScope::Cliamp => "cliamp radio".to_string(),
             RadioLeftScope::Tag(tag) => format!("#{tag}"),
         }
     }
@@ -649,6 +654,8 @@ pub enum RadioLeftRow {
     Custom(usize),
     /// Index into `radio.top` (the `All` scope).
     Top(usize),
+    /// Index into `radio.cliamp` (the `All` and cliamp scopes).
+    Cliamp(usize),
     /// Index into `radio.left_stations` (a tag scope).
     Tag(usize),
 }
@@ -679,6 +686,9 @@ pub struct RadioView {
     pub search_pending: bool,
     pub top: Vec<RadioStation>,
     pub top_pending: bool,
+    /// Curated channels from the cliamp radio directory.
+    pub cliamp: Vec<RadioStation>,
+    pub cliamp_pending: bool,
     /// Tag list (Root/Tags section).
     pub browse_tags: Vec<RadioTag>,
     /// Country list (Root/Countries section).

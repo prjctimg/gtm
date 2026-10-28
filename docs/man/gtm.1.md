@@ -103,7 +103,7 @@ To turn it off, empty the `Alt+X` field and press Enter, or remove
 | `S` | Toggle shuffle |
 | `s` | Stop |
 | `.` / `,` | Seek forward / backward (±5 s per press) |
-| `Alt+r` | Radio Browser (custom + top stations, tags/countries, search) |
+| `Alt+r` | Radio Browser and cliamp (custom + top stations, tags/countries, search) |
 | `Alt+T` | Cycle theme |
 | `Alt+S` | Cycle library sort order |
 | `Alt+O` | Play an HTTP(S) stream URL |
@@ -402,6 +402,10 @@ what each calls itself, and which verbs it offers.
 **radio** *top* *limit*
 :   List the top-rated stations.
 
+**radio** *cliamp* [*--refresh*]
+:   List the curated cliamp radio channels. Pass *--refresh* to bypass the
+    daemon's session cache.
+
 **radio** *tags* *limit*
 :   List the most-used station tags on radio-browser.info.
 
@@ -415,7 +419,9 @@ what each calls itself, and which verbs it offers.
 :   List stations from a country.
 
 **radio** *play* *station_id* [*station_name*]
-:   Play a station by its radio-browser id, optionally with a display name.
+:   Play a station by its radio-browser id or cliamp id
+    (`cliamp:<channel>`, for example `cliamp:lofi`), optionally with a display
+    name.
 
 **radio** *list*
 :   List locally stored custom stations (see *add* below). Each is referenced
