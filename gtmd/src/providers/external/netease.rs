@@ -171,39 +171,36 @@ impl ExternalProvider for NetEaseProvider {
                 ..Default::default()
             });
         }
-        if let Some(uid) = &self.user_id {
-            if let Ok(res) = self.api_get(
+        if let Some(uid) = &self.user_id
+            && let Ok(res) = self.api_get(
                 "/api/user/playlist",
                 &[("uid", uid), ("limit", "100"), ("offset", "0")],
-            ) {
-                if res.get("code").and_then(|v| v.as_i64()).unwrap_or(-1) == 200 {
-                    if let Some(arr) = res.get("playlist").and_then(|p| p.as_array()) {
-                        for item in arr {
-                            let pid = item.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                            if pid == 0 {
-                                continue;
-                            }
-                            let name = item
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if name.is_empty() {
-                                continue;
-                            }
-                            let count = item.get("trackCount").and_then(|v| v.as_u64()).unwrap_or(0)
-                                as usize;
-                            out.push(ProviderPlaylist {
-                                provider: self.spec.id.to_string(),
-                                id: format!("user:{}", pid),
-                                name,
-                                track_count: count,
-                                editable: false,
-                                ..Default::default()
-                            });
-                        }
-                    }
+            )
+            && res.get("code").and_then(|v| v.as_i64()).unwrap_or(-1) == 200
+            && let Some(arr) = res.get("playlist").and_then(|p| p.as_array())
+        {
+            for item in arr {
+                let pid = item.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                if pid == 0 {
+                    continue;
                 }
+                let name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                let count = item.get("trackCount").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                out.push(ProviderPlaylist {
+                    provider: self.spec.id.to_string(),
+                    id: format!("user:{}", pid),
+                    name,
+                    track_count: count,
+                    editable: false,
+                    ..Default::default()
+                });
             }
         }
         Ok(out)

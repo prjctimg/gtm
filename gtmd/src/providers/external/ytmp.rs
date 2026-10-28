@@ -55,11 +55,11 @@ impl YtAuth {
             args.push("--cookies".into());
             args.push(p.as_os_str().into());
         }
-        if let Some(r) = &self.js_runtime {
-            if !r.is_empty() {
-                args.push("--js-runtime".into());
-                args.push(r.clone().into());
-            }
+        if let Some(r) = &self.js_runtime
+            && !r.is_empty()
+        {
+            args.push("--js-runtime".into());
+            args.push(r.clone().into());
         }
         args
     }
@@ -158,17 +158,16 @@ pub async fn search(
         if line.is_empty() {
             continue;
         }
-        if let Ok(v) = serde_json::from_slice::<Value>(line) {
-            if let Some(t) = parse_track(&v, provider_id) {
-                let url = t.id.as_str();
-                if provider_id == "ytmusic" && url.contains("/browse/") && !url.contains("watch?v=")
-                {
-                    continue;
-                }
-                tracks.push(t);
-                if tracks.len() >= limit.clamp(1, 50) {
-                    break;
-                }
+        if let Ok(v) = serde_json::from_slice::<Value>(line)
+            && let Some(t) = parse_track(&v, provider_id)
+        {
+            let url = t.id.as_str();
+            if provider_id == "ytmusic" && url.contains("/browse/") && !url.contains("watch?v=") {
+                continue;
+            }
+            tracks.push(t);
+            if tracks.len() >= limit.clamp(1, 50) {
+                break;
             }
         }
     }
@@ -209,12 +208,12 @@ pub async fn flat_playlist(
         if line.is_empty() {
             continue;
         }
-        if let Ok(v) = serde_json::from_slice::<Value>(line) {
-            if let Some(t) = parse_track(&v, provider_id) {
-                tracks.push(t);
-                if tracks.len() >= limit.clamp(1, 200) {
-                    break;
-                }
+        if let Ok(v) = serde_json::from_slice::<Value>(line)
+            && let Some(t) = parse_track(&v, provider_id)
+        {
+            tracks.push(t);
+            if tracks.len() >= limit.clamp(1, 200) {
+                break;
             }
         }
     }
