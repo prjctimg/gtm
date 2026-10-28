@@ -1755,7 +1755,11 @@ fn wire_names() -> Vec<&'static str> {
         .lines()
         .filter_map(|l| {
             let l = l.trim();
-            l.starts_with("DaemonReq::")
+            // Only `cmd_name` arms have the `=> "wire_name"` shape. Decode
+            // tests also start with `DaemonReq::` after formatting, and a
+            // quoted command name on one of those must not count as a second
+            // arm.
+            (l.starts_with("DaemonReq::") && l.contains("=>"))
                 .then(|| l.split('"').nth(1))
                 .flatten()
         })
