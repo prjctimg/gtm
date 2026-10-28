@@ -6,8 +6,9 @@
 // This is free software released under the GPL-3.0 license.
 
 use crate::app::{
-    GRID_CELL_H, GRID_CELL_W, LIB_ALL, LIB_CATEGORIES, LIB_CHARTS, LIB_PLAYLISTS, LIB_PODCASTS,
-    LIB_RADIO, LIB_SPOTIFY, LibraryFilter, PlaylistGroup, RadioLeftScope, playlist_row_label,
+    COVER_REVEAL_MS, GRID_CELL_H, GRID_CELL_W, LIB_ALL, LIB_CATEGORIES, LIB_CHARTS, LIB_PLAYLISTS,
+    LIB_PODCASTS, LIB_RADIO, LIB_SPOTIFY, LibraryFilter, PlaylistGroup, RadioLeftScope,
+    playlist_row_label,
 };
 use crate::ui::*;
 use crate::visualizer::{AudioFrame, Frame, Visualizer, pixels_to_lines};
@@ -403,14 +404,7 @@ impl Render {
             width: w,
             height: h,
         };
-        Render::cover(
-            f,
-            cover_area,
-            app.np_cover.stateful.as_mut(),
-            app.np_cover.image.as_deref(),
-            app.theme.fg_dim,
-            Some(" \u{266b} "),
-        );
+        Render::now_playing_cover(f, cover_area, app);
         Render::zen_lyric_line(f, lyric_rect, app);
 
         // Centered progress bar with elapsed / total underneath; hidden for
@@ -654,7 +648,7 @@ impl Render {
             let image = StatefulImage::new();
             f.render_stateful_widget(image, Render::cover_fit(area, protocol), protocol);
         } else if let Some(cover_bytes) = current_cover {
-            Render::cover_block(f, area, cover_bytes);
+            Render::cover_block_into(f.buffer_mut(), area, cover_bytes);
         } else if let Some(glyph) = placeholder {
             let placeholder = Paragraph::new(Line::from(Span::styled(
                 format!("{:^width$}", glyph, width = area.width as usize),
@@ -665,7 +659,16 @@ impl Render {
         }
     }
 
-    pub(crate) fn cover_block(f: &mut ratatui::Frame, area: Rect, cover_bytes: &[u8]) {
+    /// Paint a half-block cover into a buffer.
+    ///
+    /// The buffer form exists so the Now Playing reveal can run a mask over
+    /// the artwork before merging it into the frame. The plain [`Render::cover`]
+    /// path uses it too, so there is only one resize/crop implementation.
+    pub(crate) fn cover_block_into(
+        buf: &mut ratatui::buffer::Buffer,
+        area: Rect,
+        cover_bytes: &[u8],
+    ) {
         let img = match image::load_from_memory(cover_bytes) {
             Ok(img) => img.into_rgba8(),
             Err(_) => return,
@@ -715,8 +718,111 @@ impl Render {
                 width: area.width,
                 height: 1,
             };
-            f.render_widget(Paragraph::new(Line::from(spans)), row);
+            ratatui::widgets::Widget::render(Paragraph::new(Line::from(spans)), row, buf);
         }
+    }
+
+    fn cover_placeholder_into(
+        buf: &mut ratatui::buffer::Buffer,
+        area: Rect,
+        placeholder_fg: Color,
+        glyph: &str,
+    ) {
+        let placeholder = Paragraph::new(Line::from(Span::styled(
+            format!("{:^width$}", glyph, width = area.width as usize),
+            Style::default().fg(placeholder_fg),
+        )))
+        .alignment(Alignment::Center);
+        ratatui::widgets::Widget::render(placeholder, area, buf);
+    }
+
+    /// Draw the Now Playing cover with a low-risk reveal transition.
+    ///
+    /// Terminal image protocols composite their pixels outside ratatui's
+    /// buffer, so a cell mask cannot touch the artwork itself. The half-block
+    /// path is revealed with `tachyonfx::fx::coalesce`; protocol-backed
+    /// covers get the same mask on a thin accent border around the image.
+    /// Both paths stay inside the buffer and never invalidate a protocol
+    /// placement.
+    pub(crate) fn now_playing_cover(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let Some(started) = app.cover_anim_started else {
+            Render::cover(
+                f,
+                area,
+                app.np_cover.stateful.as_mut(),
+                app.np_cover.image.as_deref(),
+                app.theme.fg_dim,
+                Some(" \u{266b} "),
+            );
+            return;
+        };
+        let elapsed = started.elapsed();
+        if elapsed >= std::time::Duration::from_millis(COVER_REVEAL_MS)
+            || std::env::var("NVIM").is_ok()
+            || std::env::var("ZELLIJ").is_ok()
+        {
+            Render::cover(
+                f,
+                area,
+                app.np_cover.stateful.as_mut(),
+                app.np_cover.image.as_deref(),
+                app.theme.fg_dim,
+                Some(" \u{266b} "),
+            );
+            return;
+        }
+
+        let elapsed_ms = elapsed.as_millis().min(u32::MAX as u128) as u32;
+        if let Some(protocol) = app.np_cover.stateful.as_ref() {
+            let frame = Render::cover_fit(area, protocol);
+            Render::cover(
+                f,
+                area,
+                app.np_cover.stateful.as_mut(),
+                app.np_cover.image.as_deref(),
+                app.theme.fg_dim,
+                Some(" \u{266b} "),
+            );
+            // Start from the rendered frame, not an empty buffer: a Kitty
+            // protocol cover may occupy placeholder cells that an empty
+            // buffer's spaces would erase when merged back.
+            let mut buf = f.buffer_mut().clone();
+            let border = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.accent));
+            ratatui::widgets::Widget::render(border, frame, &mut buf);
+            let mut fx = tachyonfx::EffectManager::<&'static str>::default();
+            fx.add_effect(
+                tachyonfx::fx::coalesce((
+                    COVER_REVEAL_MS as u32,
+                    tachyonfx::Interpolation::QuadOut,
+                ))
+                .with_area(frame)
+                .with_filter(tachyonfx::CellFilter::Outer(Margin::new(1, 1))),
+            );
+            fx.process_effects(
+                tachyonfx::Duration::from_millis(elapsed_ms),
+                &mut buf,
+                frame,
+            );
+            f.buffer_mut().merge(&buf);
+            return;
+        }
+
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        if let Some(cover_bytes) = app.np_cover.image.as_deref() {
+            Render::cover_block_into(&mut buf, area, cover_bytes);
+        } else {
+            Render::cover_placeholder_into(&mut buf, area, app.theme.fg_dim, " \u{266b} ");
+        }
+        let mut fx = tachyonfx::EffectManager::<&'static str>::default();
+        fx.add_effect(
+            tachyonfx::fx::coalesce((COVER_REVEAL_MS as u32, tachyonfx::Interpolation::QuadOut))
+                .with_area(area)
+                .with_filter(tachyonfx::CellFilter::All),
+        );
+        fx.process_effects(tachyonfx::Duration::from_millis(elapsed_ms), &mut buf, area);
+        f.buffer_mut().merge(&buf);
     }
 
     pub(crate) fn evolving<W: ratatui::widgets::Widget>(
@@ -1051,14 +1157,7 @@ impl Render {
                         width: cw,
                         height: ch,
                     };
-                    Render::cover(
-                        f,
-                        cover_area,
-                        app.np_cover.stateful.as_mut(),
-                        app.np_cover.image.as_deref(),
-                        app.theme.fg_dim,
-                        Some(" \u{266b} "),
-                    );
+                    Render::now_playing_cover(f, cover_area, app);
 
                     let info_area = hchunks[2];
 
@@ -1180,14 +1279,7 @@ impl Render {
                         width: slim_cover_w.min(hchunks[0].width),
                         height: slim_cover_h.min(hchunks[0].height),
                     };
-                    Render::cover(
-                        f,
-                        cover_area,
-                        app.np_cover.stateful.as_mut(),
-                        app.np_cover.image.as_deref(),
-                        app.theme.fg_dim,
-                        Some(" \u{266b} "),
-                    );
+                    Render::now_playing_cover(f, cover_area, app);
                     let info_area = hchunks[2];
                     let title_text = display_title.to_string();
                     let title_avail = info_area.width as usize;

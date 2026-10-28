@@ -812,6 +812,7 @@ impl App {
                     self.np_cover.track_id = current_tid;
                     self.np_cover.track_path = cur_path.clone();
                     self.np_cover.pending_gen = None;
+                    self.cover_anim_started = Some(std::time::Instant::now());
                 }
                 // Fetch cover art when needed: for display (no_image_protocol
                 // check) OR for reactive-theming palette extraction.
@@ -893,8 +894,13 @@ impl App {
                                     _ => tid_matches,
                                 };
                                 if tid_matches && path_matches {
+                                    let changed =
+                                        self.np_cover.image.as_deref() != Some(c.as_slice());
                                     self.np_cover.image = Some(c);
                                     self.np_cover.track_id = cover_tid;
+                                    if changed {
+                                        self.cover_anim_started = Some(std::time::Instant::now());
+                                    }
                                     if !no_image_protocol() {
                                         self.cover_sync();
                                     } else {
@@ -931,8 +937,12 @@ impl App {
                             continue;
                         }
                         self.np_cover.pending_gen = None;
+                        let had_art = cover.is_some();
                         self.np_cover.image = cover;
                         self.np_cover.track_id = cover_tid;
+                        if had_art {
+                            self.cover_anim_started = Some(std::time::Instant::now());
+                        }
                         if !no_image_protocol() {
                             self.cover_sync();
                         }
@@ -2034,6 +2044,13 @@ impl App {
                 self.check_config_reload();
             }
 
+            let cover_anim_finished = self.cover_anim_started.is_some_and(|start| {
+                start.elapsed() >= std::time::Duration::from_millis(COVER_REVEAL_MS)
+            });
+            if cover_anim_finished {
+                self.cover_anim_started = None;
+            }
+
             let pos_changed = (self.display_position - self.last_display_position).abs() >= 0.05;
             // Advance title scroll animations (every 3rd frame)
             if frame_count.is_multiple_of(3) {
@@ -2079,6 +2096,8 @@ impl App {
                 || self.metadata.cover_dirty
                 || self.track_anim_trigger
                 || self.data_dirty
+                || self.cover_anim_started.is_some()
+                || cover_anim_finished
                 || self.anim_fx.is_running();
             self.cover_art_dirty = false;
             self.metadata.cover_dirty = false;

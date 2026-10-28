@@ -74,6 +74,11 @@ pub const NUM_SETTINGS_CATEGORIES: usize = 3;
 pub(crate) const COVER_MEM_ENTRIES: usize = 64;
 /// Cover preloader requests allowed in flight at once.
 pub(crate) const COVER_WARM_ENTRIES: usize = 128;
+/// How long the Now Playing cover reveal runs, in milliseconds.
+///
+/// Short enough to stay out of the way of a track change, long enough to read
+/// as a transition rather than a flicker.
+pub(crate) const COVER_REVEAL_MS: u64 = 420;
 /// The library views, in the order the left pane lists them.
 ///
 /// All Tracks, Albums, Artists and Genres were four of these. They are one view
@@ -701,6 +706,12 @@ pub struct App {
     /// Tachyonfx effect manager carrying the running evolve animation; kept
     /// alive across refresh frames until the effect completes.
     pub anim_fx: EffectManager<&'static str>,
+    /// Wall-clock start of the Now Playing cover reveal.
+    ///
+    /// The effect is rebuilt from this timestamp each frame instead of being
+    /// kept in an effect manager. A pane that is not on screen therefore
+    /// cannot leave a half-finished effect running forever.
+    pub cover_anim_started: Option<std::time::Instant>,
     pub track_popup_visible: bool,
     pub popup_track_id: Option<i64>,
     pub track_popup_cover: Option<Vec<u8>>,
@@ -1709,6 +1720,7 @@ impl App {
             np_title_scroll: 0,
             track_anim_trigger: false,
             anim_fx: EffectManager::default(),
+            cover_anim_started: None,
             track_popup_visible: false,
             popup_track_id: None,
             track_popup_cover: None,
