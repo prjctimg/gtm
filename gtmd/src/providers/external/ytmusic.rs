@@ -3,16 +3,12 @@
 
 use async_trait::async_trait;
 use gtm::providers::external::{
-    ExternalProvider, PROVIDER_SPECS, ProviderPlaylist, ProviderSpec, ProviderStream, ProviderTrack,
+    ExternalProvider, ProviderPlaylist, ProviderSpec, ProviderStream, ProviderTrack,
 };
 use urlencoding::encode;
 
 use crate::config::ProviderConfig;
 use crate::providers::external::ytmp::{self, YtAuth};
-
-fn spec(id: &str) -> &'static ProviderSpec {
-    PROVIDER_SPECS.iter().find(|s| s.id == id).unwrap()
-}
 
 pub struct YtDlpSearchProvider {
     spec: &'static ProviderSpec,
@@ -92,15 +88,13 @@ impl ExternalProvider for YtDlpSearchProvider {
             return Err(format!("{} is not configured", self.spec.name));
         }
         if self.spec.id == "ytmusic" {
-            let mut out = Vec::new();
-            out.push(ProviderPlaylist {
+            return Ok(vec![ProviderPlaylist {
                 provider: self.spec.id.to_string(),
                 id: "https://music.youtube.com/playlist?list=LM".to_string(),
                 name: "Liked Music".to_string(),
                 editable: false,
                 ..Default::default()
-            });
-            return Ok(out);
+            }]);
         }
         Ok(Vec::new())
     }

@@ -1,9 +1,6 @@
 // Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
 use async_trait::async_trait;
 use gtm::providers::external::{
     ExternalProvider, PROVIDER_SPECS, ProviderPlaylist, ProviderSpec, ProviderStream, ProviderTrack,
@@ -30,7 +27,6 @@ pub struct SubsonicProvider {
     spec: &'static ProviderSpec,
     cfg: Option<SubsonicConfig>,
     client: Client,
-    cache: Arc<Mutex<HashMap<String, Vec<ProviderTrack>>>>,
 }
 
 impl SubsonicProvider {
@@ -70,7 +66,6 @@ impl SubsonicProvider {
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_default(),
-            cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -97,7 +92,7 @@ impl SubsonicProvider {
             .collect();
         let mut hasher = md5::Context::new();
         hasher.consume(format!("{}{}", cfg.password, salt));
-        let token = format!("{:x}", hasher.compute());
+        let token = format!("{:x}", hasher.finalize());
         params.push(("t".to_string(), token));
         params.push(("s".to_string(), salt));
         params

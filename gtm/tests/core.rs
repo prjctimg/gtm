@@ -5150,7 +5150,7 @@ fn the_grid_refuses_where_it_cannot_work() {
         "the grid still refuses a narrow pane instead of scaling its cell"
     );
     assert!(
-        cover.contains("let cell_w = (area.width / cols as u16).min(GRID_CELL_W).max(1);")
+        cover.contains("let cell_w = (area.width / cols as u16).clamp(1, GRID_CELL_W);")
             && cover.contains("let cover_w = cover_h")
             && cover.contains(".min(cell_w.saturating_sub(1))"),
         "the grid cell no longer scales its cover to the pane width"

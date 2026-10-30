@@ -876,7 +876,7 @@ impl App {
         // all; now a lone cell takes the width it is given, and a short pane
         // shrinks the artwork until the cell still fits above the stats line.
         let cols = (area.width / GRID_CELL_W).max(1) as usize;
-        let cell_w = (area.width / cols as u16).min(GRID_CELL_W).max(1);
+        let cell_w = (area.width / cols as u16).clamp(1, GRID_CELL_W);
         // One row is the blank line the row view starts with, the last is the
         // stats line drawn under the list, and the label takes one row inside
         // the cell.

@@ -379,7 +379,13 @@ pub struct ProviderStream {
 /// Defaults return a precise refusal rather than silently succeeding: a
 /// provider that cannot write playlists must say so, and the registry maps that
 /// into the capability flags the UI already shows.
+///
+/// `async_trait` stamps `#[must_use]` onto the trait, duplicating the one its
+/// generated futures already carry, which `clippy::double_must_use` rejects.
+/// The lint has no machine-applicable fix, so allow it here the same way the
+/// chart and playlist provider traits do.
 #[async_trait]
+#[allow(clippy::double_must_use)]
 pub trait ExternalProvider: Send + Sync {
     /// Static descriptor.
     fn spec(&self) -> &'static ProviderSpec;
