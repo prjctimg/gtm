@@ -1263,9 +1263,7 @@ impl Render {
                     // details. The old text-only fallback dropped the artwork
                     // entirely below twelve columns, which made a narrow band
                     // look as if the track had no art at all.
-                    let slim_cover_w = (inner.height.saturating_mul(2))
-                        .min(inner.width)
-                        .max(1);
+                    let slim_cover_w = (inner.height.saturating_mul(2)).min(inner.width).max(1);
                     let slim_cover_h = (slim_cover_w / 2).max(1).min(inner.height);
                     let gap = if inner.width > slim_cover_w { 1 } else { 0 };
                     let hchunks = Layout::default()
@@ -2968,9 +2966,7 @@ impl Render {
         };
         let rows = if album.is_empty() { 2 } else { 3 };
         let cover_w = (COVER_H * 2).min(area.width);
-        let cover_h = (cover_w / 2)
-            .max(1)
-            .min(area.height.saturating_sub(rows));
+        let cover_h = (cover_w / 2).max(1).min(area.height.saturating_sub(rows));
         let mut y = area.y;
         if cover_h > 0 && cover_w > 0 {
             Render::cover(

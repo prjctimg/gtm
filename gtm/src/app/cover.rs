@@ -319,26 +319,25 @@ impl App {
         // part of the key because provider rows share `id == 0` and are named
         // only by that artwork address. A Spotify row carries no library id at
         // all, so its uri and artwork address are the identity.
-        let new_browse_key = if self.library_category == LIB_PLAYLISTS
-            && kind == TrackInfoKind::Track
-        {
-            maybe_track.as_ref().map(|(id, path)| {
-                format!(
-                    "{id}\u{1f}{path}\u{1f}{}",
-                    remote_url.as_deref().unwrap_or("")
-                )
-            })
-        } else if self.library_category == LIB_SPOTIFY && kind == TrackInfoKind::SpotifyTrack {
-            self.selected_spotify_track().map(|t| {
-                format!(
-                    "spotify\u{1f}{}\u{1f}{}",
-                    t.uri.as_deref().unwrap_or(t.name.as_str()),
-                    t.image_url.as_deref().unwrap_or("")
-                )
-            })
-        } else {
-            None
-        };
+        let new_browse_key =
+            if self.library_category == LIB_PLAYLISTS && kind == TrackInfoKind::Track {
+                maybe_track.as_ref().map(|(id, path)| {
+                    format!(
+                        "{id}\u{1f}{path}\u{1f}{}",
+                        remote_url.as_deref().unwrap_or("")
+                    )
+                })
+            } else if self.library_category == LIB_SPOTIFY && kind == TrackInfoKind::SpotifyTrack {
+                self.selected_spotify_track().map(|t| {
+                    format!(
+                        "spotify\u{1f}{}\u{1f}{}",
+                        t.uri.as_deref().unwrap_or(t.name.as_str()),
+                        t.image_url.as_deref().unwrap_or("")
+                    )
+                })
+            } else {
+                None
+            };
         if self.browse_cover_key != new_browse_key {
             let leaving_browse = self.browse_cover_key.is_some() && new_browse_key.is_none();
             self.browse_cover_key = new_browse_key;

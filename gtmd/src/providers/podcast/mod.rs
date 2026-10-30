@@ -110,7 +110,10 @@ const DEFAULT_PODCAST_FEEDS: &[(&str, &str)] = &[
         "The Rest Is Politics",
         "https://feeds.megaphone.fm/GLT9190936013",
     ),
-    ("My First Million", "https://feeds.megaphone.fm/HS2300184645"),
+    (
+        "My First Million",
+        "https://feeds.megaphone.fm/HS2300184645",
+    ),
 ];
 
 /// The feeds added with the second default set.
@@ -147,7 +150,10 @@ const ADDED_PODCAST_FEEDS: &[(&str, &str)] = &[
         "The Rest Is Politics",
         "https://feeds.megaphone.fm/GLT9190936013",
     ),
-    ("My First Million", "https://feeds.megaphone.fm/HS2300184645"),
+    (
+        "My First Million",
+        "https://feeds.megaphone.fm/HS2300184645",
+    ),
 ];
 
 /// A subscribed feed as persisted.
@@ -1895,10 +1901,7 @@ Hello]]></podcast:transcript>
             "a show from the second set is added"
         );
         assert!(
-            !manager
-                .feeds
-                .iter()
-                .any(|f| f.title == "NPR News Now"),
+            !manager.feeds.iter().any(|f| f.title == "NPR News Now"),
             "a show from the first set is not re-offered"
         );
         assert!(
@@ -1906,9 +1909,7 @@ Hello]]></podcast:transcript>
             "the second offer is recorded"
         );
 
-        manager
-            .feeds
-            .retain(|f| f.title != "The Rest Is History");
+        manager.feeds.retain(|f| f.title != "The Rest Is History");
         manager.save().expect("save after unsubscribe");
 
         let mut restarted = PodcastManager::new(dir.clone());
