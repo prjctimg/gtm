@@ -28,7 +28,12 @@ const CONFIG_FILE: &str = "podcast.json";
 /// default on purpose: re-seeding every empty file would resurrect every
 /// unsubscribe at the next start. A version in the name means a later release
 /// can deliberately merge a new set once.
-const DEFAULTS_MARKER: &str = "podcast-defaults-v1";
+const DEFAULTS_MARKER: &str = "podcast-defaults-v2";
+/// The marker written by the first default set.
+///
+/// Only the additions since then are merged into a config carrying it, so a
+/// show the user removed from the original set stays removed.
+const DEFAULTS_MARKER_V1: &str = "podcast-defaults-v1";
 const CONFIG_PERMS: u32 = 0o600;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 // Some shows publish their whole archive in one document: Stuff You Should
@@ -76,6 +81,73 @@ const DEFAULT_PODCAST_FEEDS: &[(&str, &str)] = &[
         "Freakonomics Radio",
         "https://feeds.simplecast.com/Y8lFbOT4",
     ),
+    (
+        "The Rest Is History",
+        "https://feeds.megaphone.fm/GLT4787413333",
+    ),
+    (
+        "Dan Carlin's Hardcore History",
+        "https://feeds.feedburner.com/dancarlin/history?format=xml",
+    ),
+    ("Darknet Diaries", "https://podcast.darknetdiaries.com"),
+    ("Syntax", "https://feed.syntax.fm/rss"),
+    (
+        "No Such Thing As A Fish",
+        "https://audioboom.com/channels/2399216.rss",
+    ),
+    ("Hidden Brain", "https://feeds.simplecast.com/kwWc0lhf"),
+    (
+        "The Tim Ferriss Show",
+        "https://rss.art19.com/tim-ferriss-show",
+    ),
+    (
+        "The Peter Attia Drive",
+        "https://rss.libsyn.com/shows/121729/destinations/713489.xml",
+    ),
+    ("Science Vs", "https://feeds.megaphone.fm/sciencevs"),
+    ("Acquired", "https://feeds.transistor.fm/acquired"),
+    (
+        "The Rest Is Politics",
+        "https://feeds.megaphone.fm/GLT9190936013",
+    ),
+    ("My First Million", "https://feeds.megaphone.fm/HS2300184645"),
+];
+
+/// The feeds added with the second default set.
+///
+/// A config that already recorded the first set gets only these, not the full
+/// list: the first set may contain shows the user removed on purpose.
+const ADDED_PODCAST_FEEDS: &[(&str, &str)] = &[
+    (
+        "The Rest Is History",
+        "https://feeds.megaphone.fm/GLT4787413333",
+    ),
+    (
+        "Dan Carlin's Hardcore History",
+        "https://feeds.feedburner.com/dancarlin/history?format=xml",
+    ),
+    ("Darknet Diaries", "https://podcast.darknetdiaries.com"),
+    ("Syntax", "https://feed.syntax.fm/rss"),
+    (
+        "No Such Thing As A Fish",
+        "https://audioboom.com/channels/2399216.rss",
+    ),
+    ("Hidden Brain", "https://feeds.simplecast.com/kwWc0lhf"),
+    (
+        "The Tim Ferriss Show",
+        "https://rss.art19.com/tim-ferriss-show",
+    ),
+    (
+        "The Peter Attia Drive",
+        "https://rss.libsyn.com/shows/121729/destinations/713489.xml",
+    ),
+    ("Science Vs", "https://feeds.megaphone.fm/sciencevs"),
+    ("Acquired", "https://feeds.transistor.fm/acquired"),
+    (
+        "The Rest Is Politics",
+        "https://feeds.megaphone.fm/GLT9190936013",
+    ),
+    ("My First Million", "https://feeds.megaphone.fm/HS2300184645"),
 ];
 
 /// A subscribed feed as persisted.
@@ -139,6 +211,10 @@ impl PodcastManager {
         self.config_dir.join(DEFAULTS_MARKER)
     }
 
+    fn legacy_defaults_marker_path(&self) -> PathBuf {
+        self.config_dir.join(DEFAULTS_MARKER_V1)
+    }
+
     /// The default subscriptions, ready to persist.
     fn default_feeds() -> Vec<SubscribedFeed> {
         DEFAULT_PODCAST_FEEDS
@@ -154,10 +230,12 @@ impl PodcastManager {
 
     /// Load subscriptions at daemon startup.
     ///
-    /// A config written before the marker existed gets every default it does
-    /// not already have, exactly once. After that the marker is the record of
-    /// the offer: an empty file is an empty subscription list, not a fresh
-    /// install, so a user who removed a default does not get it back.
+    /// A config written before any marker existed gets every default it does
+    /// not already have, exactly once. A config carrying the first marker gets
+    /// only the feeds added since then, so removing one of the original shows
+    /// does not bring it back with the next set. After the offer the marker is
+    /// the record: an empty file is an empty subscription list, not a fresh
+    /// install.
     pub fn load(&mut self) {
         let merged = self.defaults_marker_path().exists();
         let raw = match std::fs::read_to_string(self.config_path()) {
@@ -198,13 +276,22 @@ impl PodcastManager {
 
     /// Add the defaults an older config does not already have.
     ///
+    /// A config that recorded the first set only receives the additions; the
+    /// original shows may include one the user removed on purpose. A config
+    /// without any marker predates the offer and gets the full set.
+    ///
     /// URL identity alone is not enough: a feed can change hosts without
     /// changing its name, and the same show may already be subscribed under
     /// the old address. Matching the title as well keeps the migration from
     /// adding a second copy of The Daily or Stuff You Should Know.
     fn merge_missing_defaults(&mut self) {
+        let defaults = if self.legacy_defaults_marker_path().exists() {
+            ADDED_PODCAST_FEEDS
+        } else {
+            DEFAULT_PODCAST_FEEDS
+        };
         let mut added = 0usize;
-        for (title, url) in DEFAULT_PODCAST_FEEDS {
+        for (title, url) in defaults {
             let id = feed_id(url);
             let title_key = feed_title_key(title);
             let present = self
@@ -1777,6 +1864,62 @@ Hello]]></podcast:transcript>
             "an unsubscribed default must not return after a restart"
         );
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The first marker releases only the shows added since it, so an original
+    /// default the user removed is not resurrected by the second set.
+    #[test]
+    fn a_v1_config_gets_only_the_added_defaults() {
+        let dir = temp_config_dir("v1");
+        write_feeds(
+            &dir,
+            &[SubscribedFeed {
+                id: feed_id("https://example.com/only.xml"),
+                url: "https://example.com/only.xml".into(),
+                title: "A Custom Show".into(),
+                image_url: None,
+            }],
+        );
+        std::fs::write(dir.join(DEFAULTS_MARKER_V1), b"1\n").expect("v1 marker");
+
+        let mut manager = PodcastManager::new(dir.clone());
+        manager.load();
+
+        assert_eq!(manager.feeds.len(), 1 + ADDED_PODCAST_FEEDS.len());
+        assert!(
+            manager
+                .feeds
+                .iter()
+                .any(|f| f.title == "The Rest Is History"),
+            "a show from the second set is added"
+        );
+        assert!(
+            !manager
+                .feeds
+                .iter()
+                .any(|f| f.title == "NPR News Now"),
+            "a show from the first set is not re-offered"
+        );
+        assert!(
+            dir.join(DEFAULTS_MARKER).exists(),
+            "the second offer is recorded"
+        );
+
+        manager
+            .feeds
+            .retain(|f| f.title != "The Rest Is History");
+        manager.save().expect("save after unsubscribe");
+
+        let mut restarted = PodcastManager::new(dir.clone());
+        restarted.load();
+        assert!(
+            !restarted
+                .feeds
+                .iter()
+                .any(|f| f.title == "The Rest Is History"),
+            "an unsubscribed addition must not return after a restart"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

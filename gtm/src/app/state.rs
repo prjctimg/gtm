@@ -452,6 +452,12 @@ pub struct GridPlan {
     pub first: usize,
     pub cols: usize,
     pub rows: usize,
+    /// Cell geometry for this pane: the fixed cell gives way on a narrow
+    /// pane so a cover is still drawn rather than the whole grid vanishing.
+    pub cell_w: u16,
+    pub cell_h: u16,
+    pub cover_w: u16,
+    pub cover_h: u16,
 }
 
 impl GridView {

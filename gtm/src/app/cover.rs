@@ -317,18 +317,28 @@ impl App {
         // bytes: the same album can be reached from several rows, and a row can
         // be repainted from the in-memory cache without a new reply. The URL is
         // part of the key because provider rows share `id == 0` and are named
-        // only by that artwork address.
-        let new_browse_key =
-            if self.library_category == LIB_PLAYLISTS && kind == TrackInfoKind::Track {
-                maybe_track.as_ref().map(|(id, path)| {
-                    format!(
-                        "{id}\u{1f}{path}\u{1f}{}",
-                        remote_url.as_deref().unwrap_or("")
-                    )
-                })
-            } else {
-                None
-            };
+        // only by that artwork address. A Spotify row carries no library id at
+        // all, so its uri and artwork address are the identity.
+        let new_browse_key = if self.library_category == LIB_PLAYLISTS
+            && kind == TrackInfoKind::Track
+        {
+            maybe_track.as_ref().map(|(id, path)| {
+                format!(
+                    "{id}\u{1f}{path}\u{1f}{}",
+                    remote_url.as_deref().unwrap_or("")
+                )
+            })
+        } else if self.library_category == LIB_SPOTIFY && kind == TrackInfoKind::SpotifyTrack {
+            self.selected_spotify_track().map(|t| {
+                format!(
+                    "spotify\u{1f}{}\u{1f}{}",
+                    t.uri.as_deref().unwrap_or(t.name.as_str()),
+                    t.image_url.as_deref().unwrap_or("")
+                )
+            })
+        } else {
+            None
+        };
         if self.browse_cover_key != new_browse_key {
             let leaving_browse = self.browse_cover_key.is_some() && new_browse_key.is_none();
             self.browse_cover_key = new_browse_key;
@@ -862,14 +872,37 @@ impl App {
     /// the same helper the row lists use: a move inside the window leaves it
     /// alone, so a single step does not reflow the grid under the cursor.
     pub fn grid_plan(&self, area: Rect, total: usize) -> GridPlan {
+        // The cell is a maximum, not a fixed width. A pane between one and
+        // fourteen columns used to fail the old guard and draw no covers at
+        // all; now a lone cell takes the width it is given, and a short pane
+        // shrinks the artwork until the cell still fits above the stats line.
         let cols = (area.width / GRID_CELL_W).max(1) as usize;
-        // One row is the blank line the row view starts with, and the last is the
-        // stats line drawn under the list.
-        let rows = (area.height.saturating_sub(2) / GRID_CELL_H).max(1) as usize;
+        let cell_w = (area.width / cols as u16).min(GRID_CELL_W).max(1);
+        // One row is the blank line the row view starts with, the last is the
+        // stats line drawn under the list, and the label takes one row inside
+        // the cell.
+        let cover_h = (cell_w.saturating_sub(1) / 2)
+            .max(1)
+            .min(GRID_CELL_H.saturating_sub(2))
+            .min(area.height.saturating_sub(3).max(1));
+        let cover_w = cover_h
+            .saturating_mul(2)
+            .min(cell_w.saturating_sub(1))
+            .max(1);
+        let cell_h = cover_h.saturating_add(2);
+        let rows = (area.height.saturating_sub(2) / cell_h).max(1) as usize;
         let page = cols * rows;
         let sel = self.list_pos().min(total.saturating_sub(1));
         let (first, _end) = step_viewport(self.grid.first, sel, page, total);
-        GridPlan { first, cols, rows }
+        GridPlan {
+            first,
+            cols,
+            rows,
+            cell_w,
+            cell_h,
+            cover_w,
+            cover_h,
+        }
     }
 
     /// Record a plan and ask for the covers of the cells it shows.

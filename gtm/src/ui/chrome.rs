@@ -6,9 +6,8 @@
 // This is free software released under the GPL-3.0 license.
 
 use crate::app::{
-    COVER_REVEAL_MS, GRID_CELL_H, GRID_CELL_W, LIB_ALL, LIB_CATEGORIES, LIB_CHARTS, LIB_PLAYLISTS,
-    LIB_PODCASTS, LIB_RADIO, LIB_SPOTIFY, LibraryFilter, PlaylistGroup, RadioLeftScope,
-    playlist_row_label,
+    COVER_REVEAL_MS, LIB_ALL, LIB_CATEGORIES, LIB_CHARTS, LIB_PLAYLISTS, LIB_PODCASTS, LIB_RADIO,
+    LIB_SPOTIFY, LibraryFilter, PlaylistGroup, RadioLeftScope, playlist_row_label,
 };
 use crate::ui::*;
 use crate::visualizer::{AudioFrame, Frame, Visualizer, pixels_to_lines};
@@ -1259,17 +1258,21 @@ impl Render {
                             f.render_widget(time_para, *area);
                         }
                     }
-                } else if inner.width >= 12 {
-                    // Compact layout still keeps the cover left with the
-                    // details to its right (scaled to a slim column) whenever
-                    // there is any horizontal room at all.
-                    let slim_cover_h = inner.height.saturating_sub(2).clamp(2, 6);
-                    let slim_cover_w = slim_cover_h * 2;
+                } else {
+                    // Compact layout always keeps a scaled cover beside the
+                    // details. The old text-only fallback dropped the artwork
+                    // entirely below twelve columns, which made a narrow band
+                    // look as if the track had no art at all.
+                    let slim_cover_w = (inner.height.saturating_mul(2))
+                        .min(inner.width)
+                        .max(1);
+                    let slim_cover_h = (slim_cover_w / 2).max(1).min(inner.height);
+                    let gap = if inner.width > slim_cover_w { 1 } else { 0 };
                     let hchunks = Layout::default()
                         .direction(Direction::Horizontal)
                         .constraints([
                             Constraint::Length(slim_cover_w),
-                            Constraint::Length(1),
+                            Constraint::Length(gap),
                             Constraint::Min(0),
                         ])
                         .split(inner);
@@ -1305,39 +1308,6 @@ impl Render {
                         }),
                     ];
                     Render::evolving(f, info_area, Paragraph::new(lines), "np", app, true);
-                } else {
-                    let title_text = display_title.to_string();
-                    let title_avail = inner.width as usize;
-                    let animated_title =
-                        scroll_text(&title_text, title_avail, app.np_title_scroll, true);
-                    let title_para = Paragraph::new(Line::from(vec![Span::styled(
-                        &animated_title,
-                        Style::default()
-                            .fg(app.theme.secondary_accent)
-                            .add_modifier(Modifier::BOLD),
-                    )]));
-                    let title_area = Rect {
-                        x: inner.x,
-                        y: inner.y,
-                        width: inner.width,
-                        height: 1,
-                    };
-                    Render::evolving(f, title_area, title_para, "np", app, true);
-
-                    let row_offset = 1u16;
-                    if !track.album.is_empty() {
-                        let album_para = Paragraph::new(Line::from(vec![Span::styled(
-                            &track.album,
-                            Style::default().fg(app.theme.fg_bright),
-                        )]));
-                        let album_area = Rect {
-                            x: inner.x,
-                            y: inner.y + row_offset,
-                            width: inner.width,
-                            height: 1,
-                        };
-                        f.render_widget(album_para, album_area);
-                    }
                 }
             } else {
                 let inner = np_inner;
@@ -1541,16 +1511,23 @@ impl Render {
             .get(app.library_category)
             .copied()
             .unwrap_or("");
-        // The two grouped views have several groupings behind one row, so their
+        // The grouped views have several groupings behind one row, so their
         // headers name the one on screen: a pane headed "Library" over a list of
         // albums says nothing about which list the user is looking at, and the
         // Playlists row is the same story now that it owns the three history
-        // lists too.
-        let category_label: &str = match app.library_category {
-            LIB_ALL => app.library_filter.label(),
-            LIB_PLAYLISTS if app.browse_detail.is_none() && !app.playlist_open => "Playlists",
-            LIB_PLAYLISTS if app.browse_detail.is_none() => app.playlist_group.label(),
-            _ => category_label,
+        // lists too. Radio steps its left-pane scope with the same keys, so its
+        // header follows that scope rather than staying on the category name.
+        let category_label: String = match app.library_category {
+            LIB_ALL => format!("Library · {}", app.library_filter.label()),
+            LIB_PLAYLISTS if app.browse_detail.is_none() && !app.playlist_open => {
+                match app.playlist_group {
+                    PlaylistGroup::Playlists => "Playlists".to_string(),
+                    group => format!("Playlists · {}", group.label()),
+                }
+            }
+            LIB_PLAYLISTS if app.browse_detail.is_none() => app.playlist_group.label().to_string(),
+            LIB_RADIO => format!("Radio · {}", app.radio.left_scope.label()),
+            _ => category_label.to_string(),
         };
 
         // Total rows in the active right-pane list, threaded out of the category
@@ -2990,8 +2967,10 @@ impl Render {
             return;
         };
         let rows = if album.is_empty() { 2 } else { 3 };
-        let cover_h = COVER_H.min(area.height.saturating_sub(rows));
-        let cover_w = (cover_h * 2).min(area.width.saturating_sub(2));
+        let cover_w = (COVER_H * 2).min(area.width);
+        let cover_h = (cover_w / 2)
+            .max(1)
+            .min(area.height.saturating_sub(rows));
         let mut y = area.y;
         if cover_h > 0 && cover_w > 0 {
             Render::cover(
@@ -3061,8 +3040,10 @@ impl Render {
             return;
         };
         let text_need = 2u16;
-        let cover_h = COVER_H.min(area.height.saturating_sub(text_need).saturating_sub(1));
-        let cover_w = (cover_h * 2).min(area.width.saturating_sub(2));
+        let cover_w = (COVER_H * 2).min(area.width);
+        let cover_h = (cover_w / 2)
+            .max(1)
+            .min(area.height.saturating_sub(text_need).saturating_sub(1));
         let mut y = area.y;
         if cover_h > 0 && cover_w > 0 {
             let cover_area = Rect {
@@ -3113,9 +3094,10 @@ impl Render {
             return;
         };
         let text_need = 3u16;
-        let cover_h_avail = area.height.saturating_sub(text_need).saturating_sub(1);
-        let cover_h = COVER_H.min(cover_h_avail);
-        let cover_w = (cover_h * 2).min(area.width.saturating_sub(2));
+        let cover_w = (COVER_H * 2).min(area.width);
+        let cover_h = (cover_w / 2)
+            .max(1)
+            .min(area.height.saturating_sub(text_need).saturating_sub(1));
         let mut y = area.y;
         if cover_h > 0 && cover_w > 0 {
             let cover_area = Rect {
@@ -3177,10 +3159,12 @@ impl Render {
     /// Covers are resolved through the same representative track the info card
     /// uses, so a cell and the card below it show the same artwork.
     pub(crate) fn grid(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        // A pane too small for one cell draws nothing and fetches nothing. On a
+        // A pane with no columns or rows can neither draw nor fetch a cell. On a
         // narrow layout the results column is `Length(0)` while the left pane
-        // holds the cursor, so this is the common case, not a corner one.
-        if area.width < GRID_CELL_W || area.height < GRID_CELL_H {
+        // holds the cursor, so this is the common case, not a corner one. Any
+        // real width gets a scaled cell: the old `GRID_CELL_W` guard turned a
+        // cramped pane into a blank one.
+        if area.width == 0 || area.height == 0 {
             return;
         }
         let labels = app.grid_labels();
@@ -3202,16 +3186,18 @@ impl Render {
         app.grid_fetch(&plan);
         let sel = app.list_pos().min(total - 1);
         let cols = plan.cols;
-        let cell_h = GRID_CELL_H;
-        let cover_w = GRID_CELL_W - 1;
-        let cover_h = GRID_CELL_H - 2;
+        let cell_w = plan.cell_w;
+        let cell_h = plan.cell_h;
+        let cover_w = plan.cover_w;
+        let cover_h = plan.cover_h;
 
         for (cell, id) in app.grid.ids.iter().enumerate() {
             let pos = plan.first + cell;
             let Some(name) = labels.get(pos) else {
                 continue;
             };
-            let x = area.x + (cell % cols) as u16 * GRID_CELL_W;
+            let slot_x = area.x + (cell % cols) as u16 * cell_w;
+            let x = slot_x + cell_w.saturating_sub(cover_w) / 2;
             let y = area.y + (cell / cols) as u16 * cell_h;
             if y + cell_h > area.y + area.height {
                 break;
@@ -3294,8 +3280,10 @@ impl Render {
         // The artwork is sized from the box the card was handed, not from the
         // docked card's 24 columns: the float sizes its box around the art it
         // can show, and a gate on `COVER_W` threw that art away and left four
-        // lines of text marooned in a box built for a cover.
-        let can_cover = !no_image_protocol() && area.width >= 6 && area.height >= 8;
+        // lines of text marooned in a box built for a cover. Width is not a
+        // reason to drop it either: whatever columns the card has become the
+        // cover's columns.
+        let can_cover = !no_image_protocol() && area.width > 0 && area.height >= 8;
 
         let sep_style = Style::default().fg(app.theme.fg_dim);
         let sep_label = String::new();
@@ -3313,10 +3301,14 @@ impl Render {
             let card_h = area.height;
             let text_need = INFO_FIELDS_H;
             let cover_h_avail = card_h.saturating_sub(text_need).saturating_sub(2);
-            let cover_h_eff = cover_h_avail
+            let mut cover_h_eff = cover_h_avail
                 .max(COVER_H)
                 .min(area.height.saturating_sub(text_need + 2));
-            let cover_w_eff = (cover_h_eff * 2).min(area.width.saturating_sub(2));
+            let cover_w_eff = (cover_h_eff * 2).min(area.width).max(1);
+            // A narrow card caps the width before the height, so the art keeps
+            // its 2:1 cell aspect instead of becoming a tall sliver. The text
+            // block then moves up into the rows the cover gave back.
+            cover_h_eff = (cover_w_eff / 2).max(1).min(cover_h_eff);
             let split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([

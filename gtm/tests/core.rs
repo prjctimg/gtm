@@ -3940,6 +3940,55 @@ fn now_playing_cover_fills_a_narrow_pane() {
         ),
         "the narrow now-playing cover is padded again"
     );
+    assert!(
+        chrome.contains("let slim_cover_w = (inner.height.saturating_mul(2))")
+            && !chrome.contains("inner.width >= 12"),
+        "the compact band still drops to a text-only row instead of scaling the cover"
+    );
+}
+
+/// The idle reactive preview follows a playlist into the Spotify drill-down.
+///
+/// Local playlist rows already seeded the palette. Spotify rows fetch their
+/// artwork through the shared URL path, but they produced no browse key, so
+/// scrolling them left the theme on the previous row.
+#[test]
+fn the_idle_playlist_preview_covers_spotify_rows() {
+    let theme = include_str!("../src/app/theme.rs");
+    let cover = include_str!("../src/app/cover.rs");
+
+    assert!(
+        theme.contains("(LIB_PLAYLISTS, TrackInfoKind::Track)")
+            && theme.contains("(LIB_SPOTIFY, TrackInfoKind::SpotifyTrack)"),
+        "the idle preview no longer accepts both local and Spotify playlist rows"
+    );
+    assert!(
+        cover.contains("\"spotify\\u{1f}{}\\u{1f}{}\""),
+        "a Spotify row has no browse key to seed its reactive palette"
+    );
+}
+
+/// The right-pane header names the group the `[` / `]` pair is cycling.
+///
+/// The grouped rows all live under one category name, so the header used to
+/// say only "Library" or "Playlists" while the rows underneath changed. Radio
+/// had the same problem with its left-pane scope and never showed it here.
+#[test]
+fn pane_headers_name_the_active_group() {
+    let chrome = include_str!("../src/ui/chrome.rs");
+    let squish = |s: &str| s.split_whitespace().collect::<String>();
+
+    for header in [
+        "LIB_ALL => format!(\"Library · {}\", app.library_filter.label()),",
+        "PlaylistGroup::Playlists => \"Playlists\".to_string(),",
+        "group => format!(\"Playlists · {}\", group.label()),",
+        "LIB_RADIO => format!(\"Radio · {}\", app.radio.left_scope.label()),",
+    ] {
+        assert!(
+            squish(chrome).contains(&squish(header)),
+            "the pane header no longer names the active group: {header}"
+        );
+    }
 }
 
 /// Narrow screens float the track-info card over the list instead of docking
@@ -4046,10 +4095,12 @@ fn narrow_docks_the_card_and_the_list_yields_its_rows() {
         "the mouse hit zones still cover rows under the docked card"
     );
 
-    // The card's own cover gate has to be the box it was handed.
+    // The card's own cover gate has to be the box it was handed, and width is
+    // not a reason to drop the art: whatever columns the card has become the
+    // cover's columns.
     assert!(
         chrome.contains(
-            "let can_cover = !no_image_protocol() && area.width >= 6 && area.height >= 8;"
+            "let can_cover = !no_image_protocol() && area.width > 0 && area.height >= 8;"
         ),
         "the info card still demands the docked card's width before drawing art"
     );
@@ -5088,13 +5139,20 @@ fn the_grid_refuses_where_it_cannot_work() {
     );
     // And it does not fetch covers for a pane that cannot show a cell. On the
     // narrow layout the results column is `Length(0)` whenever the left pane
-    // holds the cursor, so that is the common case, not a corner one.
+    // holds the cursor, so that is the common case, not a corner one. A real
+    // but narrow pane is not refused: its cell shrinks to the width it has.
     let at = chrome
         .find("pub(crate) fn grid(f: &mut ratatui::Frame, area: Rect, app: &mut App)")
         .expect("the grid renderer is gone");
-    let block = &chrome[at..(at + 400).min(chrome.len())];
+    let block = &chrome[at..(at + 800).min(chrome.len())];
     assert!(
-        block.contains("if area.width < GRID_CELL_W || area.height < GRID_CELL_H {"),
-        "the grid renders into a pane too small to hold a cell"
+        block.contains("if area.width == 0 || area.height == 0 {"),
+        "the grid still refuses a narrow pane instead of scaling its cell"
+    );
+    assert!(
+        cover.contains("let cell_w = (area.width / cols as u16).min(GRID_CELL_W).max(1);")
+            && cover.contains("let cover_w = cover_h")
+            && cover.contains(".min(cell_w.saturating_sub(1))"),
+        "the grid cell no longer scales its cover to the pane width"
     );
 }

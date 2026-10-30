@@ -213,13 +213,18 @@ impl App {
         self.theme = theme;
     }
 
-    /// Whether the highlighted row is a track inside the Playlists view.
+    /// Whether the highlighted row is a track inside a browser playlist.
     ///
-    /// The view has three levels: groups, a group's rows, and the tracks of a
-    /// named playlist. Only the last two carry tracks; the group list and the
-    /// opened-playlist list are names, and neither has a palette to preview.
+    /// The local view has three levels: groups, a group's rows, and the tracks
+    /// of a named playlist. Only the last two carry tracks; the group list and
+    /// the opened-playlist list are names, and neither has a palette to
+    /// preview. The Spotify drill-down is the same question one provider over:
+    /// its rows are tracks with artwork, so they preview the same way.
     fn browse_target_is_playlist(&self) -> bool {
-        self.library_category == LIB_PLAYLISTS && self.track_info_kind() == TrackInfoKind::Track
+        matches!(
+            (self.library_category, self.track_info_kind()),
+            (LIB_PLAYLISTS, TrackInfoKind::Track) | (LIB_SPOTIFY, TrackInfoKind::SpotifyTrack)
+        )
     }
 
     /// Whether the highlighted playlist row is the current reactive source.

@@ -55,6 +55,13 @@ fn edit_metadata_areas(content: Rect) -> (Rect, Rect) {
     // Seven fields plus the gap; the cover gives way first on short panes.
     let cover_h = EDIT_STACK_COVER_H.min(content.height.saturating_sub(8));
     let cover_w = (cover_h * 2).min(content.width);
+    // Stacked on a narrow pane, the width cap shrinks the artwork's height
+    // with it, so the fields keep the rows a tall sliver would have taken.
+    let cover_h = if cover_w == 0 {
+        0
+    } else {
+        (cover_w / 2).max(1).min(cover_h)
+    };
     let cover_area = Rect {
         x: content.x + content.width.saturating_sub(cover_w) / 2,
         y: content.y,
