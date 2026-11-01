@@ -60,10 +60,13 @@ impl Podcast {
 
     pub async fn episodes(inner: &DaemonInner, feed_id: &str) -> Result<DaemonRes, CoreError> {
         let mut podcast = inner.podcast.lock().await;
-        if !podcast.has_episodes(feed_id)
-            && let Err(e) = podcast.refresh_feed(feed_id).await
-        {
-            warn!("refresh episodes for {feed_id}: {e}");
+        // Ensure the feed is loaded and its episodes are available.
+        // If the episodes cache is empty for this feed, refresh it.
+        if !podcast.has_episodes(feed_id) {
+            if let Err(e) = podcast.refresh_feed(feed_id).await {
+                warn!("refresh episodes for {feed_id}: {e}");
+                // Even if refresh fails, try to return whatever cached episodes exist.
+            }
         }
         match podcast.episodes(feed_id) {
             Ok((feed_title, episodes)) => Ok(DaemonRes::PodcastEpisodesRes {
@@ -110,6 +113,7 @@ impl Podcast {
         // an uncached feed is refreshed rather than reported as having none.
         let mut podcast = inner.podcast.lock().await;
         if podcast.episode_at(feed_id, episode_index).is_none() {
+            // Ensure the feed is loaded first.
             let _ = podcast.refresh_feed(feed_id).await;
         }
         let lyrics = podcast

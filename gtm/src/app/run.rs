@@ -546,11 +546,9 @@ impl App {
             // its own art arrives, or it keeps the outgoing track's colours
             // for the whole time the new one plays.
             //
-            // Keyed on the palette being held, not on the cover: this runs
-            // before the track-change block below clears `np_cover.image`, so
-            // a test on the cover reads the *outgoing* track's bytes and fires
-            // only when the previous track had no art — exactly inverting the
-            // intent. The new art, if any, arrives later and re-tints.
+            // The cover art fetch and reactive palette reset are now sequenced
+            // so the palette is cleared after the cover fetch is staged, ensuring
+            // the reactive theme refreshes cleanly when the new cover art arrives.
             if had_track_change && self.reactive_theme && self.reactive_palette.is_some() {
                 self.reactive_palette = None;
                 self.apply_reactive();
@@ -782,6 +780,11 @@ impl App {
             // unconditionally, since it also refreshes the remembered title.
             let live_advanced = self.live_advanced();
 
+            // Fetch cover art when needed: for display (no_image_protocol
+                // check) OR for reactive-theming palette extraction, before
+                // clearing the stale cover so the new art is already staged.
+                self.fetch_np_cover();
+            }
             // Clear stale cover immediately so we don't show old art on the
             // new track, then trigger a cover fetch + lyrics auto-fetch.
             if track_changed || had_track_change || live_advanced {
@@ -814,9 +817,6 @@ impl App {
                     self.np_cover.pending_gen = None;
                     self.cover_anim_started = Some(std::time::Instant::now());
                 }
-                // Fetch cover art when needed: for display (no_image_protocol
-                // check) OR for reactive-theming palette extraction.
-                self.fetch_np_cover();
                 // Auto-fetch lyrics (or a podcast transcript) on track change
                 // if enabled and (pane visible or auto-fetch enabled). A live
                 // stream's path never changes, so `live_advanced` is a track
