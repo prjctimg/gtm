@@ -62,11 +62,10 @@ impl Podcast {
         let mut podcast = inner.podcast.lock().await;
         // Ensure the feed is loaded and its episodes are available.
         // If the episodes cache is empty for this feed, refresh it.
-        if !podcast.has_episodes(feed_id) {
-            if let Err(e) = podcast.refresh_feed(feed_id).await {
-                warn!("refresh episodes for {feed_id}: {e}");
-                // Even if refresh fails, try to return whatever cached episodes exist.
-            }
+        if !podcast.has_episodes(feed_id)
+            && let Err(e) = podcast.refresh_feed(feed_id).await
+        {
+            warn!("refresh episodes for {feed_id}: {e}");
         }
         match podcast.episodes(feed_id) {
             Ok((feed_title, episodes)) => Ok(DaemonRes::PodcastEpisodesRes {

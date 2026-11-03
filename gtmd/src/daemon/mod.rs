@@ -387,16 +387,9 @@ impl Cmd {
         // this before the load would cut a Spotify track while the replacement
         // was still being prepared.
         inner.stream.lock().await.reset();
-            // Invalidate any cached audio format state from the previous source
-            // so the next playback cycle picks up the local file's sample rate
-            // and channel count cleanly, avoiding format mismatches or speed
-            // changes when switching from streaming to local file playback.
-            {
-                let _ = inner.mixer.lock().await;
-            }
-            if !silent {
-                inner.mixer.lock().await.play()?;
-            }
+        if !silent {
+            inner.mixer.lock().await.play()?;
+        }
 
         Self::stop_current_for_play(inner, !silent).await?;
 

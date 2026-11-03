@@ -781,10 +781,9 @@ impl App {
             let live_advanced = self.live_advanced();
 
             // Fetch cover art when needed: for display (no_image_protocol
-                // check) OR for reactive-theming palette extraction, before
-                // clearing the stale cover so the new art is already staged.
-                self.fetch_np_cover();
-            }
+            // check) OR for reactive-theming palette extraction, before
+            // clearing the stale cover so the new art is already staged.
+            self.fetch_np_cover();
             // Clear stale cover immediately so we don't show old art on the
             // new track, then trigger a cover fetch + lyrics auto-fetch.
             if track_changed || had_track_change || live_advanced {
