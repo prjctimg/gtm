@@ -566,6 +566,26 @@ jobs:
         if: matrix.family == 'android'
         run: |
           pip install termux-create-package ruamel.yaml
+          # termux-create-package 0.12.0 probes for ruamel.yaml through
+          # `importlib.util` but only imports `importlib`. Python 3.14 on the
+          # current runner image no longer exposes the submodule implicitly,
+          # so every YAML manifest fails with a misleading "requires
+          # ruamel.yaml" error even though it is installed. Patch the installed
+          # entry point until the upstream fix lands.
+          python3 - "$(command -v termux-create-package)" <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+          if "import importlib.util" not in text:
+              text = text.replace(
+                  "import importlib\n",
+                  "import importlib\nimport importlib.util\n",
+                  1,
+              )
+              path.write_text(text)
+          PY
           version="${{ needs.tag.outputs.version }}"
           files="target/aarch64-linux-android/termux-pkg/files"
           mkdir -p "$files/bin" "$files/share/man/man1"
