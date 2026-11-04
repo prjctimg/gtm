@@ -815,6 +815,13 @@ impl App {
                     self.np_cover.track_path = cur_path.clone();
                     self.np_cover.pending_gen = None;
                     self.cover_anim_started = Some(std::time::Instant::now());
+                    // The `fetch_np_cover` above staged nothing when a different
+                    // track's fetch was still in flight, so its reply now fails
+                    // the generation guard and this track would wait out the
+                    // session for art that will never paint. Restage the fetch
+                    // now, with the slot free, instead of leaving the theme on
+                    // the placeholder for the whole track.
+                    self.fetch_np_cover();
                 }
                 // Auto-fetch lyrics (or a podcast transcript) on track change
                 // if enabled and (pane visible or auto-fetch enabled). A live
