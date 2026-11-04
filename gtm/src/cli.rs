@@ -649,7 +649,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 // against its own cwd, not ours: forwarding the argument
                 // verbatim turned `./track.flac` into ENOENT whenever the
                 // daemon had been started from another directory.
-                let path = match std::path::absolute(&path) {
+                let path = match std::path::absolute(path) {
                     Ok(p) => p.to_string_lossy().into_owned(),
                     Err(_) => path.clone(),
                 };

@@ -157,7 +157,13 @@ impl Podcast {
     ) -> Result<DaemonRes, CoreError> {
         // The episode has to be in cache to know what transcripts it offers, so
         // an uncached feed is refreshed rather than reported as having none.
-        if inner.podcast.lock().await.episode_at(feed_id, episode_index).is_none() {
+        if inner
+            .podcast
+            .lock()
+            .await
+            .episode_at(feed_id, episode_index)
+            .is_none()
+        {
             // Ensure the feed is loaded first; outside the lock like every
             // other refresh.
             let _ = refresh_unlocked(inner, feed_id).await;
@@ -236,7 +242,12 @@ impl Podcast {
         episode_index: usize,
     ) -> Result<TrackInfo, CoreError> {
         let (feed_title, episode) = {
-            match inner.podcast.lock().await.episode_at(feed_id, episode_index) {
+            match inner
+                .podcast
+                .lock()
+                .await
+                .episode_at(feed_id, episode_index)
+            {
                 Some(ep) => (ep.feed_title.clone(), ep),
                 None => {
                     refresh_unlocked(inner, feed_id).await?;

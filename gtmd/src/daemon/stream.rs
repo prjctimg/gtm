@@ -143,7 +143,12 @@ pub(crate) async fn resolve_remote(
             feed_id,
             episode_index,
         } => {
-            let url = match inner.podcast.lock().await.episode_at(feed_id, *episode_index) {
+            let url = match inner
+                .podcast
+                .lock()
+                .await
+                .episode_at(feed_id, *episode_index)
+            {
                 Some(ep) => ep.url.clone(),
                 None => {
                     // Daemon restarted since the feed was browsed; refresh the

@@ -415,7 +415,8 @@ impl PodcastManager {
         let (url, id) = (feed.url.clone(), feed.id.clone());
         feed.title = parsed.title.clone();
         feed.image_url = art.clone();
-        self.episodes.insert(feed_id.to_string(), parsed.episodes.clone());
+        self.episodes
+            .insert(feed_id.to_string(), parsed.episodes.clone());
         self.error = None;
         self.save()?;
         Ok(PodcastFeed {
@@ -633,8 +634,7 @@ async fn fetch_body(client: &reqwest::Client, url: &str) -> Result<String, Strin
     let mut raw = String::with_capacity(32 * 1024);
     let mut chunks = resp.bytes_stream();
     while let Some(chunk) = chunks.next().await {
-        let chunk = chunk
-            .map_err(|e| format!("transcript stream: {e}"))?;
+        let chunk = chunk.map_err(|e| format!("transcript stream: {e}"))?;
         raw.push_str(&String::from_utf8_lossy(&chunk));
         if raw.len() > MAX_FEED_BYTES {
             return Err("transcript too large".into());
@@ -646,10 +646,7 @@ async fn fetch_body(client: &reqwest::Client, url: &str) -> Result<String, Strin
 /// Fetch and parse a feed document, with the manager's timeouts and redirects.
 /// The manager's own client goes in so the network half of a refresh can run
 /// outside the lock — nothing about the body touches manager state.
-pub(crate) async fn fetch_feed(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<ParsedFeed, String> {
+pub(crate) async fn fetch_feed(client: &reqwest::Client, url: &str) -> Result<ParsedFeed, String> {
     fetch_and_parse(client, url).await
 }
 
