@@ -645,11 +645,23 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
         match cmd {
             CliCommand::Play { path, start_pos } => {
                 let pos = start_pos.unwrap_or(0.0);
-                client
-                    .play(path, pos)
-                    .await
-                    .map(|()| "ok".to_string())
-                    .map_err(|e| e.to_string())
+                // The daemon outlives the client and resolves relative paths
+                // against its own cwd, not ours: forwarding the argument
+                // verbatim turned `./track.flac` into ENOENT whenever the
+                // daemon had been started from another directory.
+                let path = match std::path::absolute(&path) {
+                    Ok(p) => p.to_string_lossy().into_owned(),
+                    Err(_) => path.clone(),
+                };
+                if !std::path::Path::new(&path).exists() {
+                    Err(format!("no such file: {path}"))
+                } else {
+                    client
+                        .play(&path, pos)
+                        .await
+                        .map(|()| "ok".to_string())
+                        .map_err(|e| e.to_string())
+                }
             }
             CliCommand::Stream { url } => client
                 .play_stream(url)

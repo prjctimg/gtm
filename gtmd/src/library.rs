@@ -911,6 +911,12 @@ impl Library {
         cache_dir: Option<&str>,
     ) -> Result<Vec<TrackInfo>, String> {
         let mut added = Vec::new();
+        // Stored paths are opened later with no memory of the scanning cwd, so
+        // they have to be absolute; a relative `dir` used to produce rows that
+        // blew up with ENOENT on the next play.
+        let dir = std::fs::canonicalize(dir)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| dir.to_string());
         let extensions = ["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus"];
 
         let walk = if recursive {
