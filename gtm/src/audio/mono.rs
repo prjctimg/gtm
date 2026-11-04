@@ -18,7 +18,6 @@ use rodio::Source;
 /// downstream mixer ever seeing a channel-count change.
 pub struct MonoSource<B> {
     inner: B,
-    channels: NonZeroU16,
     mono: Arc<AtomicBool>,
     /// The replicated mono frame pending delivery, if mid-emit.
     emit: Vec<f32>,
@@ -30,10 +29,8 @@ where
     B: Source<Item = f32>,
 {
     pub fn new(inner: B, mono: Arc<AtomicBool>) -> Self {
-        let channels = inner.channels();
         Self {
             inner,
-            channels,
             mono,
             emit: Vec::new(),
             emit_pos: 0,
@@ -57,7 +54,7 @@ where
             return self.inner.next();
         }
 
-        let ch = self.channels.get() as usize;
+        let ch = self.inner.channels().get() as usize;
         let mut sum = 0.0f32;
         for _ in 0..ch {
             sum += self.inner.next()?;
@@ -78,7 +75,7 @@ where
     }
 
     fn channels(&self) -> NonZeroU16 {
-        self.channels
+        self.inner.channels()
     }
 
     fn sample_rate(&self) -> NonZeroU32 {

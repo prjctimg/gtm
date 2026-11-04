@@ -250,20 +250,14 @@ impl DecodeControl {
 pub struct RingBufferSource {
     shared: SharedRingBuffer,
     control: Arc<DecodeControl>,
-    channels: NonZeroU16,
-    sample_rate: NonZeroU32,
     total_duration: Option<Duration>,
 }
 
 impl RingBufferSource {
     pub fn new(shared: SharedRingBuffer, control: Arc<DecodeControl>) -> Self {
-        let sr = control.sample_rate.load(Ordering::Relaxed);
-        let ch = control.channels.load(Ordering::Relaxed);
         Self {
             shared,
             control,
-            channels: NonZeroU16::new(ch).unwrap_or(NonZeroU16::MIN),
-            sample_rate: NonZeroU32::new(sr).unwrap_or(NonZeroU32::MIN),
             total_duration: None,
         }
     }
@@ -310,11 +304,11 @@ impl Source for RingBufferSource {
     }
 
     fn channels(&self) -> NonZeroU16 {
-        self.channels
+        NonZeroU16::new(self.control.channels.load(Ordering::Relaxed)).unwrap_or(NonZeroU16::MIN)
     }
 
     fn sample_rate(&self) -> NonZeroU32 {
-        self.sample_rate
+        NonZeroU32::new(self.control.sample_rate.load(Ordering::Relaxed)).unwrap_or(NonZeroU32::MIN)
     }
 
     fn total_duration(&self) -> Option<Duration> {
