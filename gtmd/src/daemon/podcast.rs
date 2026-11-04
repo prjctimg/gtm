@@ -1,12 +1,51 @@
 use super::*;
 
+use gtm::shared::podcast::PodcastFeed;
+
+/// Fetch and apply one feed without holding the podcast lock.
+///
+/// The lock is taken, cloned out what the fetch needs, released, and only
+/// re-taken to persist the result. A feed fetch waits on the network; the
+/// read-only commands (feeds, status, episodes) must not wait behind it or
+/// the client's 30 s IPC timeout fires — every feed fetch used to run under
+/// this lock, and refreshing a dozen feeds starved the UI for minutes.
+pub(crate) async fn refresh_unlocked(
+    inner: &DaemonInner,
+    feed_id: &str,
+) -> Result<PodcastFeed, CoreError> {
+    let (url, client) = {
+        let podcast = inner.podcast.lock().await;
+        (
+            podcast.feed_target(feed_id).map_err(CoreError::Daemon)?,
+            podcast.client(),
+        )
+    };
+    let parsed = crate::podcast::fetch_feed(&client, &url)
+        .await
+        .map_err(CoreError::Daemon)?;
+    inner
+        .podcast
+        .lock()
+        .await
+        .apply_refresh(feed_id, parsed)
+        .map_err(CoreError::Daemon)
+}
+
 /// Podcast feed subscriptions and episodes.
 pub(crate) struct Podcast;
 
 impl Podcast {
     pub async fn add_feed(inner: &DaemonInner, url: &str) -> Result<DaemonRes, CoreError> {
-        let mut podcast = inner.podcast.lock().await;
-        let feed = podcast.add_feed(url).await.map_err(CoreError::Daemon)?;
+        let client = inner.podcast.lock().await.client();
+        let parsed = crate::podcast::fetch_feed(&client, url)
+            .await
+            .map_err(CoreError::Daemon)?;
+        let feed = inner
+            .podcast
+            .lock()
+            .await
+            .apply_add(url, parsed)
+            .map_err(CoreError::Daemon)?;
         Ok(DaemonRes::PodcastFeedsRes { feeds: vec![feed] })
     }
 
@@ -32,13 +71,14 @@ impl Podcast {
         term: &str,
         country: &str,
     ) -> Result<DaemonRes, CoreError> {
-        let results = inner
-            .podcast
-            .lock()
-            .await
-            .discover(term, country)
+        let key = PodcastManager::search_key(term, country);
+        if let Some(hit) = inner.podcast.lock().await.cached_result(&key) {
+            return Ok(DaemonRes::PodcastSearchRes { results: hit });
+        }
+        let results = crate::podcast::discover_net(term, country)
             .await
             .map_err(CoreError::Daemon)?;
+        inner.podcast.lock().await.memoize(key, &results);
         Ok(DaemonRes::PodcastSearchRes { results })
     }
 
@@ -48,26 +88,27 @@ impl Podcast {
         country: &str,
         genre: &str,
     ) -> Result<DaemonRes, CoreError> {
-        let results = inner
-            .podcast
-            .lock()
-            .await
-            .charts(country, genre)
+        let key = PodcastManager::chart_key(country, genre);
+        if let Some(hit) = inner.podcast.lock().await.cached_result(&key) {
+            return Ok(DaemonRes::PodcastSearchRes { results: hit });
+        }
+        let results = crate::podcast::charts_net(country, genre)
             .await
             .map_err(CoreError::Daemon)?;
+        inner.podcast.lock().await.memoize(key, &results);
         Ok(DaemonRes::PodcastSearchRes { results })
     }
 
     pub async fn episodes(inner: &DaemonInner, feed_id: &str) -> Result<DaemonRes, CoreError> {
-        let mut podcast = inner.podcast.lock().await;
         // Ensure the feed is loaded and its episodes are available.
-        // If the episodes cache is empty for this feed, refresh it.
-        if !podcast.has_episodes(feed_id)
-            && let Err(e) = podcast.refresh_feed(feed_id).await
+        // If the episodes cache is empty for this feed, refresh it. The fetch
+        // runs outside the lock: one slow feed used to starve the whole UI.
+        if !inner.podcast.lock().await.has_episodes(feed_id)
+            && let Err(e) = refresh_unlocked(inner, feed_id).await
         {
             warn!("refresh episodes for {feed_id}: {e}");
         }
-        match podcast.episodes(feed_id) {
+        match inner.podcast.lock().await.episodes(feed_id) {
             Ok((feed_title, episodes)) => Ok(DaemonRes::PodcastEpisodesRes {
                 feed_id: feed_id.to_string(),
                 feed_title,
@@ -81,16 +122,22 @@ impl Podcast {
         inner: &DaemonInner,
         feed_id: Option<&str>,
     ) -> Result<DaemonRes, CoreError> {
-        let mut podcast = inner.podcast.lock().await;
         match feed_id {
             Some(id) => {
-                let feed = podcast.refresh_feed(id).await.map_err(CoreError::Daemon)?;
+                let feed = refresh_unlocked(inner, id).await?;
                 Ok(DaemonRes::PodcastFeedsRes { feeds: vec![feed] })
             }
             None => {
-                let n = podcast.refresh_all().await.map_err(CoreError::Daemon)?;
+                let ids = inner.podcast.lock().await.feed_ids();
+                let mut ok = 0usize;
+                for id in ids {
+                    match refresh_unlocked(inner, &id).await {
+                        Ok(_) => ok += 1,
+                        Err(e) => warn!("refresh podcast feed {id}: {e}"),
+                    }
+                }
                 Ok(DaemonRes::Value {
-                    value: serde_json::json!({ "refreshed": n }),
+                    value: serde_json::json!({ "refreshed": ok }),
                 })
             }
         }
@@ -110,13 +157,19 @@ impl Podcast {
     ) -> Result<DaemonRes, CoreError> {
         // The episode has to be in cache to know what transcripts it offers, so
         // an uncached feed is refreshed rather than reported as having none.
-        let mut podcast = inner.podcast.lock().await;
-        if podcast.episode_at(feed_id, episode_index).is_none() {
-            // Ensure the feed is loaded first.
-            let _ = podcast.refresh_feed(feed_id).await;
+        if inner.podcast.lock().await.episode_at(feed_id, episode_index).is_none() {
+            // Ensure the feed is loaded first; outside the lock like every
+            // other refresh.
+            let _ = refresh_unlocked(inner, feed_id).await;
         }
-        let lyrics = podcast
-            .fetch_transcript(feed_id, episode_index)
+        let (episode, client) = {
+            let podcast = inner.podcast.lock().await;
+            let episode = podcast
+                .episode_at(feed_id, episode_index)
+                .ok_or_else(|| CoreError::Daemon("episode missing".into()))?;
+            (episode, podcast.client())
+        };
+        let lyrics = crate::podcast::fetch_transcripts(&client, &episode)
             .await
             .map_err(CoreError::Daemon)?;
         Ok(DaemonRes::PodcastTranscriptRes {
@@ -183,15 +236,14 @@ impl Podcast {
         episode_index: usize,
     ) -> Result<TrackInfo, CoreError> {
         let (feed_title, episode) = {
-            let mut podcast = inner.podcast.lock().await;
-            match podcast.episode_at(feed_id, episode_index) {
+            match inner.podcast.lock().await.episode_at(feed_id, episode_index) {
                 Some(ep) => (ep.feed_title.clone(), ep),
                 None => {
-                    podcast
-                        .refresh_feed(feed_id)
+                    refresh_unlocked(inner, feed_id).await?;
+                    let ep = inner
+                        .podcast
+                        .lock()
                         .await
-                        .map_err(CoreError::Daemon)?;
-                    let ep = podcast
                         .episode_at(feed_id, episode_index)
                         .ok_or_else(|| CoreError::Daemon("episode missing".into()))?;
                     (ep.feed_title.clone(), ep)

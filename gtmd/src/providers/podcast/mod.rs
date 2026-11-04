@@ -348,13 +348,16 @@ impl PodcastManager {
         Ok(())
     }
 
-    /// Fetch and subscribe to a feed URL.
+    /// Persist a subscribe fetch.
     ///
     /// Artwork already known for this feed — from a directory listing, usually —
     /// is kept: the feed itself often has none, and subscribing should not throw
     /// away the only picture the user will ever see for it.
-    pub async fn add_feed(&mut self, url: &str) -> Result<PodcastFeed, String> {
-        let parsed = fetch_and_parse(&self.client, url).await?;
+    pub(crate) fn apply_add(
+        &mut self,
+        url: &str,
+        parsed: ParsedFeed,
+    ) -> Result<PodcastFeed, String> {
         let id = feed_id(url);
         let art = parsed.image.clone().or_else(|| self.art_for(url));
         if let Some(existing) = self.feeds.iter().position(|f| f.id == id) {
@@ -379,6 +382,90 @@ impl PodcastManager {
             episodes: parsed.episodes.len(),
             image_url: art,
         })
+    }
+
+    /// The url for one feed, for a fetch that must run outside the lock.
+    pub(crate) fn feed_target(&self, feed_id: &str) -> Result<String, String> {
+        self.feeds
+            .iter()
+            .find(|f| f.id == feed_id)
+            .map(|f| f.url.clone())
+            .ok_or_else(|| "unknown podcast feed".to_string())
+    }
+
+    /// A clone of the shared client, for a fetch that must run outside the lock.
+    pub(crate) fn client(&self) -> reqwest::Client {
+        self.client.clone()
+    }
+
+    /// Persist the result of a refresh: title, art, episodes and config.
+    pub(crate) fn apply_refresh(
+        &mut self,
+        feed_id: &str,
+        parsed: ParsedFeed,
+    ) -> Result<PodcastFeed, String> {
+        let feed = self
+            .feeds
+            .iter_mut()
+            .find(|f| f.id == feed_id)
+            .ok_or_else(|| "unknown podcast feed".to_string())?;
+        // Keep the stored picture if the feed's own is still absent: feeds
+        // commonly publish artwork only through the directory that indexed them.
+        let art = parsed.image.clone().or(feed.image_url.clone());
+        let (url, id) = (feed.url.clone(), feed.id.clone());
+        feed.title = parsed.title.clone();
+        feed.image_url = art.clone();
+        self.episodes.insert(feed_id.to_string(), parsed.episodes.clone());
+        self.error = None;
+        self.save()?;
+        Ok(PodcastFeed {
+            id,
+            title: parsed.title,
+            url,
+            description: parsed.description,
+            episodes: parsed.episodes.len(),
+            image_url: art,
+        })
+    }
+
+    /// Remember a directory answer and its art, bounded by the same cap the
+    /// rest of the caches use; oldest out first.
+    ///
+    /// Callers feed this with results fetched outside the lock, so subscribing
+    /// from any of these finds a picture.
+    pub(crate) fn memoize(&mut self, key: String, results: &[PodcastResult]) {
+        for r in results {
+            self.discovery.retain(|d| d.url != r.url);
+            self.discovery.push(r.clone());
+        }
+        while self.discovery.len() > 200 {
+            self.discovery.remove(0);
+        }
+        self.discovery_cache.insert(key, results.to_vec());
+    }
+
+    /// The directory discovery cache key for a search, matching the daemon's
+    /// normalisation.
+    pub(crate) fn search_key(term: &str, country: &str) -> String {
+        format!(
+            "{}|{}",
+            country.trim().to_ascii_lowercase(),
+            term.trim().to_ascii_lowercase()
+        )
+    }
+
+    /// The charts discovery cache key for a country and optional genre.
+    pub(crate) fn chart_key(country: &str, genre: &str) -> String {
+        format!(
+            "charts|{}|{}",
+            country.trim().to_ascii_lowercase(),
+            genre.trim().to_ascii_lowercase()
+        )
+    }
+
+    /// The cached answer for a previously-searched key, if any.
+    pub(crate) fn cached_result(&self, key: &str) -> Option<Vec<PodcastResult>> {
+        self.discovery_cache.get(key).cloned()
     }
 
     /// Artwork already known for a feed url, from the discovery cache.
@@ -420,206 +507,13 @@ impl PodcastManager {
         self.feeds.iter().map(|f| f.id.clone()).collect()
     }
 
-    /// Search the public podcast directory.
-    ///
-    /// Backed by the iTunes Search API, which is the one podcast directory that
-    /// needs no account and no API key: it answers with each show's real
-    /// `feedUrl`, artwork and episode count. Results are cached by query so
-    /// re-entering the picker with the same term costs nothing, and cached
-    /// results are what `add_feed` falls back to for artwork.
-    /// Apple's ranked charts for a country and an optional genre.
-    ///
-    /// Two requests, because no single key-less endpoint answers this. The
-    /// charts give the ranking and the ids; a lookup turns those ids into the
-    /// feed URLs the charts themselves do not publish. Anything that fails to
-    /// resolve is dropped rather than shown, because a row with no feed cannot
-    /// be subscribed to and a subscribe button that does nothing is worse than
-    /// a shorter list.
-    pub async fn charts(
-        &mut self,
-        country: &str,
-        genre: &str,
-    ) -> Result<Vec<PodcastResult>, String> {
-        let country = country.trim().to_ascii_lowercase();
-        let country = if country.is_empty() { "us" } else { &country };
-        let genre = genre.trim().to_ascii_lowercase();
-        let key = format!("charts|{country}|{genre}");
-        if let Some(hit) = self.discovery_cache.get(&key) {
-            return Ok(hit.clone());
-        }
-        let client = reqwest::Client::new();
-        // Country level only. The genre-scoped forms look plausible and are not
-        // published: `/api/v2/us/podcasts/top/25/1489.json` answers 502 and
-        // `.../1489/podcasts.json` answers 404, for a genre id taken from a live
-        // response. A dead branch in a discovery path is worse than no genre
-        // filter, so `genre` is accepted and ignored rather than sent.
-        let _ = genre;
-        let segment = format!("{country}/podcasts/top/25/podcasts.json");
-        let chart: MarketingChart = client
-            .get(format!(
-                "https://rss.applemarketingtools.com/api/v2/{segment}"
-            ))
-            .timeout(FETCH_TIMEOUT)
-            .send()
-            .await
-            .map_err(|e| format!("podcast charts: {e}"))?
-            .error_for_status()
-            .map_err(|e| format!("podcast charts: {e}"))?
-            .json()
-            .await
-            .map_err(|e| format!("podcast charts: {e}"))?;
-        if chart.feed.results.is_empty() {
-            return Err(format!("no charts for {country}/{genre}"));
-        }
-        let ids: Vec<&str> = chart.feed.results.iter().map(|r| r.id.as_str()).collect();
-        let lookup: ItunesLookup = client
-            .get(format!(
-                "https://itunes.apple.com/lookup?id={}&entity=podcast&limit=200",
-                urlencoding::encode(&ids.join(","))
-            ))
-            .timeout(FETCH_TIMEOUT)
-            .send()
-            .await
-            .map_err(|e| format!("podcast charts lookup: {e}"))?
-            .error_for_status()
-            .map_err(|e| format!("podcast charts lookup: {e}"))?
-            .json()
-            .await
-            .map_err(|e| format!("podcast charts lookup: {e}"))?;
-        let by_id: std::collections::HashMap<&str, &ItunesPodcast> = lookup
-            .results
-            .iter()
-            .map(|r| (r.collection_id.as_str(), r))
-            .collect();
-        let mut results: Vec<PodcastResult> = Vec::new();
-        for entry in &chart.feed.results {
-            // The ranking comes from the chart, the details from the lookup:
-            // resolving in chart order rather than lookup order is what keeps
-            // it a chart and not a directory listing.
-            let Some(detail) = by_id.get(entry.id.as_str()) else {
-                continue;
-            };
-            let Some(url) = detail.feed_url.clone().filter(|u| !u.trim().is_empty()) else {
-                continue;
-            };
-            let image_url = detail
-                .artwork_url600
-                .clone()
-                .or_else(|| entry.artwork_url100.clone())
-                .map(|u| upgrade_art(&u));
-            results.push(PodcastResult {
-                title: entry.name.clone(),
-                author: if entry.artist_name.is_empty() {
-                    detail.artist_name.clone()
-                } else {
-                    entry.artist_name.clone()
-                },
-                url,
-                description: String::new(),
-                image_url,
-                episodes: detail.track_count.unwrap_or_default() as usize,
-                country: country.to_string(),
-            });
-        }
-        if results.is_empty() {
-            return Err(format!("no charts for {country}/{genre}"));
-        }
-        for r in &results {
-            self.discovery.retain(|d| d.url != r.url);
-            self.discovery.push(r.clone());
-        }
-        while self.discovery.len() > 200 {
-            self.discovery.remove(0);
-        }
-        self.discovery_cache.insert(key, results.clone());
-        Ok(results)
-    }
-
-    pub async fn discover(
-        &mut self,
-        term: &str,
-        country: &str,
-    ) -> Result<Vec<PodcastResult>, String> {
-        let term = term.trim();
-        // An empty term is not an error: it asks the directory for what is
-        // popular, which is the list the picker opens on and the one most
-        // sessions start from. iTunes reads a missing `term` as "everything",
-        // so the parameter is simply dropped rather than sent empty.
-        let key = format!(
-            "{}|{}",
-            country.to_ascii_lowercase(),
-            term.to_ascii_lowercase()
-        );
-        if let Some(hit) = self.discovery_cache.get(&key) {
-            return Ok(hit.clone());
-        }
-        let url = if term.is_empty() {
-            format!(
-                "https://itunes.apple.com/search?entity=podcast&country={}&limit=50",
-                urlencoding::encode(country)
-            )
-        } else {
-            format!(
-                "https://itunes.apple.com/search?term={}&entity=podcast&country={}&limit=50",
-                urlencoding::encode(term),
-                urlencoding::encode(country)
-            )
-        };
-        let body: ItunesSearch = reqwest::Client::new()
-            .get(&url)
-            .timeout(FETCH_TIMEOUT)
-            .send()
-            .await
-            .map_err(|e| format!("podcast search: {e}"))?
-            .error_for_status()
-            .map_err(|e| format!("podcast search: {e}"))?
-            .json()
-            .await
-            .map_err(|e| format!("podcast search: {e}"))?;
-        let results: Vec<PodcastResult> = body
-            .results
-            .into_iter()
-            .filter_map(|r| {
-                // A show with no feed url cannot be subscribed to or streamed, so it
-                // is not a result — the directory indexes plenty of those.
-                let url = r.feed_url.filter(|u| !u.trim().is_empty())?;
-                Some(PodcastResult {
-                    title: r.collection_name,
-                    author: r.artist_name,
-                    url,
-                    description: String::new(),
-                    image_url: r
-                        .artwork_url600
-                        .or(r.artwork_url100)
-                        .map(|u| upgrade_art(&u)),
-                    episodes: r.track_count.unwrap_or_default() as usize,
-                    country: country.to_string(),
-                })
-            })
-            .collect();
-        if results.is_empty() {
-            return Err(format!("no podcasts matched {term:?}"));
-        }
-        // Remember every result's art, not just the ones on screen, so
-        // subscribing to any of them finds a picture.
-        for r in &results {
-            self.discovery.retain(|d| d.url != r.url);
-            self.discovery.push(r.clone());
-        }
-        // Bounded like the rest of the caches; oldest out first.
-        while self.discovery.len() > 200 {
-            self.discovery.remove(0);
-        }
-        self.discovery_cache.insert(key, results.clone());
-        Ok(results)
-    }
-
     /// Whether the feed's episode list has been fetched at least once.
     pub fn has_episodes(&self, feed_id: &str) -> bool {
         self.episodes.contains_key(feed_id)
     }
 
-    /// Episodes of a feed. Returns the cached list; `refresh_feed` re-fetches.
+    /// Episodes of a feed. Returns the cached list; feed refreshes run
+    /// unlocked through the daemon's `refresh_unlocked`.
     pub fn episodes(&self, feed_id: &str) -> Result<(String, Vec<PodcastEpisode>), String> {
         let feed = self
             .feeds
@@ -636,68 +530,6 @@ impl PodcastManager {
         self.episodes.get(feed_id)?.get(index).cloned()
     }
 
-    /// Re-fetch a single feed.
-    pub async fn refresh_feed(&mut self, feed_id: &str) -> Result<PodcastFeed, String> {
-        let feed = self
-            .feeds
-            .iter()
-            .find(|f| f.id == feed_id)
-            .cloned()
-            .ok_or_else(|| "unknown podcast feed".to_string())?;
-        let parsed = match fetch_and_parse(&self.client, &feed.url).await {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                self.error = Some(format!("refresh {}: {e}", feed.url));
-                return Err(e);
-            }
-        };
-        // Keep the stored picture if the feed's own is still absent: feeds
-        // commonly publish artwork only through the directory that indexed them.
-        let art = parsed.image.clone().or(feed.image_url.clone());
-        let slot = self.feeds.iter_mut().find(|f| f.id == feed_id).unwrap();
-        slot.title = parsed.title.clone();
-        slot.image_url = art.clone();
-        self.episodes
-            .insert(feed_id.to_string(), parsed.episodes.clone());
-        self.error = None;
-        self.save()?;
-        Ok(PodcastFeed {
-            id: feed.id,
-            title: parsed.title,
-            url: feed.url,
-            description: parsed.description,
-            episodes: parsed.episodes.len(),
-            image_url: art,
-        })
-    }
-
-    /// Re-fetch every subscribed feed.
-    pub async fn refresh_all(&mut self) -> Result<usize, String> {
-        let urls: Vec<(String, String)> = self
-            .feeds
-            .iter()
-            .map(|f| (f.id.clone(), f.url.clone()))
-            .collect();
-        let mut ok = 0usize;
-        for (id, url) in urls {
-            match fetch_and_parse(&self.client, &url).await {
-                Ok(parsed) => {
-                    if let Some(feed) = self.feeds.iter_mut().find(|f| f.id == id) {
-                        feed.title = parsed.title.clone();
-                    }
-                    self.episodes.insert(id, parsed.episodes);
-                    ok += 1;
-                }
-                Err(e) => {
-                    self.error = Some(format!("refresh {url}: {e}"));
-                    warn!("{}", self.error.as_deref().unwrap_or(""));
-                }
-            }
-        }
-        self.save()?;
-        Ok(ok)
-    }
-
     pub fn status(&self) -> PodcastStatus {
         PodcastStatus {
             feeds: self.feeds.len(),
@@ -706,15 +538,9 @@ impl PodcastManager {
         }
     }
 
-    /// Fetch and parse an episode's transcript.
-    ///
-    /// Every transcript the feed offers is tried in preference order, because a
-    /// feed that offers several is not obliged to keep them all reachable: a
-    /// failure to reach the first is a fallthrough rather than the answer. The
-    /// first timed parse wins even if it is ranked below a plain one, because a
-    /// transcript with no timestamps cannot follow playback; a plain parse is
-    /// kept only as a fallback. A feed with none is an error the caller can say
-    /// out loud, not an empty pane.
+    /// Fetch and parse an episode's transcript, in the shape the lyrics pane
+    /// already renders, from the unlocked network half. Kept thin so the
+    /// daemon can drop the lock before touching the network.
     pub async fn fetch_transcript(
         &self,
         feed_id: &str,
@@ -723,81 +549,271 @@ impl PodcastManager {
         let episode = self
             .episode_at(feed_id, episode_index)
             .ok_or_else(|| "episode missing".to_string())?;
-        if episode.transcripts.is_empty() {
-            return Err(format!(
-                "\u{201c}{}\u{201d} has no transcript",
-                if episode.title.trim().is_empty() {
-                    "this episode"
-                } else {
-                    &episode.title
-                }
-            ));
-        }
-        let mut ranked: Vec<&PodcastTranscript> = episode.transcripts.iter().collect();
-        ranked.sort_by_key(|t| t.rank());
-        let mut last = String::from("no usable transcript");
-        // A feed can publish a readable plain-text transcript and a timed VTT
-        // side by side. Returning the first non-empty one made the result
-        // depend on feed order, so the lyrics clock had nothing to follow.
-        // Keep the first plain transcript only as a fallback and return as soon
-        // as any transcript has timestamps.
-        let mut untimed: Option<LrcData> = None;
-        for t in ranked {
-            let body = match (&t.text, &t.url) {
-                // Inline first: no network, and it cannot be a stale copy.
-                (Some(text), _) if !text.trim().is_empty() => text.clone(),
-                (_, Some(url)) if !url.trim().is_empty() => match self.fetch_body(url).await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        last = e;
-                        continue;
-                    }
-                },
-                _ => continue,
-            };
-            let parsed = vtt::parse_transcript(&body);
-            if parsed.lines.is_empty() {
-                last = "transcript was empty".into();
-                continue;
-            }
-            let lrc = LrcData {
-                title: episode.title.clone().into(),
-                artist: Some(episode.feed_title.clone()),
-                album: None,
-                lines: parsed.lines,
-            };
-            if lrc.lines.iter().any(|line| line.timestamp >= 0.0) {
-                return Ok(lrc);
-            }
-            if untimed.is_none() {
-                untimed = Some(lrc);
-            }
-        }
-        untimed.ok_or(last)
+        fetch_transcripts(&self.client, &episode).await
     }
+}
 
-    /// GET a transcript body, size-capped like a feed.
-    async fn fetch_body(&self, url: &str) -> Result<String, String> {
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| format!("transcript fetch: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("transcript fetch: HTTP {}", resp.status()));
-        }
-        let mut raw = String::with_capacity(32 * 1024);
-        let mut chunks = resp.bytes_stream();
-        while let Some(chunk) = chunks.next().await {
-            let chunk = chunk.map_err(|e| format!("transcript stream: {e}"))?;
-            raw.push_str(&String::from_utf8_lossy(&chunk));
-            if raw.len() > MAX_FEED_BYTES {
-                return Err("transcript too large".into());
+/// The network half of [`PodcastManager::fetch_transcript`], for callers that
+/// run outside the podcast lock.
+///
+/// Every transcript the feed offers is tried in preference order, because a
+/// feed that offers several is not obliged to keep them all reachable: a
+/// failure to reach the first is a fallthrough rather than the answer. The
+/// first timed parse wins even if it is ranked below a plain one, because a
+/// transcript with no timestamps cannot follow playback; a plain parse is
+/// kept only as a fallback. A feed with none is an error the caller can say
+/// out loud, not an empty pane.
+pub(crate) async fn fetch_transcripts(
+    client: &reqwest::Client,
+    episode: &PodcastEpisode,
+) -> Result<LrcData, String> {
+    if episode.transcripts.is_empty() {
+        return Err(format!(
+            "\u{201c}{}\u{201d} has no transcript",
+            if episode.title.trim().is_empty() {
+                "this episode"
+            } else {
+                &episode.title
             }
-        }
-        Ok(raw)
+        ));
     }
+    let mut ranked: Vec<&PodcastTranscript> = episode.transcripts.iter().collect();
+    ranked.sort_by_key(|t| t.rank());
+    let mut last = String::from("no usable transcript");
+    // A feed can publish a readable plain-text transcript and a timed VTT
+    // side by side. Returning the first non-empty one made the result
+    // depend on feed order, so the lyrics clock had nothing to follow.
+    // Keep the first plain transcript only as a fallback and return as soon
+    // as any transcript has timestamps.
+    let mut untimed: Option<LrcData> = None;
+    for t in ranked {
+        let body = match (&t.text, &t.url) {
+            // Inline first: no network, and it cannot be a stale copy.
+            (Some(text), _) if !text.trim().is_empty() => text.clone(),
+            (_, Some(url)) if !url.trim().is_empty() => match fetch_body(client, url).await {
+                Ok(b) => b,
+                Err(e) => {
+                    last = e;
+                    continue;
+                }
+            },
+            _ => continue,
+        };
+        let parsed = vtt::parse_transcript(&body);
+        if parsed.lines.is_empty() {
+            last = "transcript was empty".into();
+            continue;
+        }
+        let lrc = LrcData {
+            title: episode.title.clone().into(),
+            artist: Some(episode.feed_title.clone()),
+            album: None,
+            lines: parsed.lines,
+        };
+        if lrc.lines.iter().any(|line| line.timestamp >= 0.0) {
+            return Ok(lrc);
+        }
+        if untimed.is_none() {
+            untimed = Some(lrc);
+        }
+    }
+    untimed.ok_or(last)
+}
+
+/// GET a transcript body, size-capped like a feed.
+async fn fetch_body(client: &reqwest::Client, url: &str) -> Result<String, String> {
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("transcript fetch: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("transcript fetch: HTTP {}", resp.status()));
+    }
+    let mut raw = String::with_capacity(32 * 1024);
+    let mut chunks = resp.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk
+            .map_err(|e| format!("transcript stream: {e}"))?;
+        raw.push_str(&String::from_utf8_lossy(&chunk));
+        if raw.len() > MAX_FEED_BYTES {
+            return Err("transcript too large".into());
+        }
+    }
+    Ok(raw)
+}
+
+/// Fetch and parse a feed document, with the manager's timeouts and redirects.
+/// The manager's own client goes in so the network half of a refresh can run
+/// outside the lock — nothing about the body touches manager state.
+pub(crate) async fn fetch_feed(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<ParsedFeed, String> {
+    fetch_and_parse(client, url).await
+}
+
+/// Search the public podcast directory, without touching the discovery cache.
+///
+/// Backed by the iTunes Search API, which is the one podcast directory that
+/// needs no account and no API key: it answers with each show's real
+/// `feedUrl`, artwork and episode count. The caller reads the cached answer
+/// first and files the results afterwards; doing both around this call is
+/// what keeps the network out of the lock.
+///
+/// An empty term is not an error: it asks the directory for what is popular.
+/// iTunes reads a missing `term` as "everything", so the parameter is dropped
+/// rather than sent empty.
+pub(crate) async fn discover_net(term: &str, country: &str) -> Result<Vec<PodcastResult>, String> {
+    let term = term.trim();
+    let url = if term.is_empty() {
+        format!(
+            "https://itunes.apple.com/search?entity=podcast&country={}&limit=50",
+            urlencoding::encode(country)
+        )
+    } else {
+        format!(
+            "https://itunes.apple.com/search?term={}&entity=podcast&country={}&limit=50",
+            urlencoding::encode(term),
+            urlencoding::encode(country)
+        )
+    };
+    let body: ItunesSearch = fresh_client()
+        .get(&url)
+        .timeout(FETCH_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| format!("podcast search: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("podcast search: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("podcast search: {e}"))?;
+    let results: Vec<PodcastResult> = body
+        .results
+        .into_iter()
+        // A show with no feed url cannot be subscribed to or streamed, so it
+        // is not a result — the directory indexes plenty of those.
+        .filter_map(|r| {
+            let url = r.feed_url.filter(|u| !u.trim().is_empty())?;
+            Some(PodcastResult {
+                title: r.collection_name,
+                author: r.artist_name,
+                url,
+                description: String::new(),
+                image_url: r
+                    .artwork_url600
+                    .or(r.artwork_url100)
+                    .map(|u| upgrade_art(&u)),
+                episodes: r.track_count.unwrap_or_default() as usize,
+                country: country.to_string(),
+            })
+        })
+        .collect();
+    if results.is_empty() {
+        return Err(format!("no podcasts matched {term:?}"));
+    }
+    Ok(results)
+}
+
+/// Apple's ranked charts for a country and an optional genre, resolved to
+/// subscribable feeds. Everything the ranking concerns stays in the request;
+/// the cache is the caller's business.
+///
+/// Two requests, because no single key-less endpoint answers this. The
+/// charts give the ranking and the ids; a lookup turns those ids into the
+/// feed URLs the charts themselves do not publish. Anything that fails to
+/// resolve is dropped rather than shown, because a row with no feed cannot
+/// be subscribed to and a subscribe button that does nothing is worse than
+/// a shorter list.
+pub(crate) async fn charts_net(country: &str, genre: &str) -> Result<Vec<PodcastResult>, String> {
+    let country = country.trim().to_ascii_lowercase();
+    let country = if country.is_empty() { "us" } else { &country };
+    let genre = genre.trim().to_ascii_lowercase();
+    let client = fresh_client();
+    // Country level only. The genre-scoped forms look plausible and are not
+    // published: `/api/v2/us/podcasts/top/25/1489.json` answers 502 and
+    // `.../1489/podcasts.json` answers 404, for a genre id taken from a live
+    // response. A dead branch in a discovery path is worse than no genre
+    // filter, so `genre` is accepted and ignored rather than sent.
+    let _ = genre;
+    let segment = format!("{country}/podcasts/top/25/podcasts.json");
+    let chart: MarketingChart = client
+        .get(format!(
+            "https://rss.applemarketingtools.com/api/v2/{segment}"
+        ))
+        .timeout(FETCH_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| format!("podcast charts: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("podcast charts: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("podcast charts: {e}"))?;
+    if chart.feed.results.is_empty() {
+        return Err(format!("no charts for {country}/{genre}"));
+    }
+    let ids: Vec<&str> = chart.feed.results.iter().map(|r| r.id.as_str()).collect();
+    let lookup: ItunesLookup = client
+        .get(format!(
+            "https://itunes.apple.com/lookup?id={}&entity=podcast&limit=200",
+            urlencoding::encode(&ids.join(","))
+        ))
+        .timeout(FETCH_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| format!("podcast charts lookup: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("podcast charts lookup: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("podcast charts lookup: {e}"))?;
+    let by_id: std::collections::HashMap<&str, &ItunesPodcast> = lookup
+        .results
+        .iter()
+        .map(|r| (r.collection_id.as_str(), r))
+        .collect();
+    let mut results = Vec::new();
+    for entry in &chart.feed.results {
+        // The ranking comes from the chart, the details from the lookup:
+        // resolving in chart order rather than lookup order is what keeps
+        // it a chart and not a directory listing.
+        let Some(detail) = by_id.get(entry.id.as_str()) else {
+            continue;
+        };
+        let Some(url) = detail.feed_url.clone().filter(|u| !u.trim().is_empty()) else {
+            continue;
+        };
+        let image_url = detail
+            .artwork_url600
+            .clone()
+            .or_else(|| entry.artwork_url100.clone())
+            .map(|u| upgrade_art(&u));
+        results.push(PodcastResult {
+            title: entry.name.clone(),
+            author: if entry.artist_name.is_empty() {
+                detail.artist_name.clone()
+            } else {
+                entry.artist_name.clone()
+            },
+            url,
+            description: String::new(),
+            image_url,
+            episodes: detail.track_count.unwrap_or_default() as usize,
+            country: country.to_string(),
+        });
+    }
+    if results.is_empty() {
+        return Err(format!("no charts for {country}/{genre}"));
+    }
+    Ok(results)
+}
+
+/// A throwaway client for the directory requests; the fetch helpers never
+/// touch manager state, so they need none of the manager's client.
+fn fresh_client() -> reqwest::Client {
+    reqwest::Client::new()
 }
 
 /// Stable feed id derived from the feed URL.
@@ -820,7 +836,7 @@ fn sensible_id(url: &str) -> String {
     url.split(['?', '#']).next().unwrap_or(url).to_string()
 }
 
-struct ParsedFeed {
+pub(crate) struct ParsedFeed {
     title: String,
     description: String,
     /// Channel artwork, from `<itunes:image href>` or Atom `<logo>`/`<icon>`.

@@ -143,17 +143,18 @@ pub(crate) async fn resolve_remote(
             feed_id,
             episode_index,
         } => {
-            let mut podcast = inner.podcast.lock().await;
-            let url = match podcast.episode_at(feed_id, *episode_index) {
+            let url = match inner.podcast.lock().await.episode_at(feed_id, *episode_index) {
                 Some(ep) => ep.url.clone(),
                 None => {
                     // Daemon restarted since the feed was browsed; refresh the
-                    // feed once so replay/next still resolves.
-                    podcast
-                        .refresh_feed(feed_id)
+                    // feed once so replay/next still resolves. Outside the lock.
+                    super::podcast::refresh_unlocked(inner, feed_id)
                         .await
                         .map_err(|e| CoreError::Daemon(format!("podcast feed: {e}")))?;
-                    podcast
+                    inner
+                        .podcast
+                        .lock()
+                        .await
                         .episode_at(feed_id, *episode_index)
                         .ok_or_else(|| CoreError::Daemon("podcast episode missing".into()))?
                         .url

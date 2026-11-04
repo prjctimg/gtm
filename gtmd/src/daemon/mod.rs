@@ -2888,11 +2888,10 @@ impl Daemon {
                     let total = feed_ids.len();
                     let mut warmed = 0usize;
                     for id in feed_ids {
-                        let mut podcast = warm_inner.podcast.lock().await;
-                        if podcast.has_episodes(&id) {
+                        if warm_inner.podcast.lock().await.has_episodes(&id) {
                             continue;
                         }
-                        match podcast.refresh_feed(&id).await {
+                        match podcast::refresh_unlocked(&warm_inner, &id).await {
                             Ok(_) => warmed += 1,
                             Err(e) => warn!("warm podcast feed {id}: {e}"),
                         }
